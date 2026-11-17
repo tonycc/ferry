@@ -9,7 +9,7 @@
 |---|---|---|
 | 上传代码包部署能否用 API key 调用 | **能** | `application.dropDeployment`,multipart 表单,字段 `applicationId` 和 `zip` |
 | 有无执行一次性命令的接口 | **没有专门的接口,但能做到** | 建一个不会自动触发的定时任务,再手动触发一次,见下文 |
-| 有无按需备份的接口 | **有,但只能备份到 S3 兼容存储** | 先配置备份目的地,再给每个数据库建一条备份配置,用 `backup.manualBackupPostgres` 触发,见下文 |
+| 有无按需备份的接口 | **有,但只能备份到 S3 兼容存储** | 先配置备份目的地,再给每个数据库建一条备份配置,用 `backup.manualBackupPostgres` 触发,见下文。**一期不用它**,改为备份到服务器本机,见“迁移前备份到服务器本机” |
 
 ## 鉴权
 
@@ -80,6 +80,40 @@ Dokploy 的备份只能存到 S3 兼容存储(AWS S3、MinIO、SeaweedFS 等),�
 - MinIO 社区版的镜像从本机已经拉不下来(见下文),本机测试改用 SeaweedFS(`chrislusf/seaweedfs`,约 1GB)。
   它不配置身份时不校验密钥,只适合本机测试。
 
+## 迁移前备份到服务器本机(一期采用)
+
+一期不做异地备份(不需要 S3 兼容存储),迁移前的备份改为导出到 Dokploy 所在服务器的本机磁盘。
+它防不了服务器硬盘损坏,但能在迁移写坏数据时恢复。2026-11-17 实测可行:
+
+1. `schedule.create {name, cronExpression, scheduleType: "dokploy-server", shellType: "bash", command, script, enabled: false}`。
+   **`dokploy-server` 类型执行的是 `script` 字段,`command` 字段不会被执行**(但不能为空)。只填 `command` 时,
+   生成的脚本里只有一行 echo,接口照样返回 `done`,什么都没做。
+2. `schedule.runManually {scheduleId}`:返回 `{status: "done" | "error", deploymentId}`,脚本输出在 `deployment.readLogs` 里。
+3. 脚本在 Dokploy 容器里执行,能用 `docker` 命令,`/etc/dokploy` 就是服务器上的同一个目录。实测脚本:
+
+```bash
+set -euo pipefail
+mkdir -p /etc/dokploy/ferry-backups/<数据库 appName>
+cid=$(docker ps -q -f name=^<数据库 appName>\. | head -n1)
+docker exec "$cid" pg_dump -U <用户> -d <库名> | gzip > <文件>.tmp
+mv <文件>.tmp <文件>
+```
+
+实测结果:
+
+- 成功时状态 `done`,得到一个 796 字节的 `.sql.gz`,解压后能看到建表语句和数据;导入一个新库后数据完整。
+- 库名写错时状态 `error`,日志里有 pg_dump 的报错。但 `.tmp` 文件会留下来,脚本要在失败时删掉它(如用 `trap`)。
+- 数据库容器里用本地连接执行 pg_dump,不需要密码。
+- 小数据库 0.2 秒返回。**还没确认大数据库时是否等导出完成才返回。**
+
+对 Ferry 的影响:
+
+- 平台只需要一个这样的定时任务。适配器每次用 `schedule.update` 改脚本再触发,或者执行完删除。
+- 发布单里记录备份文件的完整路径,恢复时就用它。
+- 文件只增不减,要定期清理(如每个应用保留最近几份),和代码包的保留策略(任务 1.6)一起做。
+- 本机开发时,`/etc/dokploy` 在 Docker Desktop 虚拟机里,Docker Desktop 重启后备份可能丢失;企业服务器上是真实磁盘。
+- 二期要做异地备份时,把这个目录同步到 S3 兼容存储,或改用下面 Dokploy 自带的备份。
+
 ## 读取日志
 
 - `deployment.readLogs?deploymentId=&tail=`:构建日志和一次性命令的输出。失败时把它交给 agent。
@@ -91,8 +125,11 @@ Dokploy 的备份只能存到 S3 兼容存储(AWS S3、MinIO、SeaweedFS 等),�
 应用仍在运行,通过域名仍能访问;数据库的数据卷、Traefik 的路由文件也都留着。而且记录没了之后,
 就再也无法通过接口删除它们,只能手动 `docker service rm`、删数据卷、删 `/etc/dokploy` 下的文件。
 
-所以 Ferry 下线应用时(任务 2.6)要按这个顺序:先 `application.delete`、`postgres.remove`
-(下线后要保留数据时,先停止、不删数据库),确认容器已经没了,最后才 `project.remove`。
+所以 Ferry 下线应用时(任务 2.6)要按这个顺序:先删定时任务(`schedule.delete`),再 `application.delete`、
+`postgres.remove`,最后才 `project.remove`。实测按这个顺序删除后,服务、路由文件、应用文件都清理干净了。
+
+**`postgres.remove` 不删除数据库的数据卷**(`<数据库 appName>-data`)。下线后要保留数据时这正好合适;
+真正要删除数据时(如保留期满),需要另外删除这个数据卷,目前没有找到对应的接口。
 
 ## 停止、启动和其他
 
