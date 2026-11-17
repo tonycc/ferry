@@ -83,8 +83,17 @@ pnpm install
 pnpm db:up
 ```
 
+配置写在项目根目录的 `.env` 里(从 `.env.example` 复制),`pnpm dev` 启动时自动读取;
+终端里已设置的同名环境变量优先。`.env` 不会提交到 git,API key 等密钥只放在这里。
+
 ```bash
-DATABASE_URL=postgres://ferry:ferry-dev@127.0.0.1:55432/ferry pnpm dev
+cp .env.example .env
+```
+
+在 `.env` 里取消 `DATABASE_URL` 那一行的注释后:
+
+```bash
+pnpm dev
 ```
 
 不设置 `DATABASE_URL` 时用内存存储,重启后数据丢失。数据库迁移在服务启动时自动执行;
