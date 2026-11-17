@@ -18,7 +18,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 管理员停用和恢复应用(后端接口) | 已实现,有测试 |
 | 代码包上传(一次性上传地址、本地目录存储、用旧包回滚) | 已实现,有测试,本地用真实 zip 验证过 |
 | REST 接口、MCP 工具(5 个) | 已实现,本地验证过 |
-| Dokploy 对接(`adapters/dokploy.ts`) | 未实现,只有接口和说明 |
+| Dokploy 对接(`adapters/dokploy.ts`) | 项目、应用、域名、环境变量、上传部署、日志、停止和启动已实现,对本机 Dokploy 的集成测试通过;数据库、迁移命令、备份未实现(任务 1.5),所以 `FERRY_PLATFORM=dokploy` 还不能完整发布带数据库的应用 |
 | 密钥扫描、通知 | 只有假实现 |
 | 持久化(PostgreSQL) | 已实现,有测试;设置 `DATABASE_URL` 后启用,启动时自动执行数据库迁移。不设置时用内存存储 |
 | 服务重启后继续执行未完成的发布 | 已实现,有测试(需要 PostgreSQL 存储;假定同一时间只运行一个 Ferry 实例) |
@@ -116,6 +116,13 @@ pnpm test
 
 ```bash
 pnpm test:pg
+```
+
+下面这条对本机 Dokploy 跑适配器的集成测试(需要先用 `infra/dokploy/setup-local.sh` 安装,并在 `.env` 里配好
+`DOKPLOY_URL`、`DOKPLOY_API_KEY`)。会建一个临时项目并真实构建两次,约 1 到 2 分钟,结束时自动删除:
+
+```bash
+pnpm test:dokploy
 ```
 
 ```bash

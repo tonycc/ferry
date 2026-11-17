@@ -133,7 +133,19 @@ mv <文件>.tmp <文件>
 
 ## 停止、启动和其他
 
-`application.stop`、`application.start`、`application.reload`、`postgres.stop` 等接口都存在,还没有逐个实测。
+- `application.stop` 后通过域名无法访问,`application.start` 后恢复,不需要重新构建(任务 1.4 的集成测试覆盖)。
+- **构建失败时,线上正在运行的旧版本不受影响**,仍能正常访问。所以只有健康检查失败(新版本已经替换上线)时才需要回滚。
+- `application.reload`、`postgres.stop` 等接口存在,还没有实测。
+
+## 适配器的实现(任务 1.4)
+
+`apps/publisher/src/adapters/dokploy.ts`,集成测试 `pnpm test:dokploy`。实现时的约定:
+
+- 创建前先按名称查找,找到就复用。Ferry 建的项目统一加 `ferry-` 前缀,不会误用别人手动建的同名项目。
+- 对外以项目 ID 作为引用,需要环境 ID 时在适配器里用 `project.one` 查默认环境。
+- 部署前先等这个应用正在进行的部署结束;上传后只跟踪新出现的那条部署记录;有总的超时时间。
+- 调用失败时,报错信息只有接口名和状态码,响应内容只写服务端日志:响应里可能有连接串和密码,而报错信息会经发布单传给 agent。
+- 域名的 `https` 和证书类型是构造参数,本机默认 `false` 和 `none`,企业环境部署时(任务 3.6)再按证书情况设置。
 
 ## 本机环境的问题
 
