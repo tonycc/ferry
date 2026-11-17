@@ -1,0 +1,15 @@
+# Traefik 动态配置示例(未在真实环境验证,域名和地址均为占位符)。
+#
+# 目的:所有员工应用 *.apps.corp.example 统一经过一道检查,不需要逐个应用配置。
+# Traefik 把每个请求转给 Ferry publisher 的 /authz,由 Ferry 一并完成:
+#   1. 登录 —— 识别 Ferry 签发的登录 cookie;未登录时跳转到钉钉或企业微信扫码登录
+#   2. 授权 —— 按应用的可见范围和组织架构判断这个人能否访问这个域名
+#
+# 注意:publisher 的 /authz 目前从 x-ferry-user 请求头读取身份(开发用),登录还没有实现。
+# 接入登录后,网关必须先删除客户端传来的 x-ferry-* 请求头,避免身份被伪造。
+http:
+  middlewares:
+    ferry-gate:
+      forwardAuth:
+        address: "http://ferry-publisher:8080/authz"
+        trustForwardHeader: false

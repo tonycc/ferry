@@ -1,0 +1,12 @@
+{
+  "name": "my-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "migrate": "node migrate.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  }
+}

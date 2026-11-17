@@ -1,0 +1,17 @@
+# 本地开发依赖。密码只用于本机开发,不要用于任何其他环境。
+# 主机端口用 55432,避免和本机已有的 PostgreSQL(5432)冲突。
+name: ferry
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ferry
+      POSTGRES_PASSWORD: ferry-dev
+      POSTGRES_DB: ferry
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - ferry-pg:/var/lib/postgresql/data
+
+volumes:
+  ferry-pg:

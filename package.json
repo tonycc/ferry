@@ -1,0 +1,19 @@
+{
+  "name": "ferry",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @ferry/publisher dev",
+    "dev:console": "pnpm --filter @ferry/console dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "db:up": "docker compose -f infra/docker-compose.dev.yml up -d",
+    "test:pg": "TEST_DATABASE_URL=postgres://ferry:ferry-dev@127.0.0.1:55432/ferry vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

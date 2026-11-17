@@ -1,0 +1,7 @@
+name: my-app
+template: node-postgres
+port: 3000
+healthcheck: /healthz
+database: postgres
+migrate: node migrate.js
+visibility: self

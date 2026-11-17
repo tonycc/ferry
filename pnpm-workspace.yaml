@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+  - "packages/manifest"
+allowBuilds:
+  esbuild: true
+
+# packages/templates 下是给 agent 用的应用模板,不属于工作区

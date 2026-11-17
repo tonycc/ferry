@@ -1,0 +1,172 @@
+import { parseManifest } from "@ferry/manifest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { storeCases, type StoreCase } from "../test/stores";
+import type { AppRecord, ReleaseRecord, UploadTicket } from "./store";
+
+const parsed = parseManifest("name: ledger\ntemplate: node-postgres\ndatabase: postgres\nmigrate: npm run migrate\n");
+if (!parsed.ok) throw new Error(parsed.errors.join("\n"));
+const manifest = parsed.manifest;
+
+/** 时间取整到毫秒:PostgreSQL 精度是微秒,JS 是毫秒,整毫秒的值两边一致 */
+const at = (iso: string) => new Date(iso);
+
+function newApp(overrides: Partial<AppRecord> = {}): AppRecord {
+  return {
+    name: "ledger",
+    ownerId: "dingtalk:alice",
+    visibility: "self",
+    host: "ledger.apps.test",
+    platform: {},
+    createdAt: at("2026-11-16T08:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function newRelease(overrides: Partial<ReleaseRecord> = {}): ReleaseRecord {
+  return {
+    id: "00000000-0000-4000-8000-000000000001",
+    appName: "ledger",
+    ownerId: "dingtalk:alice",
+    version: "v1",
+    manifest,
+    state: "PENDING",
+    history: [{ state: "PENDING", at: at("2026-11-16T08:00:01.000Z") }],
+    createdAt: at("2026-11-16T08:00:01.000Z"),
+    ...overrides,
+  };
+}
+
+let storeCase: StoreCase;
+
+describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
+  beforeAll(() => c.init());
+  beforeEach(async () => {
+    storeCase = c;
+    await c.reset();
+  });
+  afterAll(() => c.close());
+
+  describe("应用", () => {
+    it("可选字段为空时原样读回,不存在的应用返回 undefined", async () => {
+      const store = storeCase.create();
+      const app = newApp();
+      expect(await store.createApp(app)).toBe(true);
+      const read = await store.getApp("ledger");
+      expect(read).toEqual(app);
+      expect(read?.liveVersion).toBeUndefined();
+      expect(read?.disabled).toBeUndefined();
+      expect(await store.getApp("missing")).toBeUndefined();
+      expect(await store.getAppByHost("ledger.apps.test")).toEqual(app);
+    });
+
+    it("部署信息和停用状态写入后原样读回", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      const updated = newApp({
+        visibility: "department",
+        platform: { projectId: "proj_1", appId: "app_2", databaseId: "db_3", domainAttached: true },
+        liveVersion: "v1",
+      });
+      await store.saveApp(updated);
+      const disabled = { by: "dingtalk:admin", at: at("2026-11-16T09:00:00.000Z"), reason: "存放了客户隐私数据" };
+      await store.setAppDisabled("ledger", disabled);
+
+      const read = await store.getApp("ledger");
+      expect(read).toEqual({ ...updated, disabled });
+      expect(read?.disabled?.at).toBeInstanceOf(Date);
+
+      await store.setAppDisabled("ledger", undefined);
+      expect((await store.getApp("ledger"))?.disabled).toBeUndefined();
+    });
+
+    it("应用名已被占用时不覆盖", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      expect(await store.createApp(newApp({ ownerId: "dingtalk:bob" }))).toBe(false);
+      expect((await store.getApp("ledger"))?.ownerId).toBe("dingtalk:alice");
+    });
+
+    it("用旧数据保存部署信息时,不会冲掉期间写入的停用状态", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      const stale = (await store.getApp("ledger"))!;
+      await store.setAppDisabled("ledger", { by: "dingtalk:admin", at: at("2026-11-16T09:00:00.000Z") });
+
+      stale.liveVersion = "v1";
+      await store.saveApp(stale);
+
+      const read = await store.getApp("ledger");
+      expect(read?.liveVersion).toBe("v1");
+      expect(read?.disabled?.by).toBe("dingtalk:admin");
+    });
+
+    it("读出的是副本:改了不保存,存储里的数据不变", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      const read = (await store.getApp("ledger"))!;
+      read.platform.appId = "changed";
+      expect((await store.getApp("ledger"))?.platform).toEqual({});
+    });
+
+    it("按负责人列出应用", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      await store.createApp(newApp({ name: "crm", host: "crm.apps.test", ownerId: "dingtalk:bob" }));
+      expect((await store.listAppsByOwner("dingtalk:alice")).map((a) => a.name)).toEqual(["ledger"]);
+      expect((await store.listApps()).map((a) => a.name).sort()).toEqual(["crm", "ledger"]);
+    });
+  });
+
+  describe("发布单", () => {
+    it("可选字段为空和有值时都原样读回,历史里的时间是 Date", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      const release = newRelease();
+      await store.saveRelease(release);
+      expect(await store.getRelease(release.id)).toEqual(release);
+
+      const done = newRelease({
+        state: "FAILED_FIXABLE",
+        backupId: "backup_1",
+        error: { stage: "BUILDING", type: "build_failed", message: "构建失败", logs: "npm ERR!", hint: "修复后重新发布" },
+        url: "https://ledger.apps.test",
+        history: [...release.history, { state: "FAILED_FIXABLE", at: at("2026-11-16T08:01:00.000Z") }],
+      });
+      await store.saveRelease(done);
+      const read = await store.getRelease(release.id);
+      expect(read).toEqual(done);
+      expect(read?.history[1]?.at).toBeInstanceOf(Date);
+      expect(await store.getRelease("00000000-0000-4000-8000-000000000099")).toBeUndefined();
+    });
+
+    it("创建时间相同时,按写入顺序列出", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      const ids = [3, 1, 2].map((n) => `00000000-0000-4000-8000-00000000000${n}`);
+      for (const id of ids) await store.saveRelease(newRelease({ id }));
+      expect((await store.listReleases("ledger")).map((r) => r.id)).toEqual(ids);
+    });
+  });
+
+  describe("上传凭据", () => {
+    it("按令牌哈希和按版本都能查到,收到代码包后记录时间", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      const ticket: UploadTicket = {
+        tokenHash: "a".repeat(64),
+        appName: "ledger",
+        ownerId: "dingtalk:alice",
+        version: "v1",
+        expiresAt: at("2026-11-16T08:15:00.000Z"),
+      };
+      await store.saveUpload(ticket);
+      expect(await store.getUploadByTokenHash(ticket.tokenHash)).toEqual(ticket);
+      expect((await store.getUpload("ledger", "v1"))?.receivedAt).toBeUndefined();
+
+      const received = { ...ticket, receivedAt: at("2026-11-16T08:05:00.000Z") };
+      await store.saveUpload(received);
+      expect(await store.getUpload("ledger", "v1")).toEqual(received);
+      expect(await store.getUpload("ledger", "v2")).toBeUndefined();
+    });
+  });
+});
