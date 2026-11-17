@@ -9,6 +9,8 @@ import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
 
 export interface ServiceConfig {
+  /** 应用地址的协议,默认 https */
+  appsUrlScheme?: "http" | "https";
   appsDomain: string;
   maxAppsPerUser: number;
   /** agent 访问本服务用的地址 */
@@ -118,7 +120,7 @@ export class PublisherService {
     await this.store.saveUpload(ticket);
     return {
       name,
-      url: `https://${app.host}`,
+      url: this.appUrl(app.host),
       version: ticket.version,
       uploadUrl: `${this.config.publicUrl}/uploads/${token}`,
       uploadExpiresAt: ticket.expiresAt.toISOString(),
@@ -186,7 +188,7 @@ export class PublisherService {
 
   async listApps(user: User): Promise<AppView[]> {
     const apps = await this.store.listAppsByOwner(user.id);
-    return apps.map(toAppView);
+    return apps.map((app) => toAppView(app, this.appUrl(app.host)));
   }
 
   // ---- 管理员操作 ----
@@ -196,7 +198,7 @@ export class PublisherService {
     const apps = await this.store.listApps();
     return Promise.all(
       apps.map(async (app) => ({
-        ...toAppView(app),
+        ...toAppView(app, this.appUrl(app.host)),
         ownerId: app.ownerId,
         departments: await this.adapters.directory.departmentsOf(app.ownerId),
         disabledReason: app.disabled?.reason,
@@ -257,6 +259,10 @@ export class PublisherService {
     return unfinished.map((release) => release.id);
   }
 
+  private appUrl(host: string): string {
+    return `${this.config.appsUrlScheme ?? "https"}://${host}`;
+  }
+
   /** 等待某次发布的后台执行告一段落(测试用) */
   async settle(releaseId: string): Promise<void> {
     await this.running.get(releaseId);
@@ -286,10 +292,10 @@ function requireAdmin(user: User): void {
   if (!user.isAdmin) throw new UserError("forbidden", "只有平台管理员可以执行这个操作");
 }
 
-function toAppView(app: AppRecord): AppView {
+function toAppView(app: AppRecord, url: string): AppView {
   return {
     name: app.name,
-    url: `https://${app.host}`,
+    url,
     visibility: app.visibility,
     live: app.liveVersion !== undefined,
     disabled: app.disabled !== undefined,

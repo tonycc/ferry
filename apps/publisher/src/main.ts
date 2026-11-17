@@ -1,6 +1,7 @@
 import { DokployPlatform } from "./adapters/dokploy";
 import { DokployClient } from "./adapters/dokploy-client";
 import { FsArchiveStore } from "./adapters/archive-store";
+import { HttpHealthChecker } from "./adapters/health";
 import { MemoryDirectory } from "./adapters/directory";
 import { createFakeAdapters } from "./adapters/fake";
 import type { Adapters } from "./adapters/types";
@@ -19,7 +20,7 @@ if (config.DEV_AUTH !== "true") {
   throw new Error("尚未实现钉钉、企业微信登录,目前只能以 DEV_AUTH=true 运行");
 }
 
-// 代码包保存在本地目录;部署平台、密钥扫描、通知目前还是假实现
+// 代码包保存在本地目录;FERRY_PLATFORM=dokploy 时部署平台和健康检查是真实的,密钥扫描、通知还是假实现
 // 组织架构目前只来自开发用的身份请求头,还没有接钉钉、企业微信
 const directory = new MemoryDirectory();
 const adapters: Adapters = {
@@ -33,7 +34,12 @@ if (config.FERRY_PLATFORM === "dokploy") {
   }
   adapters.platform = new DokployPlatform(
     new DokployClient({ baseUrl: config.DOKPLOY_URL, apiKey: config.DOKPLOY_API_KEY }),
+    { https: config.APPS_URL_SCHEME === "https" },
   );
+  adapters.health = new HttpHealthChecker({
+    gateway: config.HEALTHCHECK_GATEWAY,
+    timeoutMs: config.HEALTHCHECK_TIMEOUT_SECONDS * 1000,
+  });
 }
 
 let store: Store;
@@ -45,9 +51,13 @@ if (config.DATABASE_URL) {
   console.warn("未设置 DATABASE_URL,使用内存存储:服务重启后应用和发布记录都会丢失");
   store = new MemoryStore();
 }
-const engine = new Engine(store, adapters, { maxFixAttempts: config.MAX_FIX_ATTEMPTS });
+const engine = new Engine(store, adapters, {
+  maxFixAttempts: config.MAX_FIX_ATTEMPTS,
+  appsUrlScheme: config.APPS_URL_SCHEME,
+});
 const service = new PublisherService(store, engine, adapters, {
   appsDomain: config.APPS_DOMAIN,
+  appsUrlScheme: config.APPS_URL_SCHEME,
   maxAppsPerUser: config.MAX_APPS_PER_USER,
   publicUrl: config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`,
   uploadTtlMs: config.UPLOAD_TTL_MINUTES * 60_000,

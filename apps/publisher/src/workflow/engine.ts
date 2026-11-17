@@ -4,6 +4,8 @@ import type { AppRecord, ReleaseRecord, Store } from "./store";
 
 export interface EngineConfig {
   maxFixAttempts: number;
+  /** 应用地址的协议,默认 https */
+  appsUrlScheme?: "http" | "https";
 }
 
 type StepResult =
@@ -221,7 +223,7 @@ export class Engine {
     const app = await this.app(release);
     app.liveVersion = release.version;
     await this.store.saveApp(app);
-    release.url = `https://${app.host}`;
+    release.url = `${this.config.appsUrlScheme ?? "https"}://${app.host}`;
     await this.transition(release, "LIVE");
     await this.adapters.notifier.notify(release.ownerId, `应用 ${app.name} 已发布: ${release.url}`);
   }

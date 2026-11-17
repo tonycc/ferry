@@ -18,7 +18,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 管理员停用和恢复应用(后端接口) | 已实现,有测试 |
 | 代码包上传(一次性上传地址、本地目录存储、用旧包回滚) | 已实现,有测试,本地用真实 zip 验证过 |
 | REST 接口、MCP 工具(5 个) | 已实现,本地验证过 |
-| Dokploy 对接(`adapters/dokploy.ts`) | 已实现(项目、应用、域名、环境变量、上传部署、数据库、迁移命令、迁移前备份到服务器本机、日志、停止和启动),对本机 Dokploy 的集成测试通过。健康检查还是假实现(任务 1.9),通过 Ferry 完整发布一次还没有验证(任务 1.10) |
+| Dokploy 对接(`adapters/dokploy.ts`)、真实健康检查 | 已实现,对本机 Dokploy 的集成测试通过;经 MCP 完整发布模板应用已验证(M1 验收) |
 | 密钥扫描、通知 | 只有假实现 |
 | 持久化(PostgreSQL) | 已实现,有测试;设置 `DATABASE_URL` 后启用,启动时自动执行数据库迁移。不设置时用内存存储 |
 | 服务重启后继续执行未完成的发布 | 已实现,有测试(需要 PostgreSQL 存储;假定同一时间只运行一个 Ferry 实例) |
@@ -130,6 +130,16 @@ pnpm typecheck
 ```
 
 配置项见 `apps/publisher/src/config.ts`。
+
+### 对接本机 Dokploy 完整发布一次
+
+先用 `infra/dokploy/setup-local.sh` 装好 Dokploy,在 `.env` 里配好 `DOKPLOY_URL`、`DOKPLOY_API_KEY`、`DATABASE_URL`,
+并取消 `FERRY_PLATFORM=dokploy`、`APPS_DOMAIN=apps.localhost`、`APPS_URL_SCHEME=http` 的注释,然后 `pnpm dev`。
+下面这条模拟 agent,经 MCP 把模板应用发布为 `ledger-demo`,成功后访问 http://ledger-demo.apps.localhost:
+
+```bash
+python3 -I scripts/mcp-publish.py http://127.0.0.1:8080 packages/templates/node-postgres ledger-demo /tmp
+```
 
 ## 建议的下一步
 

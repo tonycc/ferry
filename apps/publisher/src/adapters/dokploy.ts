@@ -20,8 +20,10 @@ export interface DokployPlatformOptions {
   certificateType?: "none" | "letsencrypt" | "custom";
   /** 等待部署结束时的轮询间隔 */
   pollIntervalMs?: number;
-  /** 单次部署(含等待之前的部署结束)的最长等待时间 */
+  /** 单次部署(含等待之前的部署结束、等新容器启动)的最长等待时间 */
   deployTimeoutMs?: number;
+  /** 构建完成后等新容器启动的最长时间(不超过 deployTimeoutMs 的剩余时间) */
+  startTimeoutMs?: number;
   /** 构建失败时取多少行日志交给 agent */
   failureLogLines?: number;
   /** 一次性命令、备份的最长等待时间 */
@@ -70,6 +72,20 @@ interface DokploySchedule {
   name: string;
 }
 
+/**
+ * docker.getServiceContainersByAppName 的一项:Swarm 服务的一个任务(容器)。
+ * 注意 `state` 是期望状态,还在启动的容器也是 "running";实际状态要看 `currentState`,如 "Running 9 seconds ago"。
+ */
+interface DokployServiceTask {
+  containerId: string;
+  state: string;
+  currentState: string;
+}
+
+function isActuallyRunning(task: DokployServiceTask): boolean {
+  return task.currentState.startsWith("Running");
+}
+
 interface ScheduleRun {
   status: string;
   deploymentId?: string;
@@ -97,6 +113,7 @@ export class DokployPlatform implements DeployPlatform {
   private readonly certificateType: "none" | "letsencrypt" | "custom";
   private readonly pollIntervalMs: number;
   private readonly deployTimeoutMs: number;
+  private readonly startTimeoutMs: number;
   private readonly failureLogLines: number;
   private readonly commandTimeoutMs: number;
   private readonly postgresImage: string;
@@ -112,6 +129,7 @@ export class DokployPlatform implements DeployPlatform {
     this.certificateType = options.certificateType ?? "none";
     this.pollIntervalMs = options.pollIntervalMs ?? 3000;
     this.deployTimeoutMs = options.deployTimeoutMs ?? 15 * 60_000;
+    this.startTimeoutMs = options.startTimeoutMs ?? 3 * 60_000;
     this.failureLogLines = options.failureLogLines ?? 200;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 30 * 60_000;
     this.postgresImage = options.postgresImage ?? "postgres:16";
@@ -225,9 +243,13 @@ export class DokployPlatform implements DeployPlatform {
    * 1. 先等这个应用正在进行的部署结束:进程重启后恢复发布、回滚时,上一次构建可能还在跑,不能叠在一起。
    * 2. 记下已有的部署记录,上传后等出现一条新的,只跟踪这一条。不能只看“最新一条”,
    *    上传接口返回时新记录可能还没写入。
+   * 3. 部署记录显示完成时,新容器可能还没启动(实测晚了 16 秒),旧容器也可能还在运行(先启动新的再停旧的)。
+   *    这时执行迁移、健康检查,可能落在旧容器上,把旧版本误判为新版本可用。
+   *    所以要等到:一个上传前没有的容器实际在运行,并且上传前的容器都已不再运行。
    */
   async deploy(appId: string, archive: Archive): Promise<CommandResult> {
     const deadline = Date.now() + this.deployTimeoutMs;
+    const { appName } = await this.client.query<DokployApplication>("application.one", { applicationId: appId });
     let before = await this.deployments(appId);
     while (before.some((d) => d.status === "running")) {
       if (Date.now() > deadline) return timeout("之前的部署一直没有结束");
@@ -235,6 +257,8 @@ export class DokployPlatform implements DeployPlatform {
       before = await this.deployments(appId);
     }
     const seen = new Set(before.map((d) => d.deploymentId));
+    // 上传前已有的容器(不论状态),之后出现的才算这次部署的新容器
+    const oldTasks = new Set((await this.tasks(appName)).map((t) => t.containerId));
 
     const form = new FormData();
     form.set("applicationId", appId);
@@ -243,7 +267,7 @@ export class DokployPlatform implements DeployPlatform {
 
     for (;;) {
       const current = (await this.deployments(appId)).find((d) => !seen.has(d.deploymentId));
-      if (current?.status === "done") return { ok: true };
+      if (current?.status === "done") return this.waitForNewTask(appId, appName, oldTasks, deadline);
       if (current?.status === "error") {
         const logs = await this.client.query<string>("deployment.readLogs", {
           deploymentId: current.deploymentId,
@@ -340,6 +364,26 @@ export class DokployPlatform implements DeployPlatform {
     const environment = environments.find((e) => e.isDefault) ?? environments[0];
     if (!environment) throw new Error(`部署平台上的项目 ${projectId} 没有环境`);
     return environment;
+  }
+
+  /** 构建完成后,等新容器实际运行、旧容器全部停止 */
+  private async waitForNewTask(appId: string, appName: string, oldTasks: Set<string>, deadline: number): Promise<CommandResult> {
+    const startDeadline = Math.min(deadline, Date.now() + this.startTimeoutMs);
+    for (;;) {
+      const running = (await this.tasks(appName)).filter(isActuallyRunning);
+      const newRunning = running.some((t) => !oldTasks.has(t.containerId));
+      const oldRunning = running.some((t) => oldTasks.has(t.containerId));
+      if (newRunning && !oldRunning) return { ok: true };
+      if (Date.now() > startDeadline) {
+        const logs = await this.getLogs(appId, this.failureLogLines).catch(() => "");
+        return { ok: false, logs: `构建成功,但应用容器没有启动起来。应用日志:\n${logs}` };
+      }
+      await this.sleep(this.pollIntervalMs);
+    }
+  }
+
+  private tasks(appName: string): Promise<DokployServiceTask[]> {
+    return this.client.query<DokployServiceTask[]>("docker.getServiceContainersByAppName", { appName });
   }
 
   private postgres(postgresId: string): Promise<DokployPostgres> {

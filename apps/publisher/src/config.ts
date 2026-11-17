@@ -7,8 +7,17 @@ const envSchema = z.object({
    * 本地开发库:postgres://ferry:ferry-dev@127.0.0.1:55432/ferry
    */
   DATABASE_URL: z.string().optional(),
-  /** 应用域名后缀:应用地址为 https://<name>.<APPS_DOMAIN> */
+  /** 应用域名后缀:应用地址为 <APPS_URL_SCHEME>://<name>.<APPS_DOMAIN>。本机开发用 apps.localhost */
   APPS_DOMAIN: z.string().default("apps.corp.example"),
+  /** 应用地址的协议。本机开发没有证书,用 http */
+  APPS_URL_SCHEME: z.enum(["http", "https"]).default("https"),
+  /**
+   * 健康检查经由的统一入口(Traefik),按应用域名设置 Host 请求头访问。
+   * 只在 FERRY_PLATFORM=dokploy 时使用;假平台下健康检查也是假的
+   */
+  HEALTHCHECK_GATEWAY: z.string().default("http://127.0.0.1:80"),
+  /** 部署完成后等应用变健康的最长时间 */
+  HEALTHCHECK_TIMEOUT_SECONDS: z.coerce.number().int().default(90),
   /** agent 访问本服务用的地址,用于拼出上传地址。默认是本机地址 */
   PUBLIC_URL: z.string().optional(),
   /** 代码包的保存目录 */

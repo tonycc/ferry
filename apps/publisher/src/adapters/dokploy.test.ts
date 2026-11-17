@@ -35,6 +35,9 @@ function fakeDokploy(handlers: Record<string, Handler>) {
 }
 
 const ARCHIVE = { version: "v1", zip: Buffer.from("PK\x03\x04fake") };
+const APP_ONE = () => ({ applicationId: "a1", appName: "ledger-x1", env: null });
+/** 新容器已在运行 */
+const NEW_TASK_RUNNING = () => [{ containerId: "t-new", state: "running", currentState: "Running 2 seconds ago" }];
 
 describe("DokployClient", () => {
   it("带上 API key;报错信息只有接口名和状态码,响应内容只进服务端日志", async () => {
@@ -126,6 +129,7 @@ describe("DokployPlatform", () => {
 
   it("deploy:先等之前的部署结束,再只跟踪这次新出现的部署记录", async () => {
     let listCalls = 0;
+    let uploaded = false;
     const { platform, called } = fakeDokploy({
       "deployment.all": () => {
         listCalls++;
@@ -136,7 +140,12 @@ describe("DokployPlatform", () => {
         if (listCalls === 4) return [{ deploymentId: "new", status: "running" }, { deploymentId: "old", status: "error" }];
         return [{ deploymentId: "new", status: "done" }, { deploymentId: "old", status: "error" }];
       },
-      "application.dropDeployment": () => true,
+      "application.dropDeployment": () => {
+        uploaded = true;
+        return true;
+      },
+      "application.one": APP_ONE,
+      "docker.getServiceContainersByAppName": () => (uploaded ? NEW_TASK_RUNNING() : []),
     });
     expect(await platform.deploy("a1", ARCHIVE)).toEqual({ ok: true });
     expect(listCalls).toBe(5);
@@ -155,6 +164,8 @@ describe("DokployPlatform", () => {
         return true;
       },
       "deployment.readLogs": () => "Step 3/5 : RUN npm install\nnpm ERR! missing script",
+      "application.one": APP_ONE,
+      "docker.getServiceContainersByAppName": () => [],
     });
     expect(await platform.deploy("a1", ARCHIVE)).toEqual({ ok: false, logs: "Step 3/5 : RUN npm install\nnpm ERR! missing script" });
     expect(called("deployment.readLogs")[0]?.input).toEqual({ deploymentId: "new", tail: "200" });
@@ -164,6 +175,8 @@ describe("DokployPlatform", () => {
     const { client } = fakeDokploy({
       "deployment.all": () => [{ deploymentId: "old", status: "done" }],
       "application.dropDeployment": () => true,
+      "application.one": APP_ONE,
+      "docker.getServiceContainersByAppName": () => [],
     });
     let now = 0;
     const realNow = Date.now;
@@ -179,6 +192,68 @@ describe("DokployPlatform", () => {
       const result = await platform.deploy("a1", ARCHIVE);
       expect(result.ok).toBe(false);
       expect(result.ok === false && result.logs).toContain("没有看到新的部署记录");
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("deploy:构建完成后,等上传前没有的新容器运行起来才返回", async () => {
+    let uploaded = false;
+    let taskCalls = 0;
+    const { platform } = fakeDokploy({
+      "application.one": APP_ONE,
+      "deployment.all": () => (uploaded ? [{ deploymentId: "new", status: "done" }] : []),
+      "application.dropDeployment": () => {
+        uploaded = true;
+        return true;
+      },
+      "docker.getServiceContainersByAppName": () => {
+        taskCalls++;
+        const old = { containerId: "t-old", state: "running", currentState: "Running 5 minutes ago" };
+        // 上传前:只有旧容器
+        if (taskCalls === 1) return [old];
+        // 新容器期望状态已是 running,但实际还在启动
+        if (taskCalls === 2) return [old, { containerId: "t-new", state: "running", currentState: "Starting 1 second ago" }];
+        // 新容器已运行,但旧容器还没停(先启动新的再停旧的)
+        if (taskCalls === 3) return [old, { containerId: "t-new", state: "running", currentState: "Running 1 second ago" }];
+        return [
+          { containerId: "t-old", state: "shutdown", currentState: "Shutdown 1 second ago" },
+          { containerId: "t-new", state: "running", currentState: "Running 2 seconds ago" },
+        ];
+      },
+    });
+    expect(await platform.deploy("a1", ARCHIVE)).toEqual({ ok: true });
+    expect(taskCalls).toBe(4);
+  });
+
+  it("deploy:构建成功但新容器一直没起来时,返回失败和应用日志", async () => {
+    let uploaded = false;
+    const { client } = fakeDokploy({
+      "application.one": APP_ONE,
+      "deployment.all": () => (uploaded ? [{ deploymentId: "new", status: "done" }] : []),
+      "application.dropDeployment": () => {
+        uploaded = true;
+        return true;
+      },
+      "docker.getServiceContainersByAppName": () =>
+        uploaded ? [{ containerId: "t-new", state: "running", currentState: "Failed 2 seconds ago" }] : [],
+      "application.readLogs": () => "Error: Cannot find module 'pg'",
+    });
+    let now = 0;
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      const platform = new DokployPlatform(client, {
+        pollIntervalMs: 1000,
+        startTimeoutMs: 5000,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      });
+      const result = await platform.deploy("a1", ARCHIVE);
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.logs).toContain("应用容器没有启动起来");
+      expect(result.ok === false && result.logs).toContain("Cannot find module 'pg'");
     } finally {
       Date.now = realNow;
     }
