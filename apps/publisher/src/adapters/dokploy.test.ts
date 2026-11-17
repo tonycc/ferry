@@ -185,6 +185,131 @@ describe("DokployPlatform", () => {
   });
 });
 
+describe("DokployPlatform:数据库、命令、备份", () => {
+  const ENV = {
+    projectId: "p1",
+    environments: [{ environmentId: "e1", name: "production", isDefault: true, applications: [], postgres: [] as unknown[] }],
+  };
+  const PG = {
+    postgresId: "pg1",
+    appName: "ledger-db-x1",
+    databaseName: "app",
+    databaseUser: "app",
+    databasePassword: "p@ss/word",
+    applicationStatus: "idle",
+  };
+
+  it("createDatabase:新建、启动,并用读回的账号拼连接串(特殊字符会转义)", async () => {
+    let status = "idle";
+    const { platform, called } = fakeDokploy({
+      "project.one": () => ENV,
+      "postgres.create": () => ({ postgresId: "pg1" }),
+      "postgres.one": () => ({ ...PG, applicationStatus: status }),
+      "postgres.deploy": () => {
+        status = "done";
+        return true;
+      },
+    });
+    const db = await platform.createDatabase({ projectId: "p1", name: "ledger" });
+    expect(db).toEqual({ databaseId: "pg1", connectionUrl: "postgresql://app:p%40ss%2Fword@ledger-db-x1:5432/app" });
+    expect(called("postgres.create")[0]?.input).toMatchObject({ name: "ledger-db", environmentId: "e1", dockerImage: "postgres:16" });
+    expect(called("postgres.deploy")).toHaveLength(1);
+  });
+
+  it("createDatabase:已有且在运行的数据库直接复用,不重复启动", async () => {
+    const { platform, called } = fakeDokploy({
+      "project.one": () => ({
+        ...ENV,
+        environments: [{ ...ENV.environments[0], postgres: [{ postgresId: "pg1", name: "ledger-db", appName: "ledger-db-x1" }] }],
+      }),
+      "postgres.one": () => ({ ...PG, applicationStatus: "done" }),
+    });
+    expect((await platform.createDatabase({ projectId: "p1", name: "ledger" })).databaseId).toBe("pg1");
+    expect(called("postgres.create")).toHaveLength(0);
+    expect(called("postgres.deploy")).toHaveLength(0);
+  });
+
+  it("runCommand:先等上次留下的任务执行完并删掉,再新建、执行、删除", async () => {
+    let leftoverRuns = 0;
+    const { platform, called } = fakeDokploy({
+      "schedule.list": () => [
+        { scheduleId: "old", name: "ferry-command-1" },
+        { scheduleId: "other", name: "user-backup-job" },
+      ],
+      "deployment.allByType": () => (++leftoverRuns < 2 ? [{ deploymentId: "r1", status: "running" }] : [{ deploymentId: "r1", status: "done" }]),
+      "schedule.delete": () => true,
+      "schedule.create": () => ({ scheduleId: "s2" }),
+      "schedule.runManually": () => ({ status: "done", deploymentId: "r2" }),
+    });
+    expect(await platform.runCommand("a1", "node migrate.js")).toEqual({ ok: true });
+    expect(leftoverRuns).toBe(2);
+    expect(called("schedule.delete").map((c) => c.input.scheduleId)).toEqual(["old", "s2"]);
+    expect(called("schedule.create")[0]?.input).toMatchObject({
+      command: "node migrate.js",
+      scheduleType: "application",
+      applicationId: "a1",
+      enabled: false,
+    });
+  });
+
+  it("runCommand:失败时返回这次执行的日志,任务照样删掉", async () => {
+    const { platform, called } = fakeDokploy({
+      "schedule.list": () => [],
+      "schedule.create": () => ({ scheduleId: "s1" }),
+      "schedule.runManually": () => ({ status: "error", deploymentId: "r1" }),
+      "deployment.readLogs": () => 'relation "items" already exists',
+      "schedule.delete": () => true,
+    });
+    expect(await platform.runCommand("a1", "node migrate.js")).toEqual({ ok: false, logs: 'relation "items" already exists' });
+    expect(called("schedule.delete")).toHaveLength(1);
+  });
+
+  it("backupDatabase:在服务器上执行 pg_dump,写 script 字段,返回备份文件路径", async () => {
+    const { client, called } = fakeDokploy({
+      "postgres.one": () => ({ ...PG, applicationStatus: "done" }),
+      "schedule.create": () => ({ scheduleId: "s1" }),
+      "schedule.runManually": () => ({ status: "done", deploymentId: "r1" }),
+      "schedule.delete": () => true,
+    });
+    const platform = new DokployPlatform(client, { now: () => new Date("2026-11-17T08:00:00.000Z") });
+    const file = await platform.backupDatabase("pg1");
+    expect(file).toBe("/etc/dokploy/ferry-backups/ledger-db-x1/2026-11-17T08-00-00-000Z.sql.gz");
+    const input = called("schedule.create")[0]?.input;
+    expect(input).toMatchObject({ scheduleType: "dokploy-server", shellType: "bash", enabled: false });
+    const script = input?.script as string;
+    expect(script).toContain("set -euo pipefail");
+    expect(script).toContain("name=^ledger-db-x1\\.");
+    expect(script).toContain("pg_dump -U app -d app | gzip > " + file + ".tmp");
+    expect(script).toContain(`trap 'rm -f ${file}.tmp' ERR`);
+    expect(script).not.toContain("p@ss");
+  });
+
+  it("backupDatabase:失败时抛出不含细节的错误,名称里有特殊字符时拒绝执行", async () => {
+    let pg = { ...PG };
+    const { platform, called } = fakeDokploy({
+      "postgres.one": () => pg,
+      "schedule.create": () => ({ scheduleId: "s1" }),
+      "schedule.runManually": () => ({ status: "error", deploymentId: "r1" }),
+      "deployment.readLogs": () => "pg_dump: error: connection failed",
+      "schedule.delete": () => true,
+    });
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      await expect(platform.backupDatabase("pg1")).rejects.toThrow("迁移前备份数据库失败");
+    } finally {
+      console.error = original;
+    }
+    expect(errors).toHaveLength(1);
+    expect(called("schedule.delete")).toHaveLength(1);
+
+    pg = { ...PG, databaseUser: "app; rm -rf /" };
+    await expect(platform.backupDatabase("pg1")).rejects.toThrow("不支持的字符");
+    expect(called("schedule.create")).toHaveLength(1);
+  });
+});
+
 describe("环境变量文本", () => {
   it("解析和拼接互为逆操作,值里可以有等号,跳过注释和空行", () => {
     const env = parseEnv("# comment\nA=1\n\nB=x=y\n");

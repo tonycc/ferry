@@ -29,6 +29,19 @@ const SERVER_JS = `require("node:http").createServer((req, res) => {
 }).listen(3000, () => console.log("listening on 3000"));
 `;
 const BAD_DOCKERFILE = "FROM node:22-alpine\nRUN echo FERRY_BUILD_MARKER && exit 1\n";
+/** 在应用容器里检查能否连上 DATABASE_URL 指向的数据库端口 */
+const CHECK_DB_REACHABLE =
+  "node -e \"const u=new URL(process.env.DATABASE_URL);require('net').connect(Number(u.port),u.hostname)" +
+  ".on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))\"";
+
+function docker(...args: string[]): string {
+  return execFileSync("docker", args).toString();
+}
+
+/** 在 Docker Desktop 虚拟机里读写 /etc/dokploy(备份文件在那里) */
+function inDokployDir(script: string): string {
+  return docker("run", "--rm", "--entrypoint", "sh", "-v", "/etc/dokploy:/x", "postgres:16", "-c", script);
+}
 
 function zipOf(files: Record<string, string>): Buffer {
   const dir = mkdtempSync(join(tmpdir(), "ferry-it-"));
@@ -69,6 +82,8 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
   let platform: DokployPlatform;
   let projectId: string | undefined;
   let appId: string | undefined;
+  let databaseId: string | undefined;
+  let connectionUrl = "";
 
   beforeAll(() => {
     const baseUrl = process.env.DOKPLOY_URL;
@@ -81,13 +96,28 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
   // 按实测的顺序清理:先删应用,再删项目(只删项目会留下仍在运行的容器)
   afterAll(async () => {
     if (appId) await client.mutate("application.delete", { applicationId: appId }).catch(() => {});
+    let dbAppName: string | undefined;
+    if (databaseId) {
+      dbAppName = (await client.query<{ appName: string }>("postgres.one", { postgresId: databaseId }).catch(() => undefined))?.appName;
+      await client.mutate("postgres.remove", { postgresId: databaseId }).catch(() => {});
+    }
     if (projectId) {
       await new Promise((r) => setTimeout(r, 5000));
       await client.mutate("project.remove", { projectId }).catch(() => {});
     }
-    const services = execFileSync("docker", ["service", "ls", "--format", "{{.Name}}"]).toString();
-    expect(services).not.toContain(NAME);
-  }, 60_000);
+    // postgres.remove 不删数据卷,备份文件也要自己删
+    if (dbAppName) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        execFileSync("docker", ["volume", "rm", `${dbAppName}-data`], { stdio: "ignore" });
+      } catch {
+        // 卷不存在或仍在占用时,下面的检查会报出来
+      }
+      inDokployDir(`rm -rf /x/ferry-backups/${dbAppName}`);
+    }
+    expect(docker("service", "ls", "--format", "{{.Name}}")).not.toContain(NAME);
+    expect(docker("volume", "ls", "--format", "{{.Name}}")).not.toContain(NAME);
+  }, 120_000);
 
   it("建项目、应用、域名:重复调用时复用,不会建出第二个", async () => {
     projectId = await platform.createProject(NAME);
@@ -102,11 +132,20 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
     expect(domains.filter((d) => d.host === HOST)).toHaveLength(1);
   });
 
+  it("建数据库:启动后返回连接串,重复调用时复用同一个", async () => {
+    const db = await platform.createDatabase({ projectId: projectId!, name: NAME });
+    databaseId = db.databaseId;
+    connectionUrl = db.connectionUrl;
+    expect(connectionUrl).toMatch(new RegExp(`^postgresql://app:[0-9a-f]+@${NAME}-db-[a-z0-9]+:5432/app$`));
+    expect(await platform.createDatabase({ projectId: projectId!, name: NAME })).toEqual(db);
+  }, 5 * 60_000);
+
   it("setEnv 合并写入,不覆盖已有变量", async () => {
     await platform.setEnv(appId!, { A: "1" });
     await platform.setEnv(appId!, { B: "from-ferry" });
+    await platform.setEnv(appId!, { DATABASE_URL: connectionUrl });
     const app = await client.query<{ env: string | null }>("application.one", { applicationId: appId! });
-    expect(parseEnv(app.env ?? "")).toEqual({ A: "1", B: "from-ferry" });
+    expect(parseEnv(app.env ?? "")).toEqual({ A: "1", B: "from-ferry", DATABASE_URL: connectionUrl });
   });
 
   it("上传代码包部署成功后,能通过域名访问,并读到注入的环境变量", async () => {
@@ -128,6 +167,30 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
     expect(result.ok === false && result.logs).toContain("FERRY_BUILD_MARKER");
     expect((await get(HOST)).status).toBe(200);
   }, 11 * 60_000);
+
+  it("在应用容器里执行命令:能连上数据库;失败时返回这次执行的日志", async () => {
+    expect(await platform.runCommand(appId!, CHECK_DB_REACHABLE)).toEqual({ ok: true });
+    const failed = await platform.runCommand(appId!, "echo FERRY_COMMAND_MARKER; exit 3");
+    expect(failed.ok).toBe(false);
+    expect(failed.ok === false && failed.logs).toContain("FERRY_COMMAND_MARKER");
+    // 执行完的任务都已删除
+    const left = await client.query<{ name: string }[]>("schedule.list", { id: appId!, scheduleType: "application" });
+    expect(left.filter((s) => s.name.startsWith("ferry-command-"))).toEqual([]);
+  }, 3 * 60_000);
+
+  it("迁移前备份:导出到服务器本机,文件里有备份前的数据", async () => {
+    const dbAppName = new URL(connectionUrl).hostname;
+    const cid = docker("ps", "-q", "-f", `name=^${dbAppName}\\.`).trim().split("\n")[0]!;
+    docker("exec", cid, "psql", "-U", "app", "-d", "app", "-qc", "create table items(title text); insert into items values ('before migration')");
+
+    const file = await platform.backupDatabase(databaseId!);
+    expect(file).toMatch(new RegExp(`^/etc/dokploy/ferry-backups/${dbAppName}/.+\\.sql\\.gz$`));
+    const dump = inDokployDir(`gunzip -c /x/${file.slice("/etc/dokploy/".length)}`);
+    expect(dump).toContain("CREATE TABLE public.items");
+    expect(dump).toContain("before migration");
+    // 没有留下半截的临时文件
+    expect(inDokployDir(`ls /x/ferry-backups/${dbAppName}`)).not.toContain(".tmp");
+  }, 3 * 60_000);
 
   it("停止后无法访问,启动后恢复", async () => {
     await platform.stopApp(appId!);

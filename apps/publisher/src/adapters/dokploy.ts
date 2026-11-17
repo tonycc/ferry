@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { DokployClient } from "./dokploy-client";
 import type { Archive, CommandResult, DeployPlatform } from "./types";
 
@@ -9,8 +10,7 @@ import type { Archive, CommandResult, DeployPlatform } from "./types";
  * - 应用和数据库建在项目的默认“环境”下。对外仍以项目 ID 作为引用(删除项目时要用),
  *   需要环境 ID 时在这里查。
  * - 不把 Dokploy 的响应内容放进报错信息,见 DokployError。
- *
- * 数据库、迁移命令、备份(createDatabase、runCommand、backupDatabase)属于任务 1.5,还没有实现。
+ * - 一次性命令和备份都用“手动触发的定时任务”执行:每次新建、触发、删除。
  */
 
 export interface DokployPlatformOptions {
@@ -24,10 +24,23 @@ export interface DokployPlatformOptions {
   deployTimeoutMs?: number;
   /** 构建失败时取多少行日志交给 agent */
   failureLogLines?: number;
+  /** 一次性命令、备份的最长等待时间 */
+  commandTimeoutMs?: number;
+  /** 新建数据库用的镜像 */
+  postgresImage?: string;
+  /** 迁移前备份存放的目录(Dokploy 所在服务器上) */
+  backupRoot?: string;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => Date;
 }
 
 const PROJECT_PREFIX = "ferry-";
+const COMMAND_SCHEDULE_PREFIX = "ferry-command-";
+const BACKUP_SCHEDULE_PREFIX = "ferry-backup-";
+/** 不会自动触发的 cron 表达式,配合 enabled: false,只靠手动触发 */
+const NEVER = "0 0 1 1 *";
+/** 拼进备份脚本的名称只允许这些字符,防止注入 */
+const SAFE_NAME = /^[a-zA-Z0-9._-]+$/;
 
 interface DokployProject {
   projectId: string;
@@ -40,6 +53,26 @@ interface DokployEnvironment {
   name: string;
   isDefault?: boolean;
   applications?: { applicationId: string; name: string; appName: string }[];
+  postgres?: { postgresId: string; name: string; appName: string }[];
+}
+
+interface DokployPostgres {
+  postgresId: string;
+  appName: string;
+  databaseName: string;
+  databaseUser: string;
+  databasePassword: string;
+  applicationStatus: string;
+}
+
+interface DokploySchedule {
+  scheduleId: string;
+  name: string;
+}
+
+interface ScheduleRun {
+  status: string;
+  deploymentId?: string;
 }
 
 interface DokployApplication {
@@ -65,7 +98,11 @@ export class DokployPlatform implements DeployPlatform {
   private readonly pollIntervalMs: number;
   private readonly deployTimeoutMs: number;
   private readonly failureLogLines: number;
+  private readonly commandTimeoutMs: number;
+  private readonly postgresImage: string;
+  private readonly backupRoot: string;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly now: () => Date;
 
   constructor(
     private readonly client: DokployClient,
@@ -76,7 +113,11 @@ export class DokployPlatform implements DeployPlatform {
     this.pollIntervalMs = options.pollIntervalMs ?? 3000;
     this.deployTimeoutMs = options.deployTimeoutMs ?? 15 * 60_000;
     this.failureLogLines = options.failureLogLines ?? 200;
+    this.commandTimeoutMs = options.commandTimeoutMs ?? 30 * 60_000;
+    this.postgresImage = options.postgresImage ?? "postgres:16";
+    this.backupRoot = options.backupRoot ?? "/etc/dokploy/ferry-backups";
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.now = options.now ?? (() => new Date());
   }
 
   async createProject(name: string): Promise<string> {
@@ -114,8 +155,39 @@ export class DokployPlatform implements DeployPlatform {
     return applicationId;
   }
 
-  createDatabase(_input: { projectId: string; name: string }): Promise<{ databaseId: string; connectionUrl: string }> {
-    return this.notImplemented("createDatabase(任务 1.5)");
+  /**
+   * 按名称查找或新建数据库,并确保它已启动。postgres.deploy 会等数据库启动后才返回(实测约 50 秒)。
+   * 连接串从 Dokploy 读回用户名和密码再拼,所以复用已有数据库时也能拿到。
+   */
+  async createDatabase(input: { projectId: string; name: string }): Promise<{ databaseId: string; connectionUrl: string }> {
+    const name = `${input.name}-db`;
+    const environment = await this.defaultEnvironment(input.projectId);
+    const existing = environment.postgres?.find((p) => p.name === name);
+    const postgresId =
+      existing?.postgresId ??
+      (
+        await this.client.mutate<{ postgresId: string }>("postgres.create", {
+          name,
+          appName: name,
+          databaseName: "app",
+          databaseUser: "app",
+          databasePassword: randomBytes(16).toString("hex"),
+          dockerImage: this.postgresImage,
+          environmentId: environment.environmentId,
+        })
+      ).postgresId;
+
+    let db = await this.postgres(postgresId);
+    if (db.applicationStatus !== "done") {
+      await this.client.mutate("postgres.deploy", { postgresId });
+      db = await this.postgres(postgresId);
+    }
+    const user = encodeURIComponent(db.databaseUser);
+    const password = encodeURIComponent(db.databasePassword);
+    return {
+      databaseId: postgresId,
+      connectionUrl: `postgresql://${user}:${password}@${db.appName}:5432/${db.databaseName}`,
+    };
   }
 
   async attachDomain(input: { appId: string; host: string; port: number }): Promise<void> {
@@ -184,12 +256,70 @@ export class DokployPlatform implements DeployPlatform {
     }
   }
 
-  runCommand(_appId: string, _command: string): Promise<CommandResult> {
-    return this.notImplemented("runCommand(任务 1.5)");
+  /**
+   * 在正在运行的应用容器里执行一条命令(数据库迁移)。
+   * 进程重启前留下的同类任务如果还在执行,先等它结束再删掉,避免两次迁移同时作用于一个数据库。
+   */
+  async runCommand(appId: string, command: string): Promise<CommandResult> {
+    const leftovers = (
+      await this.client.query<DokploySchedule[]>("schedule.list", { id: appId, scheduleType: "application" })
+    ).filter((s) => s.name.startsWith(COMMAND_SCHEDULE_PREFIX));
+    for (const schedule of leftovers) {
+      await this.waitForScheduleIdle(schedule.scheduleId);
+      await this.client.mutate("schedule.delete", { scheduleId: schedule.scheduleId });
+    }
+
+    const run = await this.runOnce({
+      name: `${COMMAND_SCHEDULE_PREFIX}${this.now().getTime()}`,
+      cronExpression: NEVER,
+      command,
+      shellType: "sh",
+      scheduleType: "application",
+      applicationId: appId,
+      enabled: false,
+    });
+    if (run.status === "done") return { ok: true };
+    return { ok: false, logs: run.logs };
   }
 
-  backupDatabase(_databaseId: string): Promise<string> {
-    return this.notImplemented("backupDatabase(任务 1.5)");
+  /**
+   * 迁移前备份:在 Dokploy 所在服务器上对数据库容器执行 pg_dump,存为本机文件,返回文件路径。
+   * 一期不做异地备份,见 docs/dokploy-findings.md。失败时抛错,发布终止,不会在没有备份的情况下迁移。
+   */
+  async backupDatabase(databaseId: string): Promise<string> {
+    const db = await this.postgres(databaseId);
+    for (const value of [db.appName, db.databaseUser, db.databaseName]) {
+      if (!SAFE_NAME.test(value)) throw new Error(`数据库名称含有不支持的字符,无法备份: ${databaseId}`);
+    }
+    const stamp = this.now().toISOString().replace(/[:.]/g, "-");
+    const dir = `${this.backupRoot}/${db.appName}`;
+    const file = `${dir}/${stamp}.sql.gz`;
+    const script = [
+      "set -euo pipefail",
+      `mkdir -p ${dir}`,
+      `trap 'rm -f ${file}.tmp' ERR`,
+      `cid=$(docker ps -q -f name=^${db.appName}\\. | head -n1)`,
+      'if [ -z "$cid" ]; then echo "找不到数据库容器"; exit 1; fi',
+      `docker exec "$cid" pg_dump -U ${db.databaseUser} -d ${db.databaseName} | gzip > ${file}.tmp`,
+      `mv ${file}.tmp ${file}`,
+      `echo "备份完成: ${file}"`,
+    ].join("\n");
+
+    // dokploy-server 类型执行的是 script 字段,command 只是占位
+    const run = await this.runOnce({
+      name: `${BACKUP_SCHEDULE_PREFIX}${this.now().getTime()}`,
+      cronExpression: NEVER,
+      command: "ferry-backup",
+      script,
+      shellType: "bash",
+      scheduleType: "dokploy-server",
+      enabled: false,
+    });
+    if (run.status !== "done") {
+      console.error(`数据库 ${db.appName} 迁移前备份失败:\n${run.logs}`);
+      throw new Error("迁移前备份数据库失败,发布已终止。请联系平台管理员");
+    }
+    return file;
   }
 
   async getLogs(appId: string, lines: number): Promise<string> {
@@ -212,13 +342,49 @@ export class DokployPlatform implements DeployPlatform {
     return environment;
   }
 
+  private postgres(postgresId: string): Promise<DokployPostgres> {
+    return this.client.query<DokployPostgres>("postgres.one", { postgresId });
+  }
+
+  /** 新建一个只手动触发的定时任务,执行一次后删除,返回结果和(失败时的)日志 */
+  private async runOnce(schedule: Record<string, unknown>): Promise<{ status: string; logs: string }> {
+    const created = await this.client.mutate<DokploySchedule>("schedule.create", schedule);
+    try {
+      const run = await this.client.mutate<ScheduleRun>("schedule.runManually", { scheduleId: created.scheduleId });
+      let status = run.status;
+      let deploymentId = run.deploymentId;
+      // 实测是执行完才返回;万一返回时还在执行,按任务的执行记录等到结束
+      if (status !== "done" && status !== "error") {
+        const latest = await this.waitForScheduleIdle(created.scheduleId);
+        status = latest?.status ?? "error";
+        deploymentId = latest?.deploymentId ?? deploymentId;
+      }
+      const logs =
+        status === "done" || !deploymentId
+          ? ""
+          : await this.client.query<string>("deployment.readLogs", { deploymentId, tail: this.failureLogLines });
+      return { status, logs };
+    } finally {
+      await this.client.mutate("schedule.delete", { scheduleId: created.scheduleId }).catch(() => {});
+    }
+  }
+
+  /** 等定时任务最近一次执行结束,返回那次执行记录 */
+  private async waitForScheduleIdle(scheduleId: string): Promise<DokployDeployment | undefined> {
+    const deadline = Date.now() + this.commandTimeoutMs;
+    for (;;) {
+      const runs = await this.client.query<DokployDeployment[]>("deployment.allByType", { id: scheduleId, type: "schedule" });
+      const latest = runs[0];
+      if (!latest || latest.status !== "running") return latest;
+      if (Date.now() > deadline) return { ...latest, status: "error" };
+      await this.sleep(this.pollIntervalMs);
+    }
+  }
+
   private deployments(appId: string): Promise<DokployDeployment[]> {
     return this.client.query<DokployDeployment[]>("deployment.all", { applicationId: appId });
   }
 
-  private notImplemented(method: string): Promise<never> {
-    return Promise.reject(new Error(`DokployPlatform.${method} 尚未实现`));
-  }
 }
 
 function timeout(reason: string): CommandResult {
