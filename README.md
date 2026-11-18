@@ -114,6 +114,9 @@ pnpm dev:console
 pnpm test
 ```
 
+推送到 main 和每个 PR 都会在 GitHub Actions 上自动跑类型检查和下面两套测试(`.github/workflows/ci.yml`);
+对接 Dokploy 的集成测试只在本机跑。
+
 上面只跑内存存储。下面这条把存储相关的测试在 PostgreSQL 上再跑一遍(需要先 `pnpm db:up`),
 每个测试文件会建一个自己的测试库:
 

@@ -1,0 +1,57 @@
+# 每次推送到 main 和每个 PR 都跑:类型检查,以及内存存储和 PostgreSQL 存储两套测试。
+# 对接本机 Dokploy 的集成测试(pnpm test:dokploy)和网关端到端检查需要一整套 Dokploy,不在 CI 里跑。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一个分支有新的推送时,取消还在跑的旧检查
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ferry
+          POSTGRES_PASSWORD: ferry-ci
+          POSTGRES_DB: ferry
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ferry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      # README 写的最低版本是 Node.js 22,CI 用它来验证
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      # 设置了 TEST_DATABASE_URL 时,存储相关的测试会在内存和 PostgreSQL 上各跑一遍
+      - name: Test (in-memory and PostgreSQL)
+        run: pnpm test
+        env:
+          TEST_DATABASE_URL: postgres://ferry:ferry-ci@localhost:5432/ferry
