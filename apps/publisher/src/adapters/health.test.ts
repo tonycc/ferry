@@ -26,19 +26,19 @@ describe("HttpHealthChecker", () => {
   it("按应用域名访问统一入口;启动期间的 502 之后返回 200 即为健康", async () => {
     const { url, seen } = await gateway([502, 502, 200]);
     const checker = new HttpHealthChecker({ gateway: url, intervalMs: 0, timeoutMs: 5000 });
-    expect(await checker.check("ledger.apps.localhost", "/healthz")).toBe(true);
+    expect(await checker.check("ledger.apps.localhost", "/healthz")).toEqual({ ok: true });
     expect(seen).toHaveLength(3);
     expect(seen[0]).toEqual({ host: "ledger.apps.localhost", path: "/healthz" });
   });
 
-  it("超时内一直不是 2xx 时判为不健康", async () => {
-    const { url } = await gateway([500]);
+  it("超时内一直不是 2xx 时判为不健康,并带上最后一次的状态码", async () => {
+    const { url } = await gateway([502, 404]);
     const checker = new HttpHealthChecker({ gateway: url, intervalMs: 10, timeoutMs: 100 });
-    expect(await checker.check("ledger.apps.localhost", "/healthz")).toBe(false);
+    expect(await checker.check("ledger.apps.localhost", "/healthz")).toEqual({ ok: false, status: 404 });
   });
 
-  it("入口连不上时判为不健康,不抛错", async () => {
+  it("入口连不上时判为不健康(状态码 0),不抛错", async () => {
     const checker = new HttpHealthChecker({ gateway: "http://127.0.0.1:1", intervalMs: 10, timeoutMs: 50 });
-    expect(await checker.check("ledger.apps.localhost", "healthz")).toBe(false);
+    expect(await checker.check("ledger.apps.localhost", "healthz")).toEqual({ ok: false, status: 0 });
   });
 });

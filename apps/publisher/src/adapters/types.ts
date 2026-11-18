@@ -3,7 +3,16 @@
  * 每个接口在 fake.ts 里有内存假实现,真实实现各自一个文件。
  */
 
-export type CommandResult = { ok: true } | { ok: false; logs: string };
+/**
+ * 部署或命令失败的原因,决定 agent 该不该改代码:
+ * - build:构建失败(依赖装不上、Dockerfile 出错),改代码;
+ * - start:构建成功但容器没有运行起来(启动就崩溃),改代码;
+ * - command:命令执行失败(迁移脚本出错),改代码;
+ * - platform:部署平台本身的问题(超时等),不是代码的问题,不要改代码
+ */
+export type FailureReason = "build" | "start" | "command" | "platform";
+
+export type CommandResult = { ok: true } | { ok: false; reason: FailureReason; logs: string };
 
 /** 应用某个版本的代码包(zip) */
 export interface Archive {
@@ -65,8 +74,14 @@ export interface Scanner {
   scan(zip: Buffer): Promise<Finding[]>;
 }
 
+/**
+ * 健康检查结果。没通过时带上最后一次的结果,让 agent 分得清是没有响应、路径不对,还是接口报错:
+ * status 是 HTTP 状态码,0 表示连不上或超时
+ */
+export type HealthResult = { ok: true } | { ok: false; status: number };
+
 export interface HealthChecker {
-  check(host: string, path: string): Promise<boolean>;
+  check(host: string, path: string): Promise<HealthResult>;
 }
 
 export interface Notifier {

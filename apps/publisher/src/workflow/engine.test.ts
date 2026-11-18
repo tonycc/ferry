@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createFakeAdapters } from "../adapters/fake";
-import type { CommandResult } from "../adapters/types";
+import type { CommandResult, HealthResult } from "../adapters/types";
 import { PublisherService } from "../service";
 import { Engine } from "./engine";
 import { storeCases, type StoreCase } from "../test/stores";
@@ -103,6 +103,80 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       expect(adapters.platform.calls.filter((c) => c.startsWith("createDatabase"))).toHaveLength(1);
       expect(adapters.platform.calls.filter((c) => c.startsWith("createApp"))).toHaveLength(1);
       expect(adapters.platform.calls.filter((c) => c.startsWith("createProject"))).toEqual(["createProject:ledger"]);
+    });
+
+    it("启动就崩溃和构建失败分开报告,提示 agent 看启动日志", async () => {
+      const { adapters, publish } = setup();
+      adapters.platform.failDeployMarkers.add("bad");
+      adapters.platform.failDeployReason = "start";
+
+      const failed = await publish("bad");
+      expect(failed.state).toBe("FAILED_FIXABLE");
+      expect(failed.error).toMatchObject({ stage: "BUILDING", type: "start_failed" });
+      expect(failed.error?.message).toContain("一启动就退出");
+      expect(failed.error?.hint).toContain("CMD");
+    });
+
+    it("更新后新版本启动即崩溃:把上一个版本部署回去,结果是 ROLLED_BACK", async () => {
+      const { adapters, publish } = setup();
+      const v1 = await publish("v1");
+      adapters.platform.failDeployMarkers.add("crash");
+      adapters.platform.failDeployReason = "start";
+
+      const v2 = await publish("crash");
+      expect(v2.state).toBe("ROLLED_BACK");
+      expect(v2.error?.type).toBe("start_failed");
+      expect(adapters.platform.deployedVersion.get("app_2")).toBe(v1.version);
+    });
+
+    it("更新时迁移失败:把上一个版本部署回去,结果是 ROLLED_BACK", async () => {
+      const { adapters, publish } = setup();
+      const v1 = await publish("v1");
+      adapters.platform.failMigrate = true;
+
+      const v2 = await publish("v2");
+      expect(v2.state).toBe("ROLLED_BACK");
+      expect(v2.error?.type).toBe("migration_failed");
+      expect(adapters.platform.deployedVersion.get("app_2")).toBe(v1.version);
+    });
+
+    it("构建失败时线上版本没被动过,不重新部署上一个版本", async () => {
+      const { adapters, publish } = setup();
+      await publish("v1");
+      adapters.platform.failDeployMarkers.add("bad");
+      const deploys = () => adapters.platform.calls.filter((c) => c.startsWith("deploy:")).length;
+      const before = deploys();
+
+      expect((await publish("bad")).state).toBe("FAILED_FIXABLE");
+      expect(deploys() - before).toBe(1);
+    });
+
+    it("部署平台的问题不算代码问题:直接结束,提示 agent 不要改代码,也不计入修复次数", async () => {
+      const { adapters, publish } = setup();
+      adapters.platform.failDeployMarkers.add("bad");
+      adapters.platform.failDeployReason = "platform";
+
+      const failed = await publish("bad");
+      expect(failed.state).toBe("FAILED");
+      expect(failed.error?.type).toBe("platform_error");
+      expect(failed.error?.hint).toContain("不要修改代码");
+    });
+
+    it.each([
+      [0, "没有响应", "127.0.0.1"],
+      [502, "没有程序接受连接", "PORT"],
+      [404, "没有这个路径", "healthcheck"],
+      [500, "健康检查接口出错", "migrations"],
+    ])("健康检查返回 %i 时给出对应的说明", async (status, message, hint) => {
+      const { adapters, publish } = setup();
+      adapters.health.healthy = false;
+      adapters.health.status = status;
+
+      const failed = await publish("v1");
+      expect(failed.state).toBe("FAILED_FIXABLE");
+      expect(failed.error?.type).toBe("healthcheck_failed");
+      expect(failed.error?.message).toContain(message);
+      expect(failed.error?.hint).toContain(hint);
     });
 
     it("代码里有密钥:发布被拦截,不会建任何资源", async () => {
@@ -501,7 +575,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const { store, adapters, publish, startPublish, restart } = setup();
       await publish("v1");
       const check = adapters.health.check.bind(adapters.health);
-      const checkStuck = stuck<boolean>();
+      const checkStuck = stuck<HealthResult>();
       adapters.health.check = checkStuck.fn;
       const { releaseId, version } = await startPublish("v2");
       await checkStuck.reached;
