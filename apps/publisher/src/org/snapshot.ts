@@ -12,6 +12,10 @@ export interface OrgDepartment {
 export interface OrgUser {
   id: string;
   name: string;
+  /** 工号,登录时用。可选 */
+  jobNumber?: string;
+  /** 手机号,登录时用。可选;比较前用 normalizeMobile 规范化 */
+  mobile?: string;
   /** false 表示已离职。离职的人不能登录(任务 2.2),但保留最后所属的部门,见 mergeDeparted */
   active: boolean;
   departmentIds: string[];
@@ -28,6 +32,20 @@ export interface OrgSource {
 }
 
 const PREFIXED = /^[a-z]+:.+$/;
+
+/** 手机号规范化:只留数字,去掉中国区号 86 */
+export function normalizeMobile(mobile: string): string {
+  const digits = mobile.replace(/\D/g, "");
+  return digits.length === 13 && digits.startsWith("86") ? digits.slice(2) : digits;
+}
+
+/** 登录时输入的账号(工号或手机号)规范化后的形式,用于查找本人 */
+export function loginKeys(user: OrgUser): string[] {
+  const keys: string[] = [];
+  if (user.jobNumber?.trim()) keys.push(`job:${user.jobNumber.trim().toLowerCase()}`);
+  if (user.mobile?.trim()) keys.push(`mobile:${normalizeMobile(user.mobile)}`);
+  return keys;
+}
 
 /**
  * 应用快照前的检查。数据源出问题时(文件被截断、接口权限不够只返回了一部分),
@@ -64,6 +82,18 @@ export function validateSnapshot(next: OrgSnapshot, previous?: OrgSnapshot): str
     if (missing) {
       problems.push(`人员 ${u.id} 所属的部门 ${missing} 不存在`);
       break;
+    }
+  }
+
+  // 两个在职的人工号或手机号相同时,验证码可能发给错的人
+  const owners = new Map<string, string>();
+  for (const u of active) {
+    for (const key of loginKeys(u)) {
+      if (owners.has(key)) {
+        problems.push(`在职人员 ${owners.get(key)} 和 ${u.id} 的${key.startsWith("job:") ? "工号" : "手机号"}相同`);
+        break;
+      }
+      owners.set(key, u.id);
     }
   }
 

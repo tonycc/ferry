@@ -3,6 +3,8 @@ import { sql } from "drizzle-orm";
 import { openDatabase, PostgresStore, type Database } from "../db/postgres-store";
 import { PostgresOrgStore } from "../db/postgres-org-store";
 import { MemoryOrgStore, type OrgStore } from "../org/store";
+import { MemoryAuthStore, type AuthStore } from "../auth/store";
+import { PostgresAuthStore } from "../db/postgres-auth-store";
 import { MemoryStore, type Store } from "../workflow/store";
 
 /**
@@ -22,6 +24,8 @@ export interface StoreCase {
   create(): Store;
   /** 返回一个指向当前数据的组织架构存储 */
   createOrg(): OrgStore;
+  /** 返回一个指向当前数据的登录存储 */
+  createAuth(): AuthStore;
   /** 在 afterAll 里调用 */
   close(): Promise<void>;
 }
@@ -38,14 +42,17 @@ export function storeCases(testDbName: string): StoreCase[] {
 function memoryCase(): StoreCase {
   // 同一个测试里多次 createOrg() 要指向同一份数据,和数据库一样
   let org = new MemoryOrgStore();
+  let auth = new MemoryAuthStore();
   return {
     name: "内存",
     init: async () => {},
     reset: async () => {
       org = new MemoryOrgStore();
+      auth = new MemoryAuthStore();
     },
     create: () => new MemoryStore(),
     createOrg: () => org,
+    createAuth: () => auth,
     close: async () => {},
   };
 }
@@ -64,10 +71,11 @@ function postgresCase(adminUrl: string, dbName: string): StoreCase {
       database = await openDatabase(testUrl.toString());
     },
     async reset() {
-      await requireDb().db.execute(sql`TRUNCATE uploads, releases, apps, org_users, org_departments RESTART IDENTITY CASCADE`);
+      await requireDb().db.execute(sql`TRUNCATE uploads, releases, apps, org_users, org_departments, login_challenges, sessions, personal_tokens RESTART IDENTITY CASCADE`);
     },
     create: () => new PostgresStore(requireDb().db),
     createOrg: () => new PostgresOrgStore(requireDb().db),
+    createAuth: () => new PostgresAuthStore(requireDb().db),
     async close() {
       await database?.close();
     },

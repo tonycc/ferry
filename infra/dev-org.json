@@ -1,16 +1,16 @@
 {
   "departments": [
-    { "id": "dingtalk:root", "parentId": null, "name": "示例公司" },
-    { "id": "dingtalk:finance", "parentId": "dingtalk:root", "name": "财务部" },
-    { "id": "dingtalk:finance-ap", "parentId": "dingtalk:finance", "name": "应付组" },
-    { "id": "dingtalk:sales", "parentId": "dingtalk:root", "name": "销售部" },
-    { "id": "dingtalk:it", "parentId": "dingtalk:root", "name": "信息部" }
+    {"id": "dingtalk:root", "parentId": null, "name": "示例公司"},
+    {"id": "dingtalk:finance", "parentId": "dingtalk:root", "name": "财务部"},
+    {"id": "dingtalk:finance-ap", "parentId": "dingtalk:finance", "name": "应付组"},
+    {"id": "dingtalk:sales", "parentId": "dingtalk:root", "name": "销售部"},
+    {"id": "dingtalk:it", "parentId": "dingtalk:root", "name": "信息部"}
   ],
   "users": [
-    { "id": "dingtalk:alice", "name": "Alice", "departmentIds": ["dingtalk:finance"] },
-    { "id": "dingtalk:bob", "name": "Bob", "departmentIds": ["dingtalk:finance"] },
-    { "id": "dingtalk:dave", "name": "Dave", "departmentIds": ["dingtalk:finance-ap"] },
-    { "id": "dingtalk:carol", "name": "Carol", "departmentIds": ["dingtalk:sales"] },
-    { "id": "dingtalk:admin", "name": "Admin", "departmentIds": ["dingtalk:it"] }
+    {"id": "dingtalk:alice", "name": "Alice", "departmentIds": ["dingtalk:finance"], "jobNumber": "A001"},
+    {"id": "dingtalk:bob", "name": "Bob", "departmentIds": ["dingtalk:finance"], "jobNumber": "A002", "mobile": "13800000002"},
+    {"id": "dingtalk:dave", "name": "Dave", "departmentIds": ["dingtalk:finance-ap"], "jobNumber": "A003"},
+    {"id": "dingtalk:carol", "name": "Carol", "departmentIds": ["dingtalk:sales"], "jobNumber": "B001"},
+    {"id": "dingtalk:admin", "name": "Admin", "departmentIds": ["dingtalk:it"], "jobNumber": "IT01"}
   ]
 }

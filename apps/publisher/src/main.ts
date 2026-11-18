@@ -7,7 +7,11 @@ import { createFakeAdapters } from "./adapters/fake";
 import type { Adapters } from "./adapters/types";
 import { buildServer } from "./api/server";
 import { loadConfig } from "./config";
-import { createDevIdentity } from "./identity";
+import { createIdentity } from "./identity";
+import { AuthService } from "./auth/service";
+import { MemoryAuthStore, type AuthStore } from "./auth/store";
+import { PostgresAuthStore } from "./db/postgres-auth-store";
+import { LogNotifier, UnconfiguredNotifier } from "./adapters/log-notifier";
 import { PublisherService } from "./service";
 import { Engine } from "./workflow/engine";
 import { openDatabase, PostgresStore } from "./db/postgres-store";
@@ -19,19 +23,24 @@ import { MemoryStore, type Store } from "./workflow/store";
 
 const config = loadConfig();
 
-if (config.DEV_AUTH !== "true") {
-  // 还没有接入钉钉、企业微信登录,拒绝在关闭开发身份的情况下启动,避免误以为已有真实鉴权
-  throw new Error("尚未实现钉钉、企业微信登录,目前只能以 DEV_AUTH=true 运行");
+if (config.DEV_AUTH === "true") {
+  console.warn("DEV_AUTH=true:没带凭据的请求可以用 x-ferry-user 请求头冒充任何人,只能用于本地开发");
 }
 
-// 代码包保存在本地目录;FERRY_PLATFORM=dokploy 时部署平台和健康检查是真实的,密钥扫描、通知还是假实现
+// 代码包保存在本地目录;FERRY_PLATFORM=dokploy 时部署平台和健康检查是真实的,密钥扫描还是假实现
 // 组织架构:权限判定读内存里的这一份,由 OrgSync 从数据源同步、从数据库恢复
 const directory = new MemoryDirectory();
 const adapters: Adapters = {
   ...createFakeAdapters(),
   archives: new FsArchiveStore(config.ARCHIVE_DIR),
   directory,
+  notifier: config.NOTIFY_VIA === "log" ? new LogNotifier() : new UnconfiguredNotifier(),
 };
+if (config.NOTIFY_VIA === "log") {
+  console.warn("NOTIFY_VIA=log:通知和登录验证码会打印在日志里,能看到日志的人就能登录任何账号,只能用于本地开发");
+} else {
+  console.warn("未设置 NOTIFY_VIA:通知和登录验证码都发不出去,无法用验证码登录");
+}
 if (config.FERRY_PLATFORM === "dokploy") {
   if (!config.DOKPLOY_URL || !config.DOKPLOY_API_KEY) {
     throw new Error("FERRY_PLATFORM=dokploy 时必须设置 DOKPLOY_URL 和 DOKPLOY_API_KEY");
@@ -48,11 +57,13 @@ if (config.FERRY_PLATFORM === "dokploy") {
 
 let store: Store;
 let orgStore: OrgStore = new MemoryOrgStore();
+let authStore: AuthStore = new MemoryAuthStore();
 if (config.DATABASE_URL) {
   // 启动时自动执行尚未执行的数据库迁移
   const database = await openDatabase(config.DATABASE_URL);
   store = new PostgresStore(database.db);
   orgStore = new PostgresOrgStore(database.db);
+  authStore = new PostgresAuthStore(database.db);
 } else {
   console.warn("未设置 DATABASE_URL,使用内存存储:服务重启后应用和发布记录都会丢失");
   store = new MemoryStore();
@@ -79,8 +90,24 @@ const service = new PublisherService(store, engine, adapters, {
 });
 
 const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));
-const server = buildServer(service, createDevIdentity(adminIds, directory), {
+const publicUrl = new URL(config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`);
+const allowedOrigins = new Set([
+  publicUrl.origin,
+  ...config.ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean),
+]);
+// 本机地址 127.0.0.1 和 localhost 都能打开登录页
+if (publicUrl.hostname === "127.0.0.1") allowedOrigins.add(publicUrl.origin.replace("127.0.0.1", "localhost"));
+const auth = new AuthService(authStore, directory, adapters.notifier, {
+  sessionTtlMs: config.SESSION_DAYS * 24 * 3600_000,
+});
+const identity = createIdentity({ auth, directory, adminIds, devAuth: config.DEV_AUTH === "true", allowedOrigins });
+const server = buildServer(service, identity, {
   maxArchiveBytes: config.MAX_ARCHIVE_MB * 1024 * 1024,
+  auth: {
+    service: auth,
+    directory,
+    routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:", codeTtlMinutes: 5 },
+  },
 });
 await server.listen({ port: config.PORT, host: "127.0.0.1" });
 

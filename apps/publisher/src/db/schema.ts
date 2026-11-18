@@ -1,4 +1,4 @@
-import { bigint, boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 /**
  * PostgreSQL 表结构,是数据库迁移的唯一来源。
@@ -80,4 +80,45 @@ export const orgUsers = pgTable("org_users", {
   name: text("name").notNull(),
   active: boolean("active").notNull(),
   departmentIds: jsonb("department_ids").notNull().default([]),
+  /** 工号、手机号:登录时用来找本人 */
+  jobNumber: text("job_number"),
+  mobile: text("mobile"),
 });
+
+/** 验证码登录:只存验证码的哈希 */
+export const loginChallenges = pgTable(
+  "login_challenges",
+  {
+    id: uuid("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    codeHash: text("code_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+  },
+  (t) => [index("login_challenges_user_idx").on(t.userId, t.createdAt)],
+);
+
+/** 浏览器登录会话:只存 cookie 令牌的哈希 */
+export const sessions = pgTable("sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  userId: text("user_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+/** 个人令牌:只存哈希 */
+export const personalTokens = pgTable(
+  "personal_tokens",
+  {
+    id: uuid("id").primaryKey(),
+    tokenHash: text("token_hash").notNull().unique(),
+    userId: text("user_id").notNull(),
+    label: text("label").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [index("personal_tokens_user_idx").on(t.userId)],
+);

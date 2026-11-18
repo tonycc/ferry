@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MemoryDirectory } from "../adapters/directory";
 import { FileOrgSource } from "../adapters/org-file-source";
 import { canAccess } from "../authz/decide";
-import { createDevIdentity } from "../identity";
+import { createIdentity } from "../identity";
 import { storeCases, type StoreCase } from "../test/stores";
 import { mergeDeparted, validateSnapshot, type OrgSnapshot, type OrgSource } from "./snapshot";
 import { MemoryOrgStore } from "./store";
@@ -241,7 +241,8 @@ describe("开发用身份", () => {
   it("部门从组织架构查,忽略请求头里的部门", async () => {
     const directory = new MemoryDirectory();
     directory.replace(org());
-    const identity = createDevIdentity(new Set(["dingtalk:carol"]), directory);
+    const resolve = createIdentity({ directory, adminIds: new Set(["dingtalk:carol"]), devAuth: true, allowedOrigins: new Set() });
+    const identity = (headers: Record<string, string>) => resolve({ method: "GET", headers }, "api");
     expect(await identity({ "x-ferry-user": "dingtalk:bob", "x-ferry-department": "dingtalk:sales" })).toEqual({
       id: "dingtalk:bob",
       departments: ["dingtalk:finance"],
@@ -249,6 +250,6 @@ describe("开发用身份", () => {
     });
     expect((await identity({ "x-ferry-user": "dingtalk:carol" })).isAdmin).toBe(true);
     expect((await identity({ "x-ferry-user": "dingtalk:nobody" })).departments).toEqual([]);
-    await expect(identity({})).rejects.toThrow("缺少身份信息");
+    await expect(identity({})).rejects.toThrow("需要先登录");
   });
 });

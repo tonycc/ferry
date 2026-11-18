@@ -45,8 +45,22 @@ const envSchema = z.object({
   ORG_SYNC_MINUTES: z.coerce.number().positive().default(60),
   /** 平台管理员的用户 ID,逗号分隔。管理员可以查看全部应用并停用任意应用 */
   ADMIN_USERS: z.string().default(""),
-  /** true 时从 x-ferry-user 请求头读取身份,仅限本地开发 */
-  DEV_AUTH: z.enum(["true", "false"]).default("true"),
+  /**
+   * true 时,没有带任何凭据的请求可以用 x-ferry-user 请求头自称是谁。只能用于本地开发,默认关闭
+   */
+  DEV_AUTH: z.enum(["true", "false"]).default("false"),
+  /**
+   * 通知(包括登录验证码)怎么发。log:打印到服务日志,只能用于本地开发。
+   * 钉钉工作通知要等 P5;不设置时通知不会发出,也就无法登录
+   */
+  NOTIFY_VIA: z.enum(["log"]).optional(),
+  /** 登录有效期 */
+  SESSION_DAYS: z.coerce.number().positive().default(7),
+  /**
+   * 允许用登录 cookie 发起修改请求的来源(Ferry 自己的页面),逗号分隔。
+   * PUBLIC_URL 的来源总是允许;本地用控制台开发服务器时加上 http://localhost:5173
+   */
+  ALLOWED_ORIGINS: z.string().default(""),
 });
 
 export type Config = z.infer<typeof envSchema>;

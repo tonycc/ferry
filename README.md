@@ -22,7 +22,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 密钥扫描、通知 | 只有假实现 |
 | 持久化(PostgreSQL) | 已实现,有测试;设置 `DATABASE_URL` 后启用,启动时自动执行数据库迁移。不设置时用内存存储 |
 | 服务重启后继续执行未完成的发布 | 已实现,有测试(需要 PostgreSQL 存储;假定同一时间只运行一个 Ferry 实例) |
-| 登录(钉钉或企业微信工作通知验证码)、agent 个人令牌 | 未实现,开发时相信 `x-ferry-user` 请求头里的用户 ID(部门从组织架构查,不再读 `x-ferry-department`) |
+| 验证码登录、agent 个人令牌 | 已实现,有测试。验证码目前只能打印在日志里(`NOTIFY_VIA=log`,本地开发用),钉钉工作通知待 P5。开发用的 `x-ferry-user` 请求头身份默认关闭 |
 | 组织架构与“本部门可见”判定(同部门或上级部门) | 已实现,有测试。组织架构定时从数据源同步(本地用 `ORG_FILE` 指向的文件,示例 `infra/dev-org.json`),存进 PostgreSQL,重启后直接恢复;有问题的快照整份拒绝。钉钉数据源待 P5 |
 | 手动回滚和下线(`rollback_app`、`unpublish_app`) | 已实现,有测试,在本机 Dokploy 上端到端验证过。下线 30 天后自动删除数据还没有实现(任务 2.12) |
 | 控制台 | 只有应用列表页,没有管理页面 |
@@ -131,10 +131,18 @@ pnpm test:dokploy
 pnpm typecheck
 ```
 
-开发时的身份:请求头 `x-ferry-user` 给出用户 ID,所属部门从组织架构查。示例组织架构 `infra/dev-org.json` 里有
-`dingtalk:alice`(财务部)、`dingtalk:bob`(财务部)、`dingtalk:dave`(财务部下的应付组)、`dingtalk:carol`(销售部)、
-`dingtalk:admin`(信息部),可以用来试“本部门可见”(同部门或上级部门)。改了文件后最长 `ORG_SYNC_MINUTES`(默认 60)分钟生效,
-或重启服务立即生效。
+### 登录和身份
+
+- **网页**:打开 http://127.0.0.1:8080/login ,输入工号或手机号,把收到的验证码填回去。本地开发时验证码打印在服务日志里
+  (`NOTIFY_VIA=log`,形如 `[通知 → dingtalk:alice] Ferry 登录验证码:123456`)。登录后在 http://127.0.0.1:8080/me 生成个人令牌。
+- **agent**:把个人令牌配进 agent 的 MCP 配置,请求头 `Authorization: Bearer fry_...`。MCP 只认个人令牌。
+- **开发用请求头**:`DEV_AUTH=true` 时,没带凭据的请求可以用 `x-ferry-user` 自称是谁,方便调试;默认关闭。
+- 所属部门一律从组织架构查。示例组织架构 `infra/dev-org.json`(工号在括号里):`dingtalk:alice`(财务部,A001)、
+  `dingtalk:bob`(财务部,A002,手机号 13800000002)、`dingtalk:dave`(财务部下的应付组,A003)、`dingtalk:carol`(销售部,B001)、
+  `dingtalk:admin`(信息部,IT01)。改了文件后最长 `ORG_SYNC_MINUTES`(默认 60)分钟生效,或重启服务立即生效。
+- 组织架构为空时谁都无法登录(包括管理员),所以接入真实环境前要先能同步到组织架构。
+- 登录 cookie 只发给 Ferry 自己的域名,不发给员工应用;用 cookie 做修改操作时要求请求来自 Ferry 自己的页面
+  (来源不是 `PUBLIC_URL` 时,加到 `ALLOWED_ORIGINS`)。
 
 配置项见 `apps/publisher/src/config.ts`。
 
@@ -145,7 +153,7 @@ pnpm typecheck
 下面这条模拟 agent,经 MCP 把模板应用发布为 `ledger-demo`,成功后访问 http://ledger-demo.apps.localhost:
 
 ```bash
-python3 -I scripts/mcp-publish.py http://127.0.0.1:8080 packages/templates/node-postgres ledger-demo /tmp
+FERRY_TOKEN=fry_你的个人令牌 python3 -I scripts/mcp-publish.py http://127.0.0.1:8080 packages/templates/node-postgres ledger-demo /tmp
 ```
 
 ## 建议的下一步

@@ -19,6 +19,8 @@ export class PostgresOrgStore implements OrgStore {
         name: u.name,
         active: u.active,
         departmentIds: u.departmentIds as string[],
+        ...(u.jobNumber ? { jobNumber: u.jobNumber } : {}),
+        ...(u.mobile ? { mobile: u.mobile } : {}),
       })),
     };
   }
@@ -31,7 +33,9 @@ export class PostgresOrgStore implements OrgStore {
         await tx.insert(schema.orgDepartments).values(snapshot.departments.slice(i, i + 500));
       }
       for (let i = 0; i < snapshot.users.length; i += 500) {
-        await tx.insert(schema.orgUsers).values(snapshot.users.slice(i, i + 500));
+        await tx.insert(schema.orgUsers).values(
+          snapshot.users.slice(i, i + 500).map((u) => ({ ...u, jobNumber: u.jobNumber ?? null, mobile: u.mobile ?? null })),
+        );
       }
     });
   }

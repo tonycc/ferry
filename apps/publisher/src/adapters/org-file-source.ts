@@ -12,6 +12,8 @@ const fileSchema = z.object({
       name: z.string().min(1),
       active: z.boolean().default(true),
       departmentIds: z.array(z.string().min(1)).default([]),
+      jobNumber: z.string().min(1).optional(),
+      mobile: z.string().min(1).optional(),
     }),
   ),
 });

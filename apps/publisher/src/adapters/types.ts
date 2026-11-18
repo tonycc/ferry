@@ -79,6 +79,11 @@ export interface Directory {
    * 根部门代表整个企业,把它算作上级会让直接挂在根部门下的人看到所有“本部门可见”的应用。
    */
   ancestorsOf(departmentId: string): Promise<string[]>;
+  /** 在组织架构里且在职 */
+  isActive(userId: string): Promise<boolean>;
+  /** 按登录时输入的账号(工号或手机号)找在职的人 */
+  findLogin(account: string): Promise<string | undefined>;
+  nameOf(userId: string): Promise<string | undefined>;
 }
 
 export interface Adapters {

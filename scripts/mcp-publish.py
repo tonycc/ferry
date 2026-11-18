@@ -1,11 +1,12 @@
 """Act as the agent: publish the node-postgres template through Ferry's MCP endpoint (task 1.10).
 
-Usage: python3 -I scripts/mcp-publish.py <ferry_url> <template_dir> <app_name> <work_dir>
+Usage: FERRY_TOKEN=fry_... python3 -I scripts/mcp-publish.py <ferry_url> <template_dir> <app_name> <work_dir>
 Example: python3 -I scripts/mcp-publish.py http://127.0.0.1:28080 packages/templates/node-postgres ledger-demo /tmp
 Prints each tool result. Exits non-zero if the release does not reach LIVE.
 """
 import io
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -16,8 +17,13 @@ FERRY, TEMPLATE, NAME, WORK = sys.argv[1], Path(sys.argv[2]), sys.argv[3], Path(
 HEADERS = {
     "content-type": "application/json",
     "accept": "application/json, text/event-stream",
-    "x-ferry-user": "dingtalk:alice",
 }
+# 个人令牌从环境变量 FERRY_TOKEN 读取(在 Ferry 网页上登录后生成);
+# 没有时用开发用的身份请求头,需要 Ferry 以 DEV_AUTH=true 运行
+if os.environ.get("FERRY_TOKEN"):
+    HEADERS["authorization"] = f"Bearer {os.environ['FERRY_TOKEN']}"
+else:
+    HEADERS["x-ferry-user"] = "dingtalk:alice"
 _id = 0
 
 
