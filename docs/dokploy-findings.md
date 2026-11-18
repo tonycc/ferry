@@ -135,6 +135,21 @@ Ferry 经统一入口(Traefik,本机是 `http://127.0.0.1:80`)访问应用的健
 
 接入登录网关(任务 2.3)后,未登录的请求会被拦下,健康检查请求需要网关放行。
 
+## 登录网关(任务 2.3)
+
+- `settings.updateTraefikFile {path, traefikConfig}` 能写 `/etc/dokploy/traefik/dynamic/` 下的文件,Traefik 自动加载。
+  Ferry 启动时用它写 `ferry-gateway.yml`(中间件链:删身份头 → forwardAuth 到 `/authz` → 删健康检查口令)。
+- 域名有 `middlewares` 字段(`domain.create`、`domain.update`),Ferry 给每个应用的域名挂 `ferry-gateway@file`。
+  `domain.update` 需要 `domainId` 和 `host`,Ferry 每次传完整的期望状态;实测更新后路由、端口都正常。
+- forwardAuth 的实测行为:
+  - `/authz` 返回非 2xx 时,状态码、`Location`、`Set-Cookie` 都原样交给浏览器,所以“跳登录、回调设 cookie”可行。
+  - **`/authz` 返回的相对地址会按 `/authz` 自己的地址补全**(实测跳到了 `host.docker.internal:28080/...`),所以必须返回完整地址。
+  - 客户端的原始请求头(包括 Cookie、`X-Forwarded-Uri`)都会转给 `/authz`。
+  - `authResponseHeaders` 只覆盖 `/authz` 返回了的请求头;**下划线写法(`X_Ferry_User_Id`)不会被删也不会被覆盖**,
+    会原样到达应用,有的框架会把它当成 `X-Ferry-User-Id`。`/authz` 看到这类请求头就整个拒绝。
+  - 放在 forwardAuth 之后的 headers 中间件能删掉请求头,健康检查口令就是这样不让应用收到的。
+- 本机 Docker Desktop 里的容器能通过 `host.docker.internal` 访问只监听 127.0.0.1 的 Ferry。
+
 ## 读取日志
 
 - `deployment.readLogs?deploymentId=&tail=`:构建日志和一次性命令的输出。失败时把它交给 agent。

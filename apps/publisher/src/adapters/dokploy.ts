@@ -34,6 +34,11 @@ export interface DokployPlatformOptions {
   backupRoot?: string;
   /** 每个数据库保留最近几份备份,更早的在备份成功后删除 */
   backupKeep?: number;
+  /**
+   * 挂在应用域名上的登录网关中间件。null 表示不挂(只用于单独测试适配器,
+   * 那时没有运行 Ferry,挂上网关就访问不了应用)
+   */
+  gatewayMiddleware?: string | null;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
 }
@@ -102,7 +107,14 @@ interface DokployApplication {
 interface DokployDomain {
   domainId: string;
   host: string;
+  port: number | null;
+  path: string | null;
+  middlewares: string[] | null;
 }
+
+/** Ferry 写进 Traefik 的登录网关中间件,挂在每个应用的域名上 */
+export const GATEWAY_MIDDLEWARE = "ferry-gateway@file";
+const GATEWAY_FILE = "/etc/dokploy/traefik/dynamic/ferry-gateway.yml";
 
 interface DokployDeployment {
   deploymentId: string;
@@ -121,6 +133,7 @@ export class DokployPlatform implements DeployPlatform {
   private readonly postgresImage: string;
   private readonly backupRoot: string;
   private readonly backupKeep: number;
+  private readonly gatewayMiddleware: string | null;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => Date;
 
@@ -138,6 +151,7 @@ export class DokployPlatform implements DeployPlatform {
     this.postgresImage = options.postgresImage ?? "postgres:16";
     this.backupRoot = options.backupRoot ?? "/etc/dokploy/ferry-backups";
     this.backupKeep = Math.max(1, Math.floor(options.backupKeep ?? 5));
+    this.gatewayMiddleware = options.gatewayMiddleware === undefined ? GATEWAY_MIDDLEWARE : options.gatewayMiddleware;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? (() => new Date());
   }
@@ -215,15 +229,68 @@ export class DokployPlatform implements DeployPlatform {
 
   async attachDomain(input: { appId: string; host: string; port: number }): Promise<void> {
     const domains = await this.client.query<DokployDomain[]>("domain.byApplicationId", { applicationId: input.appId });
-    if (domains.some((d) => d.host === input.host)) return;
-    await this.client.mutate("domain.create", {
+    const existing = domains.find((d) => d.host === input.host);
+    // 每次都传完整的期望状态:不确定 domain.update 会不会把没传的字段重置
+    const gateway = this.gatewayMiddleware ? [this.gatewayMiddleware] : [];
+    const desired = {
       host: input.host,
       port: input.port,
       https: this.https,
       certificateType: this.certificateType,
-      applicationId: input.appId,
+      middlewares: gateway,
       domainType: "application",
+    };
+    if (!existing) {
+      await this.client.mutate("domain.create", { ...desired, applicationId: input.appId });
+      return;
+    }
+    const gated = gateway.every((m) => existing.middlewares?.includes(m));
+    if (existing.port === input.port && gated) return;
+    await this.client.mutate("domain.update", {
+      ...desired,
+      domainId: existing.domainId,
+      path: existing.path ?? "/",
+      middlewares: [...new Set([...(existing.middlewares ?? []), ...gateway])],
     });
+  }
+
+  /**
+   * 写入登录网关的 Traefik 配置(Dokploy 的 settings.updateTraefikFile,文件在 dynamic/ 下,Traefik 自动加载)。
+   * 顺序:删掉请求里的身份头 → 问 Ferry 的 /authz → 删掉健康检查口令。
+   * 身份头在调用 /authz 之前删掉,所以应用收到的身份头只能来自 /authz;健康检查口令在放行后删掉,应用收不到。
+   */
+  async ensureGateway(input: { authAddress: string }): Promise<void> {
+    const config = [
+      "# 由 Ferry 在启动时写入,不要手动修改",
+      "http:",
+      "  middlewares:",
+      "    ferry-strip-identity:",
+      "      headers:",
+      "        customRequestHeaders:",
+      '          X-Ferry-User-Id: ""',
+      '          X-Ferry-User-Name: ""',
+      '          X-Ferry-User-Departments: ""',
+      "    ferry-auth:",
+      "      forwardAuth:",
+      `        address: ${JSON.stringify(input.authAddress)}`,
+      "        trustForwardHeader: false",
+      "        authResponseHeaders:",
+      "          - X-Ferry-User-Id",
+      "          - X-Ferry-User-Name",
+      "          - X-Ferry-User-Departments",
+      "    ferry-strip-health:",
+      "      headers:",
+      "        customRequestHeaders:",
+      '          X-Ferry-Health: ""',
+      "    ferry-gateway:",
+      "      chain:",
+      "        middlewares:",
+      "          - ferry-strip-identity",
+      "          - ferry-auth",
+      "          - ferry-strip-health",
+      "",
+    ].join("\n");
+    await this.client.mutate("settings.updateTraefikFile", { path: GATEWAY_FILE, traefikConfig: config });
   }
 
   /**

@@ -336,6 +336,41 @@ export class PublisherService {
     return this.adapters.platform.getLogs(app.platform.appId, lines);
   }
 
+  /**
+   * 服务启动时调用:确保每个在线应用的域名都挂着登录网关、指向当前端口。
+   * 网关上线之前建的域名没有挂网关,不处理的话这些应用会一直不用登录就能访问。返回检查过的应用数
+   */
+  async ensureDomains(): Promise<number> {
+    let count = 0;
+    for (const app of await this.store.listApps()) {
+      if (!app.platform.appId || !app.platform.domainAttached || app.unpublishedAt) continue;
+      const live = [...(await this.store.listReleases(app.name))].reverse().find((r) => r.version === app.liveVersion);
+      const port = live?.manifest.port ?? 3000;
+      await this.adapters.platform.attachDomain({ appId: app.platform.appId, host: app.host, port });
+      count++;
+    }
+    return count;
+  }
+
+  /** 网关用:域名对应的、没有下线的应用。每个经过网关的请求都会调用,只查一次存储 */
+  async gatewayApp(host: string): Promise<{ name: string; disabled: boolean } | undefined> {
+    const app = await this.store.getAppByHost(host);
+    if (!app || app.unpublishedAt) return undefined;
+    return { name: app.name, disabled: app.disabled !== undefined };
+  }
+
+  /** 网关用:应用当前的健康检查路径(最近一次发布的清单里的) */
+  async healthcheckPath(appName: string): Promise<string | undefined> {
+    return (await this.store.listReleases(appName)).at(-1)?.manifest.healthcheck;
+  }
+
+  /** 网关用:viewer 能否访问这个应用(按可见范围和组织架构) */
+  async canView(appName: string, viewer: { id: string; departments: readonly string[] }): Promise<boolean> {
+    const app = await this.store.getApp(appName);
+    if (!app || app.disabled || app.unpublishedAt) return false;
+    return canAccess(app, viewer, this.adapters.directory);
+  }
+
   /** 登录网关的权限判定:viewer 能否访问 host 对应的应用 */
   async authorize(viewer: User, host: string): Promise<boolean> {
     const app = await this.store.getAppByHost(host);

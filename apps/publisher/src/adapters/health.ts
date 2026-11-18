@@ -12,20 +12,23 @@ export interface HttpHealthCheckerOptions {
   intervalMs?: number;
   /** 单次请求的超时 */
   requestTimeoutMs?: number;
+  /** 每个应用的健康检查额外带的请求头(登录网关的健康检查口令) */
+  extraHeaders?: (host: string) => Record<string, string>;
   sleep?: (ms: number) => Promise<void>;
 }
 
 /**
  * 通过统一入口访问应用的健康检查接口,在限定时间内任意一次返回 2xx 即视为健康。
  *
- * 注意:接入登录网关(任务 2.3)后,未登录的请求会被拦下,健康检查请求需要网关放行,
- * 比如由 Ferry 的 /authz 识别只有 Ferry 知道的请求头。
+ * 登录网关会拦下未登录的请求,所以健康检查带上按域名计算的口令(extraHeaders),
+ * 由 /authz 识别后放行;网关放行后会删掉这个请求头,应用收不到。
  */
 export class HttpHealthChecker implements HealthChecker {
   private readonly gateway: URL;
   private readonly timeoutMs: number;
   private readonly intervalMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly extraHeaders: (host: string) => Record<string, string>;
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(options: HttpHealthCheckerOptions) {
@@ -34,6 +37,7 @@ export class HttpHealthChecker implements HealthChecker {
     this.timeoutMs = options.timeoutMs ?? 90_000;
     this.intervalMs = options.intervalMs ?? 2000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 5000;
+    this.extraHeaders = options.extraHeaders ?? (() => ({}));
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
@@ -55,7 +59,7 @@ export class HttpHealthChecker implements HealthChecker {
           hostname: this.gateway.hostname,
           port: this.gateway.port || 80,
           path: path.startsWith("/") ? path : `/${path}`,
-          headers: { host },
+          headers: { ...this.extraHeaders(host), host },
           timeout: this.requestTimeoutMs,
         },
         (res) => {

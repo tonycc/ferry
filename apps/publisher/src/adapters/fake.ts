@@ -73,8 +73,18 @@ export class FakePlatform implements DeployPlatform {
     };
   }
 
-  async attachDomain(input: { host: string }): Promise<void> {
+  /** 域名 → 端口。只有新建或端口变了才记入 calls,和真实平台一样“没有变化就什么都不做” */
+  readonly domains = new Map<string, number>();
+  gatewayAddress: string | undefined;
+
+  async attachDomain(input: { host: string; port: number }): Promise<void> {
+    if (this.domains.get(input.host) === input.port) return;
     this.calls.push(`attachDomain:${input.host}`);
+    this.domains.set(input.host, input.port);
+  }
+
+  async ensureGateway(input: { authAddress: string }): Promise<void> {
+    this.gatewayAddress = input.authAddress;
   }
 
   async setEnv(appId: string, env: Record<string, string>): Promise<void> {

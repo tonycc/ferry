@@ -2,6 +2,16 @@ import { z } from "zod";
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().default(8080),
+  /** 监听地址。Traefik 要能访问到 /authz;本机 Docker Desktop 里的容器能访问到 127.0.0.1 */
+  HOST: z.string().default("127.0.0.1"),
+  /** Traefik 访问 Ferry 的 /authz 用的地址。默认是 Docker Desktop 里容器访问本机的地址 */
+  GATEWAY_AUTH_URL: z.string().optional(),
+  /**
+   * 签网关 cookie、算健康检查口令的密钥。不设置时每次启动随机生成:重启后访问者要重新跳一次登录(已登录 Ferry 的话是自动的)
+   */
+  GATEWAY_SECRET: z.string().min(32).optional(),
+  /** 访问应用的网关 cookie 有效期(小时)。退出 Ferry 不会让它提前失效,离职会(每个请求都检查) */
+  GATEWAY_COOKIE_HOURS: z.coerce.number().positive().default(12),
   /**
    * PostgreSQL 连接地址。不设置时用内存存储,重启即丢失(只适合临时试用)。
    * 本地开发库:postgres://ferry:ferry-dev@127.0.0.1:55432/ferry

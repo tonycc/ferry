@@ -90,7 +90,13 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
     const apiKey = process.env.DOKPLOY_API_KEY;
     if (!baseUrl || !apiKey) throw new Error("需要在 .env 里设置 DOKPLOY_URL 和 DOKPLOY_API_KEY");
     client = new DokployClient({ baseUrl, apiKey });
-    platform = new DokployPlatform(client, { pollIntervalMs: 2000, deployTimeoutMs: 10 * 60_000, backupKeep: 2 });
+    // 单独测试适配器,不挂登录网关(登录网关见 README 里的端到端验证)
+    platform = new DokployPlatform(client, {
+      pollIntervalMs: 2000,
+      deployTimeoutMs: 10 * 60_000,
+      backupKeep: 2,
+      gatewayMiddleware: null,
+    });
   });
 
   // 按实测的顺序清理:先删应用,再删项目(只删项目会留下仍在运行的容器)

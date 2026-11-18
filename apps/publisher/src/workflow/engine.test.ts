@@ -251,6 +251,18 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
     });
   });
 
+  describe("域名", () => {
+    it("改了端口后重新发布,域名跟着指向新端口;端口没变时不重复设置", async () => {
+      const { adapters, publish } = setup();
+      await publish("v1");
+      await publish("v2");
+      expect(adapters.platform.calls.filter((c) => c.startsWith("attachDomain"))).toHaveLength(1);
+      await publish("v3", "port: 8080\n");
+      expect(adapters.platform.domains.get("ledger.apps.test")).toBe(8080);
+      expect(adapters.platform.calls.filter((c) => c.startsWith("attachDomain"))).toHaveLength(2);
+    });
+  });
+
   describe("回滚", () => {
     it("回到上一个上线过的版本:只部署代码和检查,不迁移、不备份、不改可见范围", async () => {
       const { adapters, service, store, publish } = setup();

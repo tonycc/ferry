@@ -16,9 +16,9 @@ export interface User {
  * 请求从哪个入口进来。每个入口只认一种凭据:
  * - mcp:只认个人令牌(agent 用)。
  * - api:个人令牌,或浏览器的登录 cookie;用 cookie 做修改操作时,还要求请求来自 Ferry 自己的页面。
- * - authz:登录网关的权限判定。真正的做法在任务 2.3 实现,现在只认开发用的请求头。
+ * 访问员工应用(登录网关)不走这里,见 gateway/gateway.ts。
  */
-export type Channel = "api" | "mcp" | "authz";
+export type Channel = "api" | "mcp";
 
 export interface RequestLike {
   method: string;
@@ -58,12 +58,6 @@ export function createIdentity(options: IdentityOptions): IdentityResolver {
   const unauthenticated = (message = "需要先登录") => new UserError("unauthenticated", message);
 
   return async (req, channel) => {
-    if (channel === "authz") {
-      const dev = await devUser(req.headers);
-      if (dev) return dev;
-      throw unauthenticated();
-    }
-
     const authorization = single(req.headers.authorization);
     if (authorization) {
       const token = authorization.match(/^Bearer\s+(\S+)$/i)?.[1];
