@@ -3,8 +3,9 @@ import { z } from "zod";
 import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { UserError } from "../errors";
-import { readCookie, requireSameOrigin, SESSION_COOKIE, type IdentityResolver } from "../identity";
+import { readCookies, requireSameOrigin, SESSION_COOKIE, sessionUserFrom, type IdentityResolver } from "../identity";
 import { LOGIN_PAGE, TOKENS_PAGE } from "./pages";
+import { safePath, type Gateway } from "../gateway/gateway";
 
 const codeBody = z.object({ account: z.string().min(1).max(100) });
 const verifyBody = z.object({ challengeId: z.string().uuid(), code: z.string().min(1).max(20) });
@@ -30,6 +31,7 @@ export function registerAuthRoutes(
   identity: IdentityResolver,
   directory: Directory,
   options: AuthRouteOptions,
+  gateway?: Gateway,
 ): void {
   const cookie = (value: string, maxAgeSeconds: number) =>
     [
@@ -44,11 +46,26 @@ export function registerAuthRoutes(
   /** 管理令牌只能用浏览器登录会话,不能用令牌本身(泄露的令牌不能用来生成更多令牌) */
   const sessionUser = async (req: FastifyRequest) => {
     if (req.headers.authorization) throw new UserError("forbidden", "管理个人令牌需要在网页上登录,不能用令牌");
-    if (!readCookie(req.headers, SESSION_COOKIE)) throw new UserError("unauthenticated", "需要先登录");
+    if (readCookies(req.headers, SESSION_COOKIE).length === 0) throw new UserError("unauthenticated", "需要先登录");
     return identity(req, "api");
   };
 
   app.get("/login", async (_req, reply) => reply.type("text/html; charset=utf-8").send(LOGIN_PAGE));
+
+  // 访问员工应用前的登录:已登录就签一次性票据跳回应用,没登录先去登录页、登录后再回到这里
+  if (gateway) {
+    app.get<{ Querystring: { host?: string; next?: string } }>("/auth/app", async (req, reply) => {
+      const host = String(req.query.host ?? "");
+      const next = safePath(String(req.query.next ?? "/"));
+      const userId = await sessionUserFrom(req.headers, auth);
+      if (!userId) {
+        const back = `/auth/app?host=${encodeURIComponent(host)}&next=${encodeURIComponent(next)}`;
+        return reply.redirect(`/login?next=${encodeURIComponent(back)}`);
+      }
+      const result = await gateway.issueTicket(userId, host, next);
+      return reply.status(result.status).headers(result.headers).send(result.body);
+    });
+  }
   app.get("/me", async (_req, reply) => reply.type("text/html; charset=utf-8").send(TOKENS_PAGE));
 
   app.post("/auth/code", async (req) => {
@@ -71,8 +88,7 @@ export function registerAuthRoutes(
 
   app.post("/auth/logout", async (req, reply) => {
     requireSameOrigin(req, options.allowedOrigins);
-    const session = readCookie(req.headers, SESSION_COOKIE);
-    if (session) await auth.logout(session);
+    for (const session of readCookies(req.headers, SESSION_COOKIE)) await auth.logout(session);
     return reply.header("set-cookie", cookie("", 0)).send({ ok: true });
   });
 

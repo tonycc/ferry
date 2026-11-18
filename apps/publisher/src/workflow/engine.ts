@@ -145,8 +145,9 @@ export class Engine {
       }
       await platform.setEnv(app.platform.appId, { PORT: String(manifest.port) });
 
+      // 每次发布都确认域名指向清单里的端口、挂着登录网关(端口改了也能跟上;没有变化时平台什么都不做)
+      await platform.attachDomain({ appId: app.platform.appId, host: app.host, port: manifest.port });
       if (!app.platform.domainAttached) {
-        await platform.attachDomain({ appId: app.platform.appId, host: app.host, port: manifest.port });
         app.platform.domainAttached = true;
         await this.store.saveApp(app);
       }

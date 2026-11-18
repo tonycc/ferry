@@ -16,9 +16,9 @@ export interface User {
  * 请求从哪个入口进来。每个入口只认一种凭据:
  * - mcp:只认个人令牌(agent 用)。
  * - api:个人令牌,或浏览器的登录 cookie;用 cookie 做修改操作时,还要求请求来自 Ferry 自己的页面。
- * - authz:登录网关的权限判定。真正的做法在任务 2.3 实现,现在只认开发用的请求头。
+ * 访问员工应用(登录网关)不走这里,见 gateway/gateway.ts。
  */
-export type Channel = "api" | "mcp" | "authz";
+export type Channel = "api" | "mcp";
 
 export interface RequestLike {
   method: string;
@@ -58,12 +58,6 @@ export function createIdentity(options: IdentityOptions): IdentityResolver {
   const unauthenticated = (message = "需要先登录") => new UserError("unauthenticated", message);
 
   return async (req, channel) => {
-    if (channel === "authz") {
-      const dev = await devUser(req.headers);
-      if (dev) return dev;
-      throw unauthenticated();
-    }
-
     const authorization = single(req.headers.authorization);
     if (authorization) {
       const token = authorization.match(/^Bearer\s+(\S+)$/i)?.[1];
@@ -73,9 +67,8 @@ export function createIdentity(options: IdentityOptions): IdentityResolver {
     }
 
     if (channel === "api") {
-      const session = readCookie(req.headers, SESSION_COOKIE);
-      if (session) {
-        const userId = auth ? await auth.sessionUser(session) : undefined;
+      if (readCookies(req.headers, SESSION_COOKIE).length > 0) {
+        const userId = auth ? await sessionUserFrom(req.headers, auth) : undefined;
         if (!userId) throw unauthenticated("登录已过期,请重新登录");
         requireSameOrigin(req, allowedOrigins);
         return user(userId);
@@ -101,12 +94,32 @@ export function requireSameOrigin(req: RequestLike, allowedOrigins: ReadonlySet<
   }
 }
 
-export function readCookie(headers: IncomingHttpHeaders, name: string): string | undefined {
+/**
+ * 同名 cookie 的全部值。同一站点下的员工应用可以给上级域名设同名 cookie(cookie tossing),
+ * 浏览器会把它和真正的那个一起发来、顺序不定,所以调用方要逐个检查,不能只看第一个。
+ * 解码失败的值跳过(当作没有),不让格式错误的 cookie 变成 500。
+ */
+export function readCookies(headers: IncomingHttpHeaders, name: string): string[] {
   const header = single(headers.cookie);
-  if (!header) return undefined;
+  if (!header) return [];
+  const values: string[] = [];
   for (const part of header.split(";")) {
     const index = part.indexOf("=");
-    if (index > 0 && part.slice(0, index).trim() === name) return decodeURIComponent(part.slice(index + 1).trim());
+    if (index <= 0 || part.slice(0, index).trim() !== name) continue;
+    try {
+      values.push(decodeURIComponent(part.slice(index + 1).trim()));
+    } catch {
+      // 不是合法的百分号编码,跳过
+    }
+  }
+  return values;
+}
+
+/** 某人的登录会话:同名 cookie 里任意一个有效即可 */
+export async function sessionUserFrom(headers: IncomingHttpHeaders, auth: AuthService): Promise<string | undefined> {
+  for (const value of readCookies(headers, SESSION_COOKIE)) {
+    const userId = await auth.sessionUser(value);
+    if (userId) return userId;
   }
   return undefined;
 }

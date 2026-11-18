@@ -23,6 +23,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 持久化(PostgreSQL) | 已实现,有测试;设置 `DATABASE_URL` 后启用,启动时自动执行数据库迁移。不设置时用内存存储 |
 | 服务重启后继续执行未完成的发布 | 已实现,有测试(需要 PostgreSQL 存储;假定同一时间只运行一个 Ferry 实例) |
 | 验证码登录、agent 个人令牌 | 已实现,有测试。验证码目前只能打印在日志里(`NOTIFY_VIA=log`,本地开发用),钉钉工作通知待 P5。开发用的 `x-ferry-user` 请求头身份默认关闭 |
+| 登录网关(访问应用要先登录,按可见范围放行,把访问者身份传给应用) | 已实现,有测试,在本机 Dokploy 上端到端验证过。Ferry 停了时所有应用都无法访问 |
 | 组织架构与“本部门可见”判定(同部门或上级部门) | 已实现,有测试。组织架构定时从数据源同步(本地用 `ORG_FILE` 指向的文件,示例 `infra/dev-org.json`),存进 PostgreSQL,重启后直接恢复;有问题的快照整份拒绝。钉钉数据源待 P5 |
 | 手动回滚和下线(`rollback_app`、`unpublish_app`) | 已实现,有测试,在本机 Dokploy 上端到端验证过。下线 30 天后自动删除数据还没有实现(任务 2.12) |
 | 控制台 | 只有应用列表页,没有管理页面 |
@@ -140,6 +141,11 @@ pnpm typecheck
 - 所属部门一律从组织架构查。示例组织架构 `infra/dev-org.json`(工号在括号里):`dingtalk:alice`(财务部,A001)、
   `dingtalk:bob`(财务部,A002,手机号 13800000002)、`dingtalk:dave`(财务部下的应付组,A003)、`dingtalk:carol`(销售部,B001)、
   `dingtalk:admin`(信息部,IT01)。改了文件后最长 `ORG_SYNC_MINUTES`(默认 60)分钟生效,或重启服务立即生效。
+- **访问员工应用**:Ferry 启动时(`FERRY_PLATFORM=dokploy`)把登录网关写进 Traefik,并给所有在线应用的域名挂上。
+  没登录的访问者会被带到 Ferry 登录,再带着一次性票据回到应用,拿到只对这个应用有效的 cookie(12 小时,`GATEWAY_COOKIE_HOURS`)。
+  应用从请求头 `X-Ferry-User-Id`、`X-Ferry-User-Name`(百分号编码)、`X-Ferry-User-Departments` 读到访问者,见模板。
+  Traefik 访问 `/authz` 的地址默认是 `http://host.docker.internal:<PORT>/authz`(`GATEWAY_AUTH_URL`);
+  建议设置固定的 `GATEWAY_SECRET`,否则每次重启后访问者要重新跳转一次。**Ferry 停了时所有应用都无法访问。**
 - 组织架构为空时谁都无法登录(包括管理员),所以接入真实环境前要先能同步到组织架构。
 - 登录 cookie 只发给 Ferry 自己的域名,不发给员工应用;用 cookie 做修改操作时要求请求来自 Ferry 自己的页面
   (来源不是 `PUBLIC_URL` 时,加到 `ALLOWED_ORIGINS`)。

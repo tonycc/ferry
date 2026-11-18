@@ -21,7 +21,13 @@ export interface DeployPlatform {
     projectId: string;
     name: string;
   }): Promise<{ databaseId: string; connectionUrl: string }>;
+  /**
+   * 让应用的域名指向这个端口,并挂上登录网关。已有的域名端口不对或没挂网关时会更新,
+   * 所以每次发布都可以调用;没有变化时什么都不做
+   */
   attachDomain(input: { appId: string; host: string; port: number }): Promise<void>;
+  /** 写入登录网关的配置(Traefik 中间件),服务启动时调用。authAddress 是 Traefik 能访问到的 /authz 地址 */
+  ensureGateway(input: { authAddress: string }): Promise<void>;
   /** 合并写入:只更新传入的变量,保留已有的其他变量 */
   setEnv(appId: string, env: Record<string, string>): Promise<void>;
   /** 上传代码包并构建部署,结束后才返回 */

@@ -1,7 +1,10 @@
+import { randomBytes } from "node:crypto";
 import { DokployPlatform } from "./adapters/dokploy";
 import { DokployClient } from "./adapters/dokploy-client";
 import { FsArchiveStore } from "./adapters/archive-store";
 import { HttpHealthChecker } from "./adapters/health";
+import { Gateway, HEALTH_HEADER, healthToken } from "./gateway/gateway";
+import { setupGateway } from "./gateway/setup";
 import { MemoryDirectory } from "./adapters/directory";
 import { createFakeAdapters } from "./adapters/fake";
 import type { Adapters } from "./adapters/types";
@@ -28,6 +31,12 @@ if (config.DEV_AUTH === "true") {
 }
 
 // 代码包保存在本地目录;FERRY_PLATFORM=dokploy 时部署平台和健康检查是真实的,密钥扫描还是假实现
+// 登录网关的密钥:签网关 cookie、算健康检查口令
+if (!config.GATEWAY_SECRET) {
+  console.warn("未设置 GATEWAY_SECRET:本次随机生成,服务重启后访问应用要重新跳转登录一次");
+}
+const gatewaySecret = config.GATEWAY_SECRET ?? randomBytes(32).toString("hex");
+
 // 组织架构:权限判定读内存里的这一份,由 OrgSync 从数据源同步、从数据库恢复
 const directory = new MemoryDirectory();
 const adapters: Adapters = {
@@ -52,6 +61,8 @@ if (config.FERRY_PLATFORM === "dokploy") {
   adapters.health = new HttpHealthChecker({
     gateway: config.HEALTHCHECK_GATEWAY,
     timeoutMs: config.HEALTHCHECK_TIMEOUT_SECONDS * 1000,
+    // 登录网关的健康检查口令,和网关用同一个密钥按域名计算
+    extraHeaders: (host) => ({ [HEALTH_HEADER]: healthToken(gatewaySecret, host) }),
   });
 }
 
@@ -100,16 +111,34 @@ if (publicUrl.hostname === "127.0.0.1") allowedOrigins.add(publicUrl.origin.repl
 const auth = new AuthService(authStore, directory, adapters.notifier, {
   sessionTtlMs: config.SESSION_DAYS * 24 * 3600_000,
 });
+const gateway = new Gateway(service, directory, {
+  secret: gatewaySecret,
+  ferryUrl: publicUrl.origin,
+  appsScheme: config.APPS_URL_SCHEME,
+  appCookieTtlMs: config.GATEWAY_COOKIE_HOURS * 3600_000,
+  ticketTtlMs: 60_000,
+  now: () => new Date(),
+});
 const identity = createIdentity({ auth, directory, adminIds, devAuth: config.DEV_AUTH === "true", allowedOrigins });
 const server = buildServer(service, identity, {
   maxArchiveBytes: config.MAX_ARCHIVE_MB * 1024 * 1024,
+  gateway,
   auth: {
     service: auth,
     directory,
     routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:", codeTtlMinutes: 5 },
   },
 });
-await server.listen({ port: config.PORT, host: "127.0.0.1" });
+await server.listen({ port: config.PORT, host: config.HOST });
+
+// 写入登录网关的 Traefik 配置,并让已有应用的域名都挂上网关。失败只记日志并定时重试,不让 Ferry 退出
+if (config.FERRY_PLATFORM === "dokploy") {
+  const authAddress = config.GATEWAY_AUTH_URL ?? `http://host.docker.internal:${config.PORT}/authz`;
+  await setupGateway(adapters.platform, service, authAddress, {
+    info: (m) => server.log.info(m),
+    error: (m) => server.log.error(m),
+  });
+}
 
 // 继续执行上次没跑完的发布(进程重启前正在进行的)
 const resumed = await service.resumeUnfinished();

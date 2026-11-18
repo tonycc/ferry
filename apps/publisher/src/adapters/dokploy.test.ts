@@ -97,13 +97,13 @@ describe("DokployPlatform", () => {
     expect(called("application.saveBuildType").map((c) => c.input.buildType)).toEqual(["dockerfile", "dockerfile"]);
   });
 
-  it("attachDomain:已经绑过的域名不再重复绑定", async () => {
+  it("attachDomain:新域名挂上登录网关;已一致时不动;没挂网关或端口变了就更新,保留原有中间件", async () => {
+    let domains: Record<string, unknown>[] = [];
     const { platform, called } = fakeDokploy({
-      "domain.byApplicationId": () => [{ domainId: "d1", host: "ledger.apps.localhost" }],
-      "domain.create": () => ({ domainId: "d2" }),
+      "domain.byApplicationId": () => domains,
+      "domain.create": () => ({ domainId: "d-new" }),
+      "domain.update": () => true,
     });
-    await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
-    expect(called("domain.create")).toHaveLength(0);
     await platform.attachDomain({ appId: "a1", host: "crm.apps.localhost", port: 8080 });
     expect(called("domain.create")[0]?.input).toMatchObject({
       host: "crm.apps.localhost",
@@ -111,7 +111,36 @@ describe("DokployPlatform", () => {
       https: false,
       certificateType: "none",
       applicationId: "a1",
+      middlewares: ["ferry-gateway@file"],
     });
+
+    domains = [{ domainId: "d1", host: "ledger.apps.localhost", port: 3000, path: "/", middlewares: ["ferry-gateway@file"] }];
+    await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
+    expect(called("domain.update")).toHaveLength(0);
+
+    // 网关上线之前建的域名:没有中间件
+    domains = [{ domainId: "d1", host: "ledger.apps.localhost", port: 3000, path: "/", middlewares: ["other@file"] }];
+    await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
+    expect(called("domain.update")[0]?.input).toMatchObject({
+      domainId: "d1",
+      port: 3000,
+      path: "/",
+      middlewares: ["other@file", "ferry-gateway@file"],
+    });
+
+    // 端口变了
+    domains = [{ domainId: "d1", host: "ledger.apps.localhost", port: 3000, path: "/", middlewares: ["ferry-gateway@file"] }];
+    await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 8080 });
+    expect(called("domain.update")[1]?.input).toMatchObject({ domainId: "d1", port: 8080 });
+  });
+
+  it("ensureGateway:写入网关配置,顺序是删身份头、问 /authz、删健康检查口令", async () => {
+    const { platform, called } = fakeDokploy({ "settings.updateTraefikFile": () => true });
+    await platform.ensureGateway({ authAddress: "http://host.docker.internal:8080/authz" });
+    const input = called("settings.updateTraefikFile")[0]?.input as { path: string; traefikConfig: string };
+    expect(input.path).toBe("/etc/dokploy/traefik/dynamic/ferry-gateway.yml");
+    expect(input.traefikConfig).toContain('address: "http://host.docker.internal:8080/authz"');
+    expect(input.traefikConfig).toMatch(/- ferry-strip-identity\n\s+- ferry-auth\n\s+- ferry-strip-health/);
   });
 
   it("setEnv:保留已有变量,只更新传入的", async () => {

@@ -57,6 +57,12 @@ function setup(options: { uploadTtlMs?: number; archiveGraceMs?: number } = {}) 
   return { store, adapters, service, publish, startPublish, restart: start };
 }
 
+/** 访问者能否打开应用:和登录网关走同一条路(按域名找应用,再按可见范围判定) */
+async function canSee(service: PublisherService, viewer: { id: string; departments: string[] }, host: string) {
+  const app = await service.gatewayApp(host);
+  return app !== undefined && (await service.canView(app, viewer));
+}
+
 let storeCase: StoreCase;
 
 describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
@@ -139,7 +145,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const view = await publish("v1", "visibility: company\n");
 
       expect(view.state).toBe("LIVE");
-      expect(await service.authorize(carol, "ledger.apps.test")).toBe(true);
+      expect(await canSee(service, carol, "ledger.apps.test")).toBe(true);
     });
   });
 
@@ -205,13 +211,13 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
     it("停用后:停止服务、拒绝访问、禁止发布;恢复后可用", async () => {
       const { adapters, service, publish } = setup();
       await publish("v1", "visibility: department\n");
-      expect(await service.authorize(bob, "ledger.apps.test")).toBe(true);
+      expect(await canSee(service, bob, "ledger.apps.test")).toBe(true);
 
       await service.disableApp(admin, "ledger", "存放了客户隐私数据");
 
       expect(adapters.platform.stopped.has("app_2")).toBe(true);
-      expect(await service.authorize(bob, "ledger.apps.test")).toBe(false);
-      expect(await service.authorize(alice, "ledger.apps.test")).toBe(false);
+      expect(await canSee(service, bob, "ledger.apps.test")).toBe(false);
+      expect(await canSee(service, alice, "ledger.apps.test")).toBe(false);
       await expect(publish("v2")).rejects.toThrow("已被管理员停用");
       expect((await service.listApps(alice))[0]?.disabled).toBe(true);
       expect(adapters.notifier.sent.at(-1)).toEqual({
@@ -221,7 +227,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
 
       await service.enableApp(admin, "ledger");
       expect(adapters.platform.stopped.has("app_2")).toBe(false);
-      expect(await service.authorize(bob, "ledger.apps.test")).toBe(true);
+      expect(await canSee(service, bob, "ledger.apps.test")).toBe(true);
       expect((await publish("v2")).state).toBe("LIVE");
     });
 
@@ -248,6 +254,18 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       await expect(service.disableApp(alice, "ledger")).rejects.toThrow("只有平台管理员");
       await expect(service.listAllApps(bob)).rejects.toThrow("只有平台管理员");
       expect(await service.listAllApps(admin)).toHaveLength(1);
+    });
+  });
+
+  describe("域名", () => {
+    it("改了端口后重新发布,域名跟着指向新端口;端口没变时不重复设置", async () => {
+      const { adapters, publish } = setup();
+      await publish("v1");
+      await publish("v2");
+      expect(adapters.platform.calls.filter((c) => c.startsWith("attachDomain"))).toHaveLength(1);
+      await publish("v3", "port: 8080\n");
+      expect(adapters.platform.domains.get("ledger.apps.test")).toBe(8080);
+      expect(adapters.platform.calls.filter((c) => c.startsWith("attachDomain"))).toHaveLength(2);
     });
   });
 
@@ -317,14 +335,14 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
     it("下线后无法访问、数据库停止、不占名额;重新发布即恢复,数据库重新启动并注入连接串", async () => {
       const { adapters, service, store, publish } = setup();
       await publish("v1", "visibility: department\n");
-      expect(await service.authorize(bob, "ledger.apps.test")).toBe(true);
+      expect(await canSee(service, bob, "ledger.apps.test")).toBe(true);
 
       const view = await service.unpublish(alice, "ledger");
       expect(view).toMatchObject({ name: "ledger", live: false, unpublished: true });
       expect(adapters.platform.calls).toContain("removeApp:app_2");
       expect(adapters.platform.calls).toContain("stopDatabase:db_3");
-      expect(await service.authorize(bob, "ledger.apps.test")).toBe(false);
-      expect(await service.authorize(alice, "ledger.apps.test")).toBe(false);
+      expect(await canSee(service, bob, "ledger.apps.test")).toBe(false);
+      expect(await canSee(service, alice, "ledger.apps.test")).toBe(false);
       expect(adapters.notifier.sent.at(-1)?.message).toContain("已下线");
 
       // 下线的应用不占名额(每人 2 个)
@@ -339,7 +357,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const app = await store.getApp("ledger");
       expect(app?.unpublishedAt).toBeUndefined();
       expect(adapters.platform.env.get(app!.platform.appId!)?.DATABASE_URL).toBeDefined();
-      expect(await service.authorize(bob, "ledger.apps.test")).toBe(true);
+      expect(await canSee(service, bob, "ledger.apps.test")).toBe(true);
     });
 
     it("恢复已下线的应用要占回名额,满了就拒绝", async () => {

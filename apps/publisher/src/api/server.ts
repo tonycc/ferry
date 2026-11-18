@@ -8,6 +8,7 @@ import type { PublisherService } from "../service";
 import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { registerAuthRoutes, type AuthRouteOptions } from "./auth-routes";
+import type { Gateway } from "../gateway/gateway";
 
 const prepareBody = z.object({ name: z.string() });
 const publishBody = z.object({ manifestYaml: z.string(), version: z.string().min(1) });
@@ -17,6 +18,8 @@ export interface ServerOptions {
   maxArchiveBytes: number;
   /** 验证码登录和个人令牌;不传时只有开发用的请求头身份 */
   auth?: { service: AuthService; directory: Directory; routes: AuthRouteOptions };
+  /** 登录网关;不传时没有 /authz 和 /auth/app */
+  gateway?: Gateway;
 }
 
 export function buildServer(
@@ -46,7 +49,7 @@ export function buildServer(
 
   if (options.auth) {
     const { service: auth, directory, routes } = options.auth;
-    registerAuthRoutes(app, auth, identity, directory, routes);
+    registerAuthRoutes(app, auth, identity, directory, routes, options.gateway);
   }
 
   // ---- 给“我的应用”网页用的 REST 接口,与 MCP 工具一一对应 ----
@@ -110,14 +113,19 @@ export function buildServer(
     return { ok: true };
   });
 
-  // ---- 登录网关(Traefik forwardAuth)的权限判定 ----
-  // 网关带着访问者身份和被访问的域名来问:放行还是拒绝
-  app.get("/authz", async (req, reply) => {
-    const host = req.headers["x-forwarded-host"];
-    if (typeof host !== "string") return reply.status(400).send();
-    const allowed = await service.authorize(await identity(req, "authz"), host);
-    return reply.status(allowed ? 200 : 403).send();
-  });
+  // ---- 登录网关(Traefik forwardAuth)----
+  // 每个访问员工应用的请求都先到这里:放行(把访问者身份交给应用)、拒绝,或跳转去登录
+  if (options.gateway) {
+    const gateway = options.gateway;
+    app.route({
+      method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      url: "/authz",
+      handler: async (req, reply) => {
+        const result = await gateway.authorize(req.headers);
+        return reply.status(result.status).headers(result.headers).send(result.body);
+      },
+    });
+  }
 
   // ---- 给 agent 用的 MCP 入口(无状态:每个请求一个实例) ----
   app.post("/mcp", async (req, reply) => {

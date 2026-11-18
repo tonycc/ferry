@@ -59,7 +59,9 @@ ${POST}
     e.preventDefault(); msg("");
     try {
       await post("/auth/verify", { challengeId, code: document.getElementById("code").value });
-      location.href = "/me";
+      // 登录后回到原来要去的页面;只接受站内路径
+      const next = new URLSearchParams(location.search).get("next") || "/me";
+      location.href = next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\\\") ? next : "/me";
     } catch (err) { msg(err.message, "error"); }
   });
   document.getElementById("again").addEventListener("click", () => {
