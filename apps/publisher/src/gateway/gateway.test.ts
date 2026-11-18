@@ -244,6 +244,39 @@ describe("登录网关", () => {
     expect((await authz("ledger.apps.test", "/healthz", { "x-ferry-health": token }, "POST")).statusCode).toBe(403);
   });
 
+  it("同名 cookie 有多个时逐个检查:别的应用往上级域名塞的假 cookie 不会造成反复跳转", async () => {
+    const { authz, addApp, visit } = await setup();
+    await addApp("ledger");
+    const cookie = await visit("A001");
+    const tossed = `${APP_COOKIE}=junk.sig; ${cookie}`;
+    expect((await authz("ledger.apps.test", "/", { cookie: tossed })).statusCode).toBe(200);
+  });
+
+  it("格式错误的 cookie 当作没有:网关跳去登录,Ferry 接口返回 401,都不是 500", async () => {
+    const { app, authz, addApp } = await setup();
+    await addApp("ledger");
+    expect((await authz("ledger.apps.test", "/", { cookie: `${APP_COOKIE}=%E0` })).statusCode).toBe(302);
+    expect((await app.inject({ method: "GET", url: "/api/me", headers: { cookie: "ferry_session=%E0" } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/auth/app?host=ledger.apps.test&next=%2F", headers: { cookie: "ferry_session=%E0" } })).statusCode).toBe(302);
+  });
+
+  it("Ferry 的登录 cookie 也逐个检查:前面有一个无效的,后面有效的仍然能用", async () => {
+    const { app, ferryLogin } = await setup();
+    const cookie = await ferryLogin("A001");
+    const res = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: `ferry_session=bogus; ${cookie}` } });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("每人同时有效的票据有上限,反复请求不会让票据无限增加", async () => {
+    const { app, addApp, ferryLogin, gateway } = await setup();
+    await addApp("ledger");
+    const cookie = await ferryLogin("A001");
+    for (let i = 0; i < 30; i++) {
+      await app.inject({ method: "GET", url: "/auth/app?host=ledger.apps.test&next=%2F", headers: { cookie } });
+    }
+    expect(gateway.pendingTickets).toBe(Gateway.MAX_TICKETS_PER_USER);
+  });
+
   it("下线的应用 404,被停用的应用 403", async () => {
     const { authz, addApp, visit } = await setup();
     await addApp("ledger");

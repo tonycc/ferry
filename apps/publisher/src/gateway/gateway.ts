@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import type { Directory } from "../adapters/types";
-import { readCookie } from "../identity";
+import { readCookies } from "../identity";
 import type { PublisherService } from "../service";
 
 /**
@@ -56,8 +56,10 @@ interface Ticket {
 }
 
 export class Gateway {
-  /** 一次性票据(只在内存里:60 秒内用掉,重启丢了就重新跳一次登录) */
+  /** 一次性票据(只在内存里:60 秒内用掉,重启丢了就重新跳一次登录)。按签发顺序排列 */
   private readonly tickets = new Map<string, Ticket>();
+  /** 每人同时有效的票据上限,超出时丢掉最早的,防止反复请求把内存撑大 */
+  static readonly MAX_TICKETS_PER_USER = 20;
 
   constructor(
     private readonly service: PublisherService,
@@ -67,7 +69,7 @@ export class Gateway {
 
   /** 某个应用的健康检查口令。按域名单独算,一个应用拿到自己的也开不了别的应用 */
   healthToken(host: string): string {
-    return this.hmac(`health:${host.toLowerCase()}`);
+    return healthToken(this.config.secret, host);
   }
 
   /** Traefik forwardAuth 调用的判定 */
@@ -99,7 +101,7 @@ export class Gateway {
       return page(403, "健康检查口令不对");
     }
 
-    if (app.disabled) return page(403, "这个应用已被管理员停用");
+    if (app.disabled !== undefined) return page(403, "这个应用已被管理员停用");
 
     const url = new URL(uri, "http://x");
     if (url.pathname === CALLBACK_PATH) return this.callback(host, url);
@@ -108,7 +110,7 @@ export class Gateway {
     if (!userId || !(await this.directory.isActive(userId))) return this.toLogin(host, uri);
 
     const viewer = { id: userId, departments: await this.directory.departmentsOf(userId) };
-    if (!(await this.service.canView(app.name, viewer))) return page(403, "你没有权限访问这个应用。请联系应用负责人调整可见范围");
+    if (!(await this.service.canView(app, viewer))) return page(403, "你没有权限访问这个应用。请联系应用负责人调整可见范围");
 
     const name = (await this.directory.nameOf(userId)) ?? userId;
     return {
@@ -125,8 +127,10 @@ export class Gateway {
   /** Ferry 这边:已登录的人要去某个应用,签一次性票据跳回去。host 必须是在线的应用,防止被当成跳转器 */
   async issueTicket(userId: string, host: string, next: string): Promise<GatewayResponse> {
     const app = await this.service.gatewayApp(host.toLowerCase());
-    if (!app || app.disabled) return page(404, "这个应用不存在或已下线");
+    if (!app || app.disabled !== undefined) return page(404, "这个应用不存在或已下线");
     this.sweep();
+    const mine = [...this.tickets].filter(([, t]) => t.userId === userId);
+    for (const [id] of mine.slice(0, Math.max(0, mine.length - Gateway.MAX_TICKETS_PER_USER + 1))) this.tickets.delete(id);
     const ticket = randomBytes(24).toString("base64url");
     this.tickets.set(ticket, {
       userId,
@@ -138,6 +142,7 @@ export class Gateway {
   }
 
   private callback(host: string, url: URL): GatewayResponse {
+    this.sweep();
     const ticketId = url.searchParams.get("ticket") ?? "";
     const ticket = this.tickets.get(ticketId);
     this.tickets.delete(ticketId);
@@ -172,15 +177,24 @@ export class Gateway {
     return `${payload}.${this.hmac(`cookie:${payload}`)}`;
   }
 
-  /** 网关 cookie 里的用户;签名不对、过期、不是这个域名的都返回 undefined */
+  /**
+   * 网关 cookie 里的用户。同名 cookie 可能有多个(别的应用往上级域名塞的),逐个检查,
+   * 任意一个签名对、没过期、属于这个域名就算数;都不行返回 undefined
+   */
   private readAppCookie(headers: IncomingHttpHeaders, host: string): string | undefined {
-    const raw = readCookie(headers, APP_COOKIE);
-    if (!raw) return undefined;
+    for (const raw of readCookies(headers, APP_COOKIE)) {
+      const userId = this.verifyAppCookie(raw, host);
+      if (userId) return userId;
+    }
+    return undefined;
+  }
+
+  private verifyAppCookie(raw: string, host: string): string | undefined {
     const [payload, signature] = raw.split(".");
     if (!payload || !signature || !sameText(signature, this.hmac(`cookie:${payload}`))) return undefined;
     try {
       const data = JSON.parse(Buffer.from(payload, "base64url").toString()) as { u: string; h: string; e: number };
-      if (data.h !== host || data.e <= this.config.now().getTime()) return undefined;
+      if (data.h !== host || data.e <= this.config.now().getTime() || typeof data.u !== "string") return undefined;
       return data.u;
     } catch {
       return undefined;
@@ -191,10 +205,20 @@ export class Gateway {
     return createHmac("sha256", this.config.secret).update(value).digest("base64url");
   }
 
+  /** 当前有效的票据数(测试用) */
+  get pendingTickets(): number {
+    return this.tickets.size;
+  }
+
   private sweep(): void {
     const now = this.config.now().getTime();
     for (const [id, ticket] of this.tickets) if (ticket.expiresAt < now) this.tickets.delete(id);
   }
+}
+
+/** 健康检查口令:HMAC(密钥, 域名)。单独导出,健康检查不用等网关对象创建好就能算 */
+export function healthToken(secret: string, host: string): string {
+  return createHmac("sha256", secret).update(`health:${host.toLowerCase()}`).digest("base64url");
 }
 
 /**
