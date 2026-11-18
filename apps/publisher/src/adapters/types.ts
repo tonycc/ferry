@@ -13,8 +13,10 @@ export interface Archive {
 
 /** 部署平台(Dokploy) */
 export interface DeployPlatform {
+  /** 以下三个都是按名称查找或新建:已有同名的就复用 */
   createProject(name: string): Promise<string>;
   createApp(input: { projectId: string; name: string; port: number }): Promise<string>;
+  /** 查找或新建数据库,并确保它在运行(停着的会启动),返回连接串 */
   createDatabase(input: {
     projectId: string;
     name: string;
@@ -31,6 +33,10 @@ export interface DeployPlatform {
   /** 停止应用的服务(管理员停用时用),数据和配置保留 */
   stopApp(appId: string): Promise<void>;
   startApp(appId: string): Promise<void>;
+  /** 下线:删除应用(连同域名),等它的容器都停掉后返回 */
+  removeApp(appId: string): Promise<void>;
+  /** 下线:停止数据库,数据保留;之后 createDatabase 会重新启动它 */
+  stopDatabase(databaseId: string): Promise<void>;
 }
 
 /** 代码包存储:每次上传保存一份,部署和回滚时取回,按保留规则清理 */

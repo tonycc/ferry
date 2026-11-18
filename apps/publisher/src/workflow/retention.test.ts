@@ -32,6 +32,7 @@ async function setup(releases: [version: string, state: ReleaseState][], liveVer
     await archives.save("ledger", version, ZIP);
     await store.saveRelease({
       id: `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`,
+      kind: "publish",
       appName: "ledger",
       ownerId: "dingtalk:alice",
       version,

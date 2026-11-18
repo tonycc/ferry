@@ -13,6 +13,11 @@ export interface AppRecord {
   liveVersion?: string;
   /** 有值表示已被管理员停用:服务已停止,不能访问,也不能发布 */
   disabled?: { by: string; at: Date; reason?: string };
+  /**
+   * 有值表示负责人已下线:部署平台上的应用已删除,数据库已停止但数据保留。
+   * 应用名仍归负责人所有,重新发布即恢复(连同原来的数据)
+   */
+  unpublishedAt?: Date;
   createdAt: Date;
 }
 
@@ -26,6 +31,8 @@ export interface ReleaseError {
 
 export interface ReleaseRecord {
   id: string;
+  /** publish:发布新版本;rollback:回滚到之前上线过的版本,只部署代码,不迁移数据库 */
+  kind: "publish" | "rollback";
   appName: string;
   ownerId: string;
   /** 这次发布使用的代码包版本 */
@@ -59,7 +66,7 @@ export interface Store {
   /** 新建应用;应用名已被占用时不写入并返回 false */
   createApp(app: AppRecord): Promise<boolean>;
   /**
-   * 更新应用的部署信息(platform、liveVersion、visibility)。
+   * 更新应用的部署信息(platform、liveVersion、visibility、unpublishedAt)。
    * 不改停用状态:发布过程中管理员可能同时停用应用,用旧数据整行覆盖会把停用标记冲掉。
    */
   saveApp(app: AppRecord): Promise<void>;

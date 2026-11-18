@@ -7,8 +7,6 @@ import type { PublisherService } from "../service";
 /**
  * 给 agent 用的 MCP 工具。每个请求按当前登录用户建一个实例,
  * 所以工具里拿不到、也不需要任何平台凭据。
- *
- * TODO: rollback_app、unpublish_app 还没有实现。
  */
 export function createMcpServer(service: PublisherService, user: User): McpServer {
   const server = new McpServer({ name: "ferry", version: "0.0.0" });
@@ -61,6 +59,30 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
       inputSchema: { name: z.string(), lines: z.number().int().min(1).max(1000).optional() },
     },
     ({ name, lines }) => respond(() => service.getLogs(user, name, lines)),
+  );
+
+  server.registerTool(
+    "rollback_app",
+    {
+      description:
+        "把应用恢复到上一个上线过的版本。只在用户明确要求“回到上一个版本”时调用。" +
+        "只恢复代码,不恢复数据库:旧代码会跑在新版本迁移过的数据库上,这一点要告诉用户。" +
+        "返回 releaseId 以及 from/to 两个版本的上线时间,之后用 get_publish_status 查询进度。" +
+        "回滚一次后再回滚,会回到回滚前的版本,不会更早。",
+      inputSchema: { name: z.string().describe("应用名") },
+    },
+    ({ name }) => respond(() => service.rollback(user, name)),
+  );
+
+  server.registerTool(
+    "unpublish_app",
+    {
+      description:
+        "下线应用:访问地址立即失效,同事都无法再访问。只在用户明确要求下线时调用,调用前先向用户确认。" +
+        "数据库会停止,但数据保留;应用名仍归用户所有,以后对同名应用重新走一遍 prepare_app、上传、publish_app 即可恢复,原来的数据还在。",
+      inputSchema: { name: z.string().describe("应用名") },
+    },
+    ({ name }) => respond(() => service.unpublish(user, name)),
   );
 
   return server;

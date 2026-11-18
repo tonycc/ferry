@@ -52,6 +52,15 @@ export function buildServer(
     logs: await service.getLogs(identity(req.headers), req.params.name),
   }));
 
+  app.post<{ Params: { name: string } }>("/api/apps/:name/rollback", async (req, reply) => {
+    const view = await service.rollback(identity(req.headers), req.params.name);
+    return reply.status(202).send(view);
+  });
+
+  app.post<{ Params: { name: string } }>("/api/apps/:name/unpublish", async (req) =>
+    service.unpublish(identity(req.headers), req.params.name),
+  );
+
   app.post("/api/releases", async (req, reply) => {
     const view = await service.publish(identity(req.headers), publishBody.parse(req.body));
     return reply.status(202).send(view);

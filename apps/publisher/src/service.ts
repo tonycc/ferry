@@ -35,6 +35,8 @@ export interface PreparedUpload {
 
 export interface ReleaseView {
   releaseId: string;
+  /** publish:发布新版本;rollback:回滚 */
+  kind: "publish" | "rollback";
   app: string;
   state: ReleaseState;
   /** 发布流程是否已结束(成功或失败) */
@@ -52,6 +54,14 @@ export interface AppView {
   live: boolean;
   /** 已被管理员停用 */
   disabled: boolean;
+  /** 已被负责人下线,数据保留,重新发布即恢复 */
+  unpublished: boolean;
+}
+
+/** 回滚时返回:发起的回滚发布单,以及从哪个版本回到哪个版本(用上线时间让用户分辨) */
+export interface RollbackView extends ReleaseView {
+  from: { version: string; publishedAt: string };
+  to: { version: string; publishedAt: string };
 }
 
 export interface AdminAppView extends AppView {
@@ -89,10 +99,11 @@ export class PublisherService {
     if (existing?.disabled) {
       throw new UserError("forbidden", `应用 ${name} 已被管理员停用,不能发布。请联系平台管理员`);
     }
-    if (!existing) {
-      const mine = await this.store.listAppsByOwner(user.id);
-      if (mine.length >= this.config.maxAppsPerUser) {
-        throw new UserError("quota_exceeded", `每人最多 ${this.config.maxAppsPerUser} 个应用,请先下线不用的应用`);
+    // 下线的应用不占名额;重新发布已下线的应用等于恢复它,要占回一个名额
+    if (!existing || existing.unpublishedAt) {
+      const active = (await this.store.listAppsByOwner(user.id)).filter((a) => !a.unpublishedAt);
+      if (active.length >= this.config.maxAppsPerUser) {
+        throw new UserError("quota_exceeded", `每人最多 ${this.config.maxAppsPerUser} 个在线的应用,请先下线不用的应用`);
       }
     }
 
@@ -168,9 +179,15 @@ export class PublisherService {
     if (releases.some((r) => !isTerminal(r.state))) {
       throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束`);
     }
+    if (app.unpublishedAt) {
+      // 重新发布已下线的应用:恢复它,数据库会重新启动,原来的数据还在
+      app.unpublishedAt = undefined;
+      await this.store.saveApp(app);
+    }
 
     const release: ReleaseRecord = {
       id: randomUUID(),
+      kind: "publish",
       appName: app.name,
       ownerId: user.id,
       version: input.version,
@@ -193,6 +210,79 @@ export class PublisherService {
   async listApps(user: User): Promise<AppView[]> {
     const apps = await this.store.listAppsByOwner(user.id);
     return apps.map((app) => toAppView(app, this.appUrl(app.host)));
+  }
+
+  /**
+   * 回滚到上一个上线过的版本:只重新部署那个版本的代码并做健康检查,不动数据库,
+   * 也不改可见范围等设置。上线过的版本最多保留两个,所以回滚一次之后再回滚,会回到回滚前的版本。
+   */
+  async rollback(user: User, appName: string): Promise<RollbackView> {
+    const app = await this.ownApp(user, appName);
+    if (app.disabled) throw new UserError("forbidden", `应用 ${app.name} 已被管理员停用,不能回滚。请联系平台管理员`);
+    if (app.unpublishedAt || !app.liveVersion) {
+      throw new UserError("invalid_input", `应用 ${app.name} 现在没有在线的版本,不能回滚`);
+    }
+    const releases = await this.store.listReleases(app.name);
+    if (releases.some((r) => !isTerminal(r.state))) {
+      throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束`);
+    }
+
+    const live = [...releases].reverse().filter((r) => r.state === "LIVE");
+    const current = live.find((r) => r.version === app.liveVersion);
+    const target = live.find((r) => r.version !== app.liveVersion);
+    if (!current || !target || !(await this.adapters.archives.read(app.name, target.version))) {
+      throw new UserError("not_found", `应用 ${app.name} 没有可以回滚的上一个版本`);
+    }
+    if (target.manifest.port !== current.manifest.port) {
+      throw new UserError(
+        "invalid_input",
+        `上一个版本监听的端口(${target.manifest.port})和现在的(${current.manifest.port})不同,不能直接回滚。请修复当前版本后重新发布`,
+      );
+    }
+
+    const release: ReleaseRecord = {
+      id: randomUUID(),
+      kind: "rollback",
+      appName: app.name,
+      ownerId: user.id,
+      version: target.version,
+      manifest: target.manifest,
+      state: "PENDING",
+      history: [{ state: "PENDING", at: new Date() }],
+      createdAt: new Date(),
+    };
+    await this.store.saveRelease(release);
+    this.schedule(release.id);
+    return {
+      ...toView(release),
+      from: { version: current.version, publishedAt: current.createdAt.toISOString() },
+      to: { version: target.version, publishedAt: target.createdAt.toISOString() },
+    };
+  }
+
+  /**
+   * 下线:删除部署平台上的应用(访问地址随即失效),停止数据库但保留数据。
+   * 应用名仍归负责人所有,重新发布即恢复,原来的数据还在。被管理员停用的应用也可以下线。
+   */
+  async unpublish(user: User, appName: string): Promise<AppView> {
+    const app = await this.ownApp(user, appName);
+    // 已下线且资源已删完才直接返回;上次下线中途出错时,再调用一次会把剩下的做完
+    if (app.unpublishedAt && !app.platform.appId) return toAppView(app, this.appUrl(app.host));
+    const releases = await this.store.listReleases(app.name);
+    if (releases.some((r) => !isTerminal(r.state))) {
+      throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再下线`);
+    }
+
+    // 先标记下线,访问立即被拒绝;再删部署平台上的资源
+    app.unpublishedAt = new Date();
+    await this.store.saveApp(app);
+    if (app.platform.appId) await this.adapters.platform.removeApp(app.platform.appId);
+    if (app.platform.databaseId) await this.adapters.platform.stopDatabase(app.platform.databaseId);
+    app.platform = { ...app.platform, appId: undefined, domainAttached: false };
+    app.liveVersion = undefined;
+    await this.store.saveApp(app);
+    await this.adapters.notifier.notify(app.ownerId, `应用 ${app.name} 已下线,数据已保留,重新发布即可恢复`);
+    return toAppView(app, this.appUrl(app.host));
   }
 
   // ---- 管理员操作 ----
@@ -249,7 +339,7 @@ export class PublisherService {
   /** 登录网关的权限判定:viewer 能否访问 host 对应的应用 */
   async authorize(viewer: User, host: string): Promise<boolean> {
     const app = await this.store.getAppByHost(host);
-    if (!app || app.disabled) return false;
+    if (!app || app.disabled || app.unpublishedAt) return false;
     return canAccess(app, viewer, this.adapters.directory);
   }
 
@@ -275,6 +365,12 @@ export class PublisherService {
     } catch (err) {
       console.error(`清理发布单 ${releaseId} 所属应用的代码包时出错`, err);
     }
+  }
+
+  private async ownApp(user: User, appName: string): Promise<AppRecord> {
+    const app = await this.store.getApp(appName);
+    if (!app || app.ownerId !== user.id) throw new UserError("not_found", `应用 ${appName} 不存在`);
+    return app;
   }
 
   private appUrl(host: string): string {
@@ -318,12 +414,14 @@ function toAppView(app: AppRecord, url: string): AppView {
     visibility: app.visibility,
     live: app.liveVersion !== undefined,
     disabled: app.disabled !== undefined,
+    unpublished: app.unpublishedAt !== undefined,
   };
 }
 
 function toView(release: ReleaseRecord): ReleaseView {
   return {
     releaseId: release.id,
+    kind: release.kind,
     app: release.appName,
     state: release.state,
     done: isTerminal(release.state),
@@ -334,6 +432,16 @@ function toView(release: ReleaseRecord): ReleaseView {
 }
 
 function nextAction(release: ReleaseRecord): string {
+  if (release.kind === "rollback") {
+    switch (release.state) {
+      case "LIVE":
+        return `回滚成功,线上已恢复为之前的版本。告诉用户访问地址 ${release.url},并提醒数据库没有回滚`;
+      case "FAILED":
+        return "回滚没有成功,线上仍是原来的版本。不要修改代码,把情况告诉用户";
+      default:
+        return "回滚进行中,几秒后再查询";
+    }
+  }
   switch (release.state) {
     case "LIVE":
       return `发布成功,把访问地址 ${release.url} 告诉用户`;

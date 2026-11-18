@@ -1,5 +1,5 @@
 import type { Adapters, Archive } from "../adapters/types";
-import { STEP_ORDER, isTerminal, type ReleaseState, type StepState } from "./states";
+import { isTerminal, stepOrder, type ReleaseState, type StepState } from "./states";
 import type { AppRecord, ReleaseRecord, Store } from "./store";
 
 export interface EngineConfig {
@@ -40,12 +40,13 @@ export class Engine {
     const release = await this.store.getRelease(releaseId);
     if (!release) throw new Error(`发布单 ${releaseId} 不存在`);
     if (isTerminal(release.state)) return release;
-    if (release.state === "PENDING") await this.transition(release, "VALIDATING");
+    const order = stepOrder(release.kind);
+    if (release.state === "PENDING") await this.transition(release, order[0]!);
 
     for (;;) {
       const state = release.state as StepState;
       let result: StepResult;
-      const next = STEP_ORDER[STEP_ORDER.indexOf(state) + 1];
+      const next = order[order.indexOf(state) + 1];
       try {
         result = (await this.stopIfDisabled(release)) ?? (await this.steps[state](release));
         // 最后一步通过后、上线之前再检查一次,避免停用和上线同时发生时应用仍在运行
@@ -130,13 +131,17 @@ export class Engine {
         await this.store.saveApp(app);
       }
 
-      if (manifest.database === "postgres" && !app.platform.databaseId) {
+      // 每次发布都确认数据库存在、已启动,并把连接串注入应用:
+      // 下线后重新发布时,应用是新建的(环境变量为空),数据库是停着的。createDatabase 会复用同名数据库。
+      // 先注入连接串再记下数据库 ID:反过来的话,两步之间进程重启,恢复后连接串可能注入不进去。
+      // 连接串只注入应用环境变量,不写进发布单,也不返回给 agent
+      if (manifest.database === "postgres") {
         const db = await platform.createDatabase({ projectId, name: app.name });
-        // 先注入连接串再记下数据库 ID:反过来的话,两步之间进程重启,恢复后会以为数据库已建好,连接串就再也注入不进去了。
-        // 连接串只注入应用环境变量,不写进发布单,也不返回给 agent
         await platform.setEnv(app.platform.appId, { DATABASE_URL: db.connectionUrl });
-        app.platform.databaseId = db.databaseId;
-        await this.store.saveApp(app);
+        if (app.platform.databaseId !== db.databaseId) {
+          app.platform.databaseId = db.databaseId;
+          await this.store.saveApp(app);
+        }
       }
       await platform.setEnv(app.platform.appId, { PORT: String(manifest.port) });
 
@@ -238,7 +243,12 @@ export class Engine {
     };
 
     let next: ReleaseState;
-    if (!failure.fixable) {
+    if (release.kind === "rollback") {
+      // 回滚失败时线上仍是原来的版本;不是代码问题,不计入 agent 的修复次数,也不让 agent 去改代码
+      next = "FAILED";
+      release.error.message = `回滚没有成功,线上仍是原来的版本。${failure.message}`;
+      release.error.hint = "不要修改代码。把情况告诉用户;需要的话请联系平台管理员";
+    } else if (!failure.fixable) {
       next = "FAILED";
     } else if ((await this.priorConsecutiveFailures(release)) + 1 >= this.config.maxFixAttempts) {
       next = "FAILED";
@@ -249,13 +259,17 @@ export class Engine {
 
     await this.transition(release, next);
     if (next === "FAILED") {
-      await this.adapters.notifier.notify(release.ownerId, `应用 ${release.appName} 发布失败: ${failure.message}`);
+      const action = release.kind === "rollback" ? "回滚" : "发布";
+      await this.adapters.notifier.notify(release.ownerId, `应用 ${release.appName} ${action}失败: ${failure.message}`);
     }
   }
 
   /** 这次发布之前,同一应用连续多少次以“可修复的失败”结束 */
   private async priorConsecutiveFailures(release: ReleaseRecord): Promise<number> {
-    const earlier = (await this.store.listReleases(release.appName)).filter((r) => r.id !== release.id);
+    // 回滚不是 agent 发起的修复,不参与计数
+    const earlier = (await this.store.listReleases(release.appName)).filter(
+      (r) => r.id !== release.id && r.kind === "publish",
+    );
     let count = 0;
     for (const r of earlier.reverse()) {
       if (r.state !== "FAILED_FIXABLE" && r.state !== "ROLLED_BACK") break;

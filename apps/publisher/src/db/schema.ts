@@ -18,6 +18,8 @@ export const apps = pgTable(
     liveVersion: text("live_version"),
     /** 被管理员停用时: { by, at, reason } */
     disabled: jsonb("disabled"),
+    /** 负责人下线的时间;为空表示未下线 */
+    unpublishedAt: timestamp("unpublished_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("apps_owner_id_idx").on(t.ownerId)],
@@ -27,6 +29,8 @@ export const releases = pgTable(
   "releases",
   {
     id: uuid("id").primaryKey(),
+    /** publish 或 rollback */
+    kind: text("kind").notNull().default("publish"),
     /** 写入顺序。创建时间可能相同(毫秒精度),排序时用它保证先后 */
     seq: bigint("seq", { mode: "number" }).generatedAlwaysAsIdentity(),
     appName: text("app_name")

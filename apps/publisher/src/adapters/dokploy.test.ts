@@ -387,6 +387,40 @@ describe("DokployPlatform:数据库、命令、备份", () => {
   });
 });
 
+describe("DokployPlatform:下线", () => {
+  it("removeApp:先删残留的命令任务,再删应用,等容器停掉;查询容器报错也算已停止", async () => {
+    let deleted = false;
+    let taskCalls = 0;
+    const { platform, called } = fakeDokploy({
+      "application.one": () => ({ applicationId: "a1", appName: "ledger-x1", env: null }),
+      "schedule.list": () => [
+        { scheduleId: "s1", name: "ferry-command-1" },
+        { scheduleId: "s2", name: "user-job" },
+      ],
+      "schedule.delete": () => true,
+      "application.delete": () => {
+        deleted = true;
+        return true;
+      },
+      "docker.getServiceContainersByAppName": () => {
+        taskCalls++;
+        if (!deleted || taskCalls === 1) return [{ containerId: "t1", state: "running", currentState: "Running 1 minute ago" }];
+        return new Response("no such service", { status: 500 });
+      },
+    });
+    await platform.removeApp("a1");
+    expect(called("schedule.delete").map((c) => c.input.scheduleId)).toEqual(["s1"]);
+    expect(called("application.delete")).toHaveLength(1);
+    expect(taskCalls).toBe(2);
+  });
+
+  it("stopDatabase:调用 postgres.stop", async () => {
+    const { platform, called } = fakeDokploy({ "postgres.stop": () => true });
+    await platform.stopDatabase("pg1");
+    expect(called("postgres.stop")[0]?.input).toEqual({ postgresId: "pg1" });
+  });
+});
+
 describe("环境变量文本", () => {
   it("解析和拼接互为逆操作,值里可以有等号,跳过注释和空行", () => {
     const env = parseEnv("# comment\nA=1\n\nB=x=y\n");

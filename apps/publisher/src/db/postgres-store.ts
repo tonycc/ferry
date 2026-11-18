@@ -65,6 +65,7 @@ export class PostgresStore implements Store {
         platform: app.platform,
         liveVersion: app.liveVersion ?? null,
         disabled: app.disabled ?? null,
+        unpublishedAt: app.unpublishedAt ?? null,
         createdAt: app.createdAt,
       })
       .onConflictDoNothing()
@@ -75,7 +76,12 @@ export class PostgresStore implements Store {
   async saveApp(app: AppRecord) {
     const updated = await this.db
       .update(schema.apps)
-      .set({ platform: app.platform, liveVersion: app.liveVersion ?? null, visibility: app.visibility })
+      .set({
+        platform: app.platform,
+        liveVersion: app.liveVersion ?? null,
+        visibility: app.visibility,
+        unpublishedAt: app.unpublishedAt ?? null,
+      })
       .where(eq(schema.apps.name, app.name))
       .returning({ name: schema.apps.name });
     if (updated.length === 0) throw new Error(`应用 ${app.name} 不存在`);
@@ -116,6 +122,7 @@ export class PostgresStore implements Store {
       .insert(schema.releases)
       .values({
         id: release.id,
+        kind: release.kind,
         appName: release.appName,
         ownerId: release.ownerId,
         version: release.version,
@@ -172,6 +179,7 @@ function toApp(row: AppRow): AppRecord {
     platform: row.platform as AppRecord["platform"],
     liveVersion: row.liveVersion ?? undefined,
     disabled: disabled ? { ...disabled, at: new Date(disabled.at) } : undefined,
+    unpublishedAt: row.unpublishedAt ?? undefined,
     createdAt: row.createdAt,
   };
 }
@@ -180,6 +188,7 @@ function toRelease(row: ReleaseRow): ReleaseRecord {
   const history = row.history as { state: ReleaseState; at: string }[];
   return {
     id: row.id,
+    kind: row.kind as ReleaseRecord["kind"],
     appName: row.appName,
     ownerId: row.ownerId,
     version: row.version,

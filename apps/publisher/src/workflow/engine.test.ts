@@ -152,7 +152,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
 
       await service.prepareApp(alice, "ledger");
       await service.prepareApp(alice, "second-app");
-      await expect(service.prepareApp(alice, "third-app")).rejects.toThrow("最多 2 个应用");
+      await expect(service.prepareApp(alice, "third-app")).rejects.toThrow("最多 2 个在线的应用");
     });
   });
 
@@ -249,6 +249,129 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       await expect(service.disableApp(alice, "ledger")).rejects.toThrow("只有平台管理员");
       await expect(service.listAllApps(bob)).rejects.toThrow("只有平台管理员");
       expect(await service.listAllApps(admin)).toHaveLength(1);
+    });
+  });
+
+  describe("回滚", () => {
+    it("回到上一个上线过的版本:只部署代码和检查,不迁移、不备份、不改可见范围", async () => {
+      const { adapters, service, store, publish } = setup();
+      const v1 = await publish("v1");
+      const v2 = await publish("v2", "visibility: department\n");
+      const migrationsBefore = adapters.platform.calls.filter((c) => c.startsWith("runCommand")).length;
+      const backupsBefore = adapters.platform.calls.filter((c) => c.startsWith("backupDatabase")).length;
+
+      const started = await service.rollback(alice, "ledger");
+      expect(started.kind).toBe("rollback");
+      expect(started.from.version).toBe(v2.version);
+      expect(started.to.version).toBe(v1.version);
+      await service.settle(started.releaseId);
+
+      const view = await service.status(alice, started.releaseId);
+      expect(view.state).toBe("LIVE");
+      expect(view.nextAction).toContain("数据库没有回滚");
+      const release = await store.getRelease(started.releaseId);
+      expect(release?.history.map((h) => h.state)).toEqual(["PENDING", "BUILDING", "VERIFYING", "LIVE"]);
+      expect(adapters.platform.deployedVersion.get("app_2")).toBe(v1.version);
+      expect(adapters.platform.calls.filter((c) => c.startsWith("runCommand"))).toHaveLength(migrationsBefore);
+      expect(adapters.platform.calls.filter((c) => c.startsWith("backupDatabase"))).toHaveLength(backupsBefore);
+      const app = await store.getApp("ledger");
+      expect(app?.liveVersion).toBe(v1.version);
+      expect(app?.visibility).toBe("department");
+    });
+
+    it("回滚一次后再回滚,回到回滚前的版本", async () => {
+      const { adapters, service, publish } = setup();
+      await publish("v1");
+      const v2 = await publish("v2");
+      await service.settle((await service.rollback(alice, "ledger")).releaseId);
+      const again = await service.rollback(alice, "ledger");
+      expect(again.to.version).toBe(v2.version);
+      await service.settle(again.releaseId);
+      expect(adapters.platform.deployedVersion.get("app_2")).toBe(v2.version);
+    });
+
+    it("没有上一个版本、端口不同、不是负责人时拒绝", async () => {
+      const { service, publish } = setup();
+      await publish("v1");
+      await expect(service.rollback(alice, "ledger")).rejects.toThrow("没有可以回滚的上一个版本");
+      await expect(service.rollback(bob, "ledger")).rejects.toThrow("不存在");
+      await publish("v2", "port: 8080\n");
+      await expect(service.rollback(alice, "ledger")).rejects.toThrow("端口");
+    });
+
+    it("回滚失败时线上仍是原来的版本,结果是 FAILED,提示 agent 不要改代码", async () => {
+      const { adapters, service, publish } = setup();
+      await publish("v1");
+      const v2 = await publish("v2");
+      adapters.health.healthy = false;
+      const started = await service.rollback(alice, "ledger");
+      await service.settle(started.releaseId);
+      const view = await service.status(alice, started.releaseId);
+      expect(view.state).toBe("FAILED");
+      expect(view.error?.message).toContain("线上仍是原来的版本");
+      expect(view.error?.hint).toContain("不要修改代码");
+      expect(adapters.platform.deployedVersion.get("app_2")).toBe(v2.version);
+    });
+  });
+
+  describe("下线", () => {
+    it("下线后无法访问、数据库停止、不占名额;重新发布即恢复,数据库重新启动并注入连接串", async () => {
+      const { adapters, service, store, publish } = setup();
+      await publish("v1", "visibility: department\n");
+      expect(await service.authorize(bob, "ledger.apps.test")).toBe(true);
+
+      const view = await service.unpublish(alice, "ledger");
+      expect(view).toMatchObject({ name: "ledger", live: false, unpublished: true });
+      expect(adapters.platform.calls).toContain("removeApp:app_2");
+      expect(adapters.platform.calls).toContain("stopDatabase:db_3");
+      expect(await service.authorize(bob, "ledger.apps.test")).toBe(false);
+      expect(await service.authorize(alice, "ledger.apps.test")).toBe(false);
+      expect(adapters.notifier.sent.at(-1)?.message).toContain("已下线");
+
+      // 下线的应用不占名额(每人 2 个)
+      await service.prepareApp(alice, "crm");
+      await service.prepareApp(alice, "wiki");
+      await service.unpublish(alice, "wiki");
+
+      const restored = await publish("v2", "visibility: department\n");
+      expect(restored.state).toBe("LIVE");
+      expect(adapters.platform.calls).toContain("startDatabase:db_3");
+      expect(adapters.platform.calls.filter((c) => c.startsWith("createDatabase"))).toHaveLength(1);
+      const app = await store.getApp("ledger");
+      expect(app?.unpublishedAt).toBeUndefined();
+      expect(adapters.platform.env.get(app!.platform.appId!)?.DATABASE_URL).toBeDefined();
+      expect(await service.authorize(bob, "ledger.apps.test")).toBe(true);
+    });
+
+    it("恢复已下线的应用要占回名额,满了就拒绝", async () => {
+      const { service, publish } = setup();
+      await publish("v1");
+      await service.unpublish(alice, "ledger");
+      await service.prepareApp(alice, "crm");
+      await service.prepareApp(alice, "wiki");
+      await expect(service.prepareApp(alice, "ledger")).rejects.toThrow("最多 2 个在线的应用");
+    });
+
+    it("发布进行中不能下线;被管理员停用的应用可以下线;重复下线不报错", async () => {
+      const { adapters, service, startPublish, publish } = setup();
+      const deploy = adapters.platform.deploy.bind(adapters.platform);
+      let release: () => void = () => {};
+      adapters.platform.deploy = async (appId, archive) => {
+        await new Promise<void>((r) => (release = r));
+        return deploy(appId, archive);
+      };
+      const { releaseId } = await startPublish("v1");
+      await new Promise((r) => setTimeout(r, 10));
+      await expect(service.unpublish(alice, "ledger")).rejects.toThrow("还在进行中");
+      release();
+      await service.settle(releaseId);
+      adapters.platform.deploy = deploy;
+
+      await publish("v2");
+      await service.disableApp(admin, "ledger");
+      expect((await service.unpublish(alice, "ledger")).unpublished).toBe(true);
+      expect((await service.unpublish(alice, "ledger")).unpublished).toBe(true);
+      expect(adapters.platform.calls.filter((c) => c.startsWith("removeApp"))).toHaveLength(1);
     });
   });
 

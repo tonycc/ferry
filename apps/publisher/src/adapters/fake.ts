@@ -31,20 +31,44 @@ export class FakePlatform implements DeployPlatform {
     return `${prefix}_${++this.seq}`;
   }
 
+  /** 和真实平台一样按名称查找或新建,只有真正新建时才记入 calls */
+  private readonly projects = new Map<string, string>();
+  private readonly apps = new Map<string, string>();
+  /** 数据库名称 → ID 和是否在运行 */
+  readonly databases = new Map<string, { id: string; running: boolean }>();
+
   async createProject(name: string): Promise<string> {
-    this.calls.push(`createProject:${name}`);
-    return this.id("proj");
+    let id = this.projects.get(name);
+    if (!id) {
+      this.calls.push(`createProject:${name}`);
+      id = this.id("proj");
+      this.projects.set(name, id);
+    }
+    return id;
   }
 
   async createApp(input: { name: string }): Promise<string> {
-    this.calls.push(`createApp:${input.name}`);
-    return this.id("app");
+    let id = this.apps.get(input.name);
+    if (!id) {
+      this.calls.push(`createApp:${input.name}`);
+      id = this.id("app");
+      this.apps.set(input.name, id);
+    }
+    return id;
   }
 
   async createDatabase(input: { name: string }) {
-    this.calls.push(`createDatabase:${input.name}`);
+    let db = this.databases.get(input.name);
+    if (!db) {
+      this.calls.push(`createDatabase:${input.name}`);
+      db = { id: this.id("db"), running: true };
+      this.databases.set(input.name, db);
+    } else if (!db.running) {
+      this.calls.push(`startDatabase:${db.id}`);
+      db.running = true;
+    }
     return {
-      databaseId: this.id("db"),
+      databaseId: db.id,
       connectionUrl: `postgres://app:fake@${input.name}-db:5432/${input.name}`,
     };
   }
@@ -89,6 +113,18 @@ export class FakePlatform implements DeployPlatform {
   async startApp(appId: string): Promise<void> {
     this.calls.push(`startApp:${appId}`);
     this.stopped.delete(appId);
+  }
+
+  async removeApp(appId: string): Promise<void> {
+    this.calls.push(`removeApp:${appId}`);
+    for (const [name, id] of this.apps) if (id === appId) this.apps.delete(name);
+    this.deployedVersion.delete(appId);
+    this.env.delete(appId);
+  }
+
+  async stopDatabase(databaseId: string): Promise<void> {
+    this.calls.push(`stopDatabase:${databaseId}`);
+    for (const db of this.databases.values()) if (db.id === databaseId) db.running = false;
   }
 }
 

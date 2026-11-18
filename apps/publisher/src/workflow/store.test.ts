@@ -25,6 +25,7 @@ function newApp(overrides: Partial<AppRecord> = {}): AppRecord {
 function newRelease(overrides: Partial<ReleaseRecord> = {}): ReleaseRecord {
   return {
     id: "00000000-0000-4000-8000-000000000001",
+    kind: "publish",
     appName: "ledger",
     ownerId: "dingtalk:alice",
     version: "v1",
@@ -67,6 +68,9 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
         platform: { projectId: "proj_1", appId: "app_2", databaseId: "db_3", domainAttached: true },
         liveVersion: "v1",
       });
+      await store.saveApp(updated);
+      // 下线时间也随部署信息一起保存
+      updated.unpublishedAt = at("2026-11-16T08:30:00.000Z");
       await store.saveApp(updated);
       const disabled = { by: "dingtalk:admin", at: at("2026-11-16T09:00:00.000Z"), reason: "存放了客户隐私数据" };
       await store.setAppDisabled("ledger", disabled);
@@ -121,11 +125,13 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
     it("可选字段为空和有值时都原样读回,历史里的时间是 Date", async () => {
       const store = storeCase.create();
       await store.createApp(newApp());
-      const release = newRelease();
+      // 发布单类型在创建时确定,之后不变
+      const release = newRelease({ kind: "rollback" });
       await store.saveRelease(release);
       expect(await store.getRelease(release.id)).toEqual(release);
 
       const done = newRelease({
+        kind: "rollback",
         state: "FAILED_FIXABLE",
         backupId: "backup_1",
         error: { stage: "BUILDING", type: "build_failed", message: "构建失败", logs: "npm ERR!", hint: "修复后重新发布" },

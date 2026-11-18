@@ -149,6 +149,10 @@ Ferry 经统一入口(Traefik,本机是 `http://127.0.0.1:80`)访问应用的健
 所以 Ferry 下线应用时(任务 2.6)要按这个顺序:先删定时任务(`schedule.delete`),再 `application.delete`、
 `postgres.remove`,最后才 `project.remove`。实测按这个顺序删除后,服务、路由文件、应用文件都清理干净了。
 
+**下线(任务 2.6)**:`application.delete` 删除应用和它的域名路由,之后查询容器会报“找不到服务”;
+`postgres.stop` 停止数据库(约 5 秒),状态变为 `idle`,容器消失,数据卷保留。之后 `postgres.start`(约 22 秒)
+或 `postgres.deploy` 都能重新启动,数据还在。Ferry 重新发布时用 `postgres.deploy`。
+
 **`postgres.remove` 不删除数据库的数据卷**(`<数据库 appName>-data`)。下线后要保留数据时这正好合适;
 真正要删除数据时(如保留期满),需要另外删除这个数据卷,目前没有找到对应的接口。
 

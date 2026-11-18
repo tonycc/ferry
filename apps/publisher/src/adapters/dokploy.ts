@@ -179,6 +179,7 @@ export class DokployPlatform implements DeployPlatform {
 
   /**
    * 按名称查找或新建数据库,并确保它已启动。postgres.deploy 会等数据库启动后才返回(实测约 50 秒)。
+   * 下线时停掉的数据库状态是 idle,这里同样重新部署,数据卷不变,数据还在。
    * 连接串从 Dokploy 读回用户名和密码再拼,所以复用已有数据库时也能拿到。
    */
   async createDatabase(input: { projectId: string; name: string }): Promise<{ databaseId: string; connectionUrl: string }> {
@@ -362,6 +363,31 @@ export class DokployPlatform implements DeployPlatform {
 
   async startApp(appId: string): Promise<void> {
     await this.client.mutate("application.start", { applicationId: appId });
+  }
+
+  /**
+   * 删除应用(域名和路由随之删除),并等它的容器全部停掉。
+   * 先删这个应用上可能残留的 ferry-command-* 任务:它们属于应用,删除应用后就无法再通过接口找到。
+   */
+  async removeApp(appId: string): Promise<void> {
+    const { appName } = await this.client.query<DokployApplication>("application.one", { applicationId: appId });
+    const schedules = await this.client.query<DokploySchedule[]>("schedule.list", { id: appId, scheduleType: "application" });
+    for (const schedule of schedules.filter((s) => s.name.startsWith(COMMAND_SCHEDULE_PREFIX))) {
+      await this.client.mutate("schedule.delete", { scheduleId: schedule.scheduleId });
+    }
+    await this.client.mutate("application.delete", { applicationId: appId });
+
+    const deadline = Date.now() + this.startTimeoutMs;
+    // 服务删掉后查询容器可能直接报“找不到服务”,也算已停止
+    while ((await this.tasks(appName).catch(() => [])).some(isActuallyRunning)) {
+      if (Date.now() > deadline) throw new Error("部署平台上的应用已删除,但容器一直没有停止");
+      await this.sleep(this.pollIntervalMs);
+    }
+  }
+
+  /** 停止数据库,数据卷保留(实测 postgres.stop 后状态变为 idle,重新部署后数据还在) */
+  async stopDatabase(databaseId: string): Promise<void> {
+    await this.client.mutate("postgres.stop", { postgresId: databaseId });
   }
 
   private async defaultEnvironment(projectId: string): Promise<DokployEnvironment> {
