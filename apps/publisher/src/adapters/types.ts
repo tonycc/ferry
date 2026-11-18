@@ -33,10 +33,14 @@ export interface DeployPlatform {
   startApp(appId: string): Promise<void>;
 }
 
-/** 代码包存储:每次上传保存一份,部署和回滚时取回 */
+/** 代码包存储:每次上传保存一份,部署和回滚时取回,按保留规则清理 */
 export interface ArchiveStore {
   save(appName: string, version: string, zip: Buffer): Promise<void>;
   read(appName: string, version: string): Promise<Buffer | undefined>;
+  /** 应用现有的全部代码包及保存时间 */
+  list(appName: string): Promise<{ version: string; savedAt: Date }[]>;
+  /** 删除一个代码包;不存在时不报错 */
+  remove(appName: string, version: string): Promise<void>;
 }
 
 export interface Finding {

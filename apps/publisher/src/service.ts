@@ -5,6 +5,7 @@ import { canAccess } from "./authz/decide";
 import { UserError } from "./errors";
 import type { User } from "./identity";
 import type { Engine } from "./workflow/engine";
+import { pruneArchives } from "./workflow/retention";
 import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
 
@@ -16,6 +17,9 @@ export interface ServiceConfig {
   /** agent 访问本服务用的地址 */
   publicUrl: string;
   uploadTtlMs: number;
+  /** 上传后多久还没发布的代码包可以清理,默认 24 小时 */
+  archiveGraceMs?: number;
+  now?: () => Date;
 }
 
 export interface PreparedUpload {
@@ -259,6 +263,20 @@ export class PublisherService {
     return unfinished.map((release) => release.id);
   }
 
+  /** 发布结束后清理这个应用不再需要的代码包。清理失败只记日志,不影响发布结果 */
+  private async cleanupArchives(releaseId: string): Promise<void> {
+    try {
+      const release = await this.store.getRelease(releaseId);
+      if (!release) return;
+      await pruneArchives(this.store, this.adapters.archives, release.appName, {
+        now: (this.config.now ?? (() => new Date()))(),
+        graceMs: this.config.archiveGraceMs ?? 24 * 3600_000,
+      });
+    } catch (err) {
+      console.error(`清理发布单 ${releaseId} 所属应用的代码包时出错`, err);
+    }
+  }
+
   private appUrl(host: string): string {
     return `${this.config.appsUrlScheme ?? "https"}://${host}`;
   }
@@ -272,6 +290,7 @@ export class PublisherService {
   private schedule(releaseId: string, start = () => this.engine.run(releaseId)): void {
     const task = start()
       .catch((err) => console.error(`发布单 ${releaseId} 执行出错`, err))
+      .then(() => this.cleanupArchives(releaseId))
       .finally(() => {
         if (this.running.get(releaseId) === task) this.running.delete(releaseId);
       });

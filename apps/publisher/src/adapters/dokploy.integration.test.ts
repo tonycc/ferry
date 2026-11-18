@@ -90,7 +90,7 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
     const apiKey = process.env.DOKPLOY_API_KEY;
     if (!baseUrl || !apiKey) throw new Error("需要在 .env 里设置 DOKPLOY_URL 和 DOKPLOY_API_KEY");
     client = new DokployClient({ baseUrl, apiKey });
-    platform = new DokployPlatform(client, { pollIntervalMs: 2000, deployTimeoutMs: 10 * 60_000 });
+    platform = new DokployPlatform(client, { pollIntervalMs: 2000, deployTimeoutMs: 10 * 60_000, backupKeep: 2 });
   });
 
   // 按实测的顺序清理:先删应用,再删项目(只删项目会留下仍在运行的容器)
@@ -190,6 +190,12 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
     expect(dump).toContain("before migration");
     // 没有留下半截的临时文件
     expect(inDokployDir(`ls /x/ferry-backups/${dbAppName}`)).not.toContain(".tmp");
+
+    // 只保留最新的 2 份(backupKeep: 2)
+    const second = await platform.backupDatabase(databaseId!);
+    const third = await platform.backupDatabase(databaseId!);
+    const left = inDokployDir(`ls /x/ferry-backups/${dbAppName}`).trim().split("\n").sort();
+    expect(left).toEqual([second, third].map((f) => f.split("/").pop()).sort());
   }, 3 * 60_000);
 
   it("停止后无法访问,启动后恢复", async () => {

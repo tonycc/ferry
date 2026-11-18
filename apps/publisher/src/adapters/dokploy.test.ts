@@ -356,6 +356,8 @@ describe("DokployPlatform:数据库、命令、备份", () => {
     expect(script).toContain("name=^ledger-db-x1\\.");
     expect(script).toContain("pg_dump -U app -d app | gzip > " + file + ".tmp");
     expect(script).toContain(`trap 'rm -f ${file}.tmp' ERR`);
+    // 默认只保留最新 5 份
+    expect(script).toContain("ls -1 /etc/dokploy/ferry-backups/ledger-db-x1/*.sql.gz | sort -r | tail -n +6 | xargs -r rm -f");
     expect(script).not.toContain("p@ss");
   });
 

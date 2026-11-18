@@ -22,7 +22,7 @@ function tokenOf(uploadUrl: string): string {
   return uploadUrl.split("/").pop()!;
 }
 
-function setup(options: { uploadTtlMs?: number } = {}) {
+function setup(options: { uploadTtlMs?: number; archiveGraceMs?: number } = {}) {
   const store = storeCase.create();
   const adapters = createFakeAdapters();
   for (const user of [alice, bob, carol, admin]) adapters.directory.setUserDepartments(user.id, user.departments);
@@ -33,6 +33,7 @@ function setup(options: { uploadTtlMs?: number } = {}) {
       maxAppsPerUser: 2,
       publicUrl: "http://ferry.test",
       uploadTtlMs: options.uploadTtlMs ?? 60_000,
+      archiveGraceMs: options.archiveGraceMs,
     });
   const service = start();
 
@@ -248,6 +249,25 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       await expect(service.disableApp(alice, "ledger")).rejects.toThrow("只有平台管理员");
       await expect(service.listAllApps(bob)).rejects.toThrow("只有平台管理员");
       expect(await service.listAllApps(admin)).toHaveLength(1);
+    });
+  });
+
+  describe("代码包清理", () => {
+    it("发布结束后清掉不再需要的代码包,自动回滚仍然可用", async () => {
+      const { adapters, publish } = setup({ archiveGraceMs: 0 });
+      const v1 = await publish("v1");
+      const v2 = await publish("v2");
+      const v3 = await publish("v3");
+      expect([v1.state, v2.state, v3.state]).toEqual(["LIVE", "LIVE", "LIVE"]);
+      // v1 已经不是最近两个上线版本,被清掉
+      expect((await adapters.archives.list("ledger")).map((a) => a.version).sort()).toEqual([v2.version, v3.version].sort());
+
+      adapters.health.healthy = false;
+      const v4 = await publish("v4");
+      expect(v4.state).toBe("ROLLED_BACK");
+      expect(adapters.platform.deployedVersion.get("app_2")).toBe(v3.version);
+      // 回滚后:线上的 v3 和之前的 v2 保留,失败的 v4 清掉
+      expect((await adapters.archives.list("ledger")).map((a) => a.version).sort()).toEqual([v2.version, v3.version].sort());
     });
   });
 

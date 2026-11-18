@@ -34,7 +34,7 @@ if (config.FERRY_PLATFORM === "dokploy") {
   }
   adapters.platform = new DokployPlatform(
     new DokployClient({ baseUrl: config.DOKPLOY_URL, apiKey: config.DOKPLOY_API_KEY }),
-    { https: config.APPS_URL_SCHEME === "https" },
+    { https: config.APPS_URL_SCHEME === "https", backupKeep: config.BACKUP_KEEP },
   );
   adapters.health = new HttpHealthChecker({
     gateway: config.HEALTHCHECK_GATEWAY,
@@ -61,6 +61,7 @@ const service = new PublisherService(store, engine, adapters, {
   maxAppsPerUser: config.MAX_APPS_PER_USER,
   publicUrl: config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`,
   uploadTtlMs: config.UPLOAD_TTL_MINUTES * 60_000,
+  archiveGraceMs: config.ARCHIVE_GRACE_HOURS * 3600_000,
 });
 
 const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));

@@ -32,6 +32,8 @@ export interface DokployPlatformOptions {
   postgresImage?: string;
   /** 迁移前备份存放的目录(Dokploy 所在服务器上) */
   backupRoot?: string;
+  /** 每个数据库保留最近几份备份,更早的在备份成功后删除 */
+  backupKeep?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
 }
@@ -118,6 +120,7 @@ export class DokployPlatform implements DeployPlatform {
   private readonly commandTimeoutMs: number;
   private readonly postgresImage: string;
   private readonly backupRoot: string;
+  private readonly backupKeep: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => Date;
 
@@ -134,6 +137,7 @@ export class DokployPlatform implements DeployPlatform {
     this.commandTimeoutMs = options.commandTimeoutMs ?? 30 * 60_000;
     this.postgresImage = options.postgresImage ?? "postgres:16";
     this.backupRoot = options.backupRoot ?? "/etc/dokploy/ferry-backups";
+    this.backupKeep = Math.max(1, Math.floor(options.backupKeep ?? 5));
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? (() => new Date());
   }
@@ -327,6 +331,8 @@ export class DokployPlatform implements DeployPlatform {
       `docker exec "$cid" pg_dump -U ${db.databaseUser} -d ${db.databaseName} | gzip > ${file}.tmp`,
       `mv ${file}.tmp ${file}`,
       `echo "备份完成: ${file}"`,
+      // 文件名以时间开头,按名称倒序即从新到旧;只保留最新的几份
+      `ls -1 ${dir}/*.sql.gz | sort -r | tail -n +${this.backupKeep + 1} | xargs -r rm -f`,
     ].join("\n");
 
     // dokploy-server 类型执行的是 script 字段,command 只是占位

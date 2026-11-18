@@ -23,6 +23,10 @@ const envSchema = z.object({
   /** 代码包的保存目录 */
   ARCHIVE_DIR: z.string().default("./data/archives"),
   MAX_ARCHIVE_MB: z.coerce.number().int().default(100),
+  /** 上传后超过这个时间还没发布的代码包,会在该应用下次发布结束时清理 */
+  ARCHIVE_GRACE_HOURS: z.coerce.number().default(24),
+  /** 每个数据库在服务器上保留最近几份迁移前备份 */
+  BACKUP_KEEP: z.coerce.number().int().min(1).default(5),
   /** 上传地址的有效期 */
   UPLOAD_TTL_MINUTES: z.coerce.number().int().default(15),
   MAX_APPS_PER_USER: z.coerce.number().int().default(5),
