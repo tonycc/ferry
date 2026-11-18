@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createFakeAdapters } from "../adapters/fake";
+import type { CommandResult } from "../adapters/types";
 import { PublisherService } from "../service";
 import { Engine } from "./engine";
 import { storeCases, type StoreCase } from "../test/stores";
-import type { ReleaseState } from "./states";
-import type { Store } from "./store";
 
 const alice = { id: "alice", departments: ["finance"], isAdmin: false };
 const bob = { id: "bob", departments: ["finance"], isAdmin: false };
@@ -395,23 +394,34 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
   });
 
   describe("服务重启后继续执行", () => {
-    /** 永远不返回:模拟进程在这一步执行到一半时退出 */
-    const hang = <T,>() => new Promise<T>(() => {});
-
-    async function waitForState(store: Store, releaseId: string, state: ReleaseState) {
-      for (let i = 0; i < 200; i++) {
-        if ((await store.getRelease(releaseId))?.state === state) return;
-        await new Promise((r) => setTimeout(r, 5));
-      }
-      throw new Error(`发布没有到达 ${state}`);
+    /**
+     * 一个永远不返回的替身:模拟进程在这一步执行到一半时退出。`entered` 在它真正被调用时完成。
+     *
+     * 不能只等发布单的状态变过来:状态写进存储后,原来的流程还要读几次存储才会走到这次调用
+     * (PostgreSQL 比内存慢,这段时间更长)。如果测试在这期间就把被替换的方法换回去,
+     * 原来的流程会调到真实的方法、自己把发布做完,和“重启后”的流程同时执行。
+     * 真实重启时旧进程已经不在了,不会有这种情况。
+     */
+    function stuck<T>(onEnter?: () => void) {
+      let entered!: () => void;
+      const reached = new Promise<void>((resolve) => (entered = resolve));
+      return {
+        fn: (): Promise<T> => {
+          onEnter?.();
+          entered();
+          return new Promise<T>(() => {});
+        },
+        reached,
+      };
     }
 
     it("从中断的步骤继续,不重复创建应用和数据库", async () => {
       const { store, adapters, startPublish, restart } = setup();
       const deploy = adapters.platform.deploy.bind(adapters.platform);
-      adapters.platform.deploy = () => hang();
+      const deployStuck = stuck<CommandResult>();
+      adapters.platform.deploy = deployStuck.fn;
       const { releaseId, version } = await startPublish("v1");
-      await waitForState(store, releaseId, "BUILDING");
+      await deployStuck.reached;
 
       adapters.platform.deploy = deploy;
       const service = restart();
@@ -429,10 +439,10 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const { store, adapters, startPublish, restart } = setup();
       const setEnv = adapters.platform.setEnv.bind(adapters.platform);
       // 数据库已经建好,进程在写入环境变量之前退出
-      adapters.platform.setEnv = () => hang();
+      const setEnvStuck = stuck<void>();
+      adapters.platform.setEnv = setEnvStuck.fn;
       const { releaseId } = await startPublish("v1");
-      await waitForState(store, releaseId, "PROVISIONING");
-      await new Promise((r) => setTimeout(r, 20));
+      await setEnvStuck.reached;
 
       adapters.platform.setEnv = setEnv;
       const service = restart();
@@ -446,10 +456,10 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
     it("迁移中断:恢复后重跑迁移,但不再备份,保留迁移前的那份备份", async () => {
       const { store, adapters, startPublish, restart } = setup();
       const runCommand = adapters.platform.runCommand.bind(adapters.platform);
-      adapters.platform.runCommand = () => hang();
+      const runStuck = stuck<CommandResult>();
+      adapters.platform.runCommand = runStuck.fn;
       const { releaseId } = await startPublish("v1");
-      await waitForState(store, releaseId, "MIGRATING");
-      await new Promise((r) => setTimeout(r, 20));
+      await runStuck.reached;
       const backupId = (await store.getRelease(releaseId))?.backupId;
       expect(backupId).toBeDefined();
 
@@ -467,9 +477,10 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const { store, adapters, publish, startPublish, restart } = setup();
       await publish("v1");
       const check = adapters.health.check.bind(adapters.health);
-      adapters.health.check = () => hang();
+      const checkStuck = stuck<boolean>();
+      adapters.health.check = checkStuck.fn;
       const { releaseId, version } = await startPublish("v2");
-      await waitForState(store, releaseId, "VERIFYING");
+      await checkStuck.reached;
       // 模拟中断前正在回滚:线上跑的是上一个版本
       await adapters.platform.deploy("app_2", { version: "v1-running", zip: zipOf("v1") });
 
@@ -495,9 +506,10 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
     it("中断期间应用被停用:恢复后发布终止,服务保持停止", async () => {
       const { store, adapters, service, startPublish, restart } = setup();
       const deploy = adapters.platform.deploy.bind(adapters.platform);
-      adapters.platform.deploy = () => hang();
+      const deployStuck = stuck<CommandResult>();
+      adapters.platform.deploy = deployStuck.fn;
       const { releaseId } = await startPublish("v1");
-      await waitForState(store, releaseId, "BUILDING");
+      await deployStuck.reached;
       await service.disableApp(admin, "ledger");
 
       adapters.platform.deploy = deploy;
