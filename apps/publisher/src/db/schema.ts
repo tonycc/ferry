@@ -1,4 +1,4 @@
-import { bigint, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 /**
  * PostgreSQL 表结构,是数据库迁移的唯一来源。
@@ -65,3 +65,19 @@ export const uploads = pgTable(
   },
   (t) => [uniqueIndex("uploads_app_version_idx").on(t.appName, t.version)],
 );
+
+/** 组织架构:最近一次同步的部门树。服务启动时读进内存,权限判定只查内存 */
+export const orgDepartments = pgTable("org_departments", {
+  id: text("id").primaryKey(),
+  /** 根部门为空 */
+  parentId: text("parent_id"),
+  name: text("name").notNull(),
+});
+
+/** 组织架构:人员。离职的人 active 为 false,保留最后所属的部门 */
+export const orgUsers = pgTable("org_users", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  active: boolean("active").notNull(),
+  departmentIds: jsonb("department_ids").notNull().default([]),
+});

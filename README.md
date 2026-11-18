@@ -22,8 +22,8 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 密钥扫描、通知 | 只有假实现 |
 | 持久化(PostgreSQL) | 已实现,有测试;设置 `DATABASE_URL` 后启用,启动时自动执行数据库迁移。不设置时用内存存储 |
 | 服务重启后继续执行未完成的发布 | 已实现,有测试(需要 PostgreSQL 存储;假定同一时间只运行一个 Ferry 实例) |
-| 登录(钉钉或企业微信工作通知验证码)、agent 个人令牌 | 未实现,开发时相信 `x-ferry-user` 和 `x-ferry-department` 请求头 |
-| 组织架构与“本部门可见”判定(同部门或上级部门) | 判定已实现,有测试;组织架构目前在内存里,还没有从钉钉、企业微信同步 |
+| 登录(钉钉或企业微信工作通知验证码)、agent 个人令牌 | 未实现,开发时相信 `x-ferry-user` 请求头里的用户 ID(部门从组织架构查,不再读 `x-ferry-department`) |
+| 组织架构与“本部门可见”判定(同部门或上级部门) | 已实现,有测试。组织架构定时从数据源同步(本地用 `ORG_FILE` 指向的文件,示例 `infra/dev-org.json`),存进 PostgreSQL,重启后直接恢复;有问题的快照整份拒绝。钉钉数据源待 P5 |
 | 手动回滚和下线(`rollback_app`、`unpublish_app`) | 已实现,有测试,在本机 Dokploy 上端到端验证过。下线 30 天后自动删除数据还没有实现(任务 2.12) |
 | 控制台 | 只有应用列表页,没有管理页面 |
 | 生产部署配置 | 未写 |
@@ -130,6 +130,11 @@ pnpm test:dokploy
 ```bash
 pnpm typecheck
 ```
+
+开发时的身份:请求头 `x-ferry-user` 给出用户 ID,所属部门从组织架构查。示例组织架构 `infra/dev-org.json` 里有
+`dingtalk:alice`(财务部)、`dingtalk:bob`(财务部)、`dingtalk:dave`(财务部下的应付组)、`dingtalk:carol`(销售部)、
+`dingtalk:admin`(信息部),可以用来试“本部门可见”(同部门或上级部门)。改了文件后最长 `ORG_SYNC_MINUTES`(默认 60)分钟生效,
+或重启服务立即生效。
 
 配置项见 `apps/publisher/src/config.ts`。
 

@@ -43,31 +43,31 @@ export function buildServer(
 
   app.post("/api/apps/prepare", async (req) => {
     const { name } = prepareBody.parse(req.body);
-    return service.prepareApp(identity(req.headers), name);
+    return service.prepareApp(await identity(req.headers), name);
   });
 
-  app.get("/api/apps", async (req) => service.listApps(identity(req.headers)));
+  app.get("/api/apps", async (req) => service.listApps(await identity(req.headers)));
 
   app.get<{ Params: { name: string } }>("/api/apps/:name/logs", async (req) => ({
-    logs: await service.getLogs(identity(req.headers), req.params.name),
+    logs: await service.getLogs(await identity(req.headers), req.params.name),
   }));
 
   app.post<{ Params: { name: string } }>("/api/apps/:name/rollback", async (req, reply) => {
-    const view = await service.rollback(identity(req.headers), req.params.name);
+    const view = await service.rollback(await identity(req.headers), req.params.name);
     return reply.status(202).send(view);
   });
 
   app.post<{ Params: { name: string } }>("/api/apps/:name/unpublish", async (req) =>
-    service.unpublish(identity(req.headers), req.params.name),
+    service.unpublish(await identity(req.headers), req.params.name),
   );
 
   app.post("/api/releases", async (req, reply) => {
-    const view = await service.publish(identity(req.headers), publishBody.parse(req.body));
+    const view = await service.publish(await identity(req.headers), publishBody.parse(req.body));
     return reply.status(202).send(view);
   });
 
   app.get<{ Params: { id: string } }>("/api/releases/:id", async (req) =>
-    service.status(identity(req.headers), req.params.id),
+    service.status(await identity(req.headers), req.params.id),
   );
 
   // ---- 代码包上传 ----
@@ -87,16 +87,16 @@ export function buildServer(
 
   // ---- 管理员接口:查看全部应用,随时停用或恢复任意应用 ----
 
-  app.get("/api/admin/apps", async (req) => service.listAllApps(identity(req.headers)));
+  app.get("/api/admin/apps", async (req) => service.listAllApps(await identity(req.headers)));
 
   app.post<{ Params: { name: string } }>("/api/admin/apps/:name/disable", async (req) => {
     const { reason } = disableBody.parse(req.body ?? {});
-    await service.disableApp(identity(req.headers), req.params.name, reason);
+    await service.disableApp(await identity(req.headers), req.params.name, reason);
     return { ok: true };
   });
 
   app.post<{ Params: { name: string } }>("/api/admin/apps/:name/enable", async (req) => {
-    await service.enableApp(identity(req.headers), req.params.name);
+    await service.enableApp(await identity(req.headers), req.params.name);
     return { ok: true };
   });
 
@@ -105,13 +105,13 @@ export function buildServer(
   app.get("/authz", async (req, reply) => {
     const host = req.headers["x-forwarded-host"];
     if (typeof host !== "string") return reply.status(400).send();
-    const allowed = await service.authorize(identity(req.headers), host);
+    const allowed = await service.authorize(await identity(req.headers), host);
     return reply.status(allowed ? 200 : 403).send();
   });
 
   // ---- 给 agent 用的 MCP 入口(无状态:每个请求一个实例) ----
   app.post("/mcp", async (req, reply) => {
-    const user = identity(req.headers);
+    const user = await identity(req.headers);
     const server = createMcpServer(service, user);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     reply.hijack();

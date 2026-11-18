@@ -17,7 +17,6 @@ HEADERS = {
     "content-type": "application/json",
     "accept": "application/json, text/event-stream",
     "x-ferry-user": "dingtalk:alice",
-    "x-ferry-department": "dingtalk:finance",
 }
 _id = 0
 

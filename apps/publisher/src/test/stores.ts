@@ -1,6 +1,8 @@
 import postgres from "postgres";
 import { sql } from "drizzle-orm";
 import { openDatabase, PostgresStore, type Database } from "../db/postgres-store";
+import { PostgresOrgStore } from "../db/postgres-org-store";
+import { MemoryOrgStore, type OrgStore } from "../org/store";
 import { MemoryStore, type Store } from "../workflow/store";
 
 /**
@@ -18,17 +20,34 @@ export interface StoreCase {
   reset(): Promise<void>;
   /** 返回一个指向当前数据的存储 */
   create(): Store;
+  /** 返回一个指向当前数据的组织架构存储 */
+  createOrg(): OrgStore;
   /** 在 afterAll 里调用 */
   close(): Promise<void>;
 }
 
 export function storeCases(testDbName: string): StoreCase[] {
   const cases: StoreCase[] = [
-    { name: "内存", init: async () => {}, reset: async () => {}, create: () => new MemoryStore(), close: async () => {} },
+    memoryCase(),
   ];
   const url = process.env.TEST_DATABASE_URL;
   if (url) cases.push(postgresCase(url, testDbName));
   return cases;
+}
+
+function memoryCase(): StoreCase {
+  // 同一个测试里多次 createOrg() 要指向同一份数据,和数据库一样
+  let org = new MemoryOrgStore();
+  return {
+    name: "内存",
+    init: async () => {},
+    reset: async () => {
+      org = new MemoryOrgStore();
+    },
+    create: () => new MemoryStore(),
+    createOrg: () => org,
+    close: async () => {},
+  };
 }
 
 function postgresCase(adminUrl: string, dbName: string): StoreCase {
@@ -45,9 +64,10 @@ function postgresCase(adminUrl: string, dbName: string): StoreCase {
       database = await openDatabase(testUrl.toString());
     },
     async reset() {
-      await requireDb().db.execute(sql`TRUNCATE uploads, releases, apps RESTART IDENTITY CASCADE`);
+      await requireDb().db.execute(sql`TRUNCATE uploads, releases, apps, org_users, org_departments RESTART IDENTITY CASCADE`);
     },
     create: () => new PostgresStore(requireDb().db),
+    createOrg: () => new PostgresOrgStore(requireDb().db),
     async close() {
       await database?.close();
     },

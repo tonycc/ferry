@@ -14,8 +14,8 @@ const VISIBILITY_LABEL: Record<AppView["visibility"], string> = {
   company: "全公司",
 };
 
-// TODO: 接入钉钉、企业微信登录后删除。开发阶段 publisher 从这个请求头读取身份。
-const DEV_HEADERS = { "x-ferry-user": "dev-user", "x-ferry-department": "default" };
+// TODO: 接入登录(任务 2.2)后删除。开发阶段 publisher 从这个请求头读取用户 ID,部门从组织架构查
+const DEV_HEADERS = { "x-ferry-user": "dingtalk:alice" };
 
 export function App() {
   const [apps, setApps] = useState<AppView[] | null>(null);

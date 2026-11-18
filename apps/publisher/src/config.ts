@@ -36,6 +36,13 @@ const envSchema = z.object({
   FERRY_PLATFORM: z.enum(["fake", "dokploy"]).default("fake"),
   DOKPLOY_URL: z.string().optional(),
   DOKPLOY_API_KEY: z.string().optional(),
+  /**
+   * 组织架构文件(本地开发用),格式见 infra/dev-org.json。路径相对于启动目录(apps/publisher)。
+   * 不设置时不同步,只用上次保存在数据库里的组织架构
+   */
+  ORG_FILE: z.string().optional(),
+  /** 组织架构同步间隔 */
+  ORG_SYNC_MINUTES: z.coerce.number().positive().default(60),
   /** 平台管理员的用户 ID,逗号分隔。管理员可以查看全部应用并停用任意应用 */
   ADMIN_USERS: z.string().default(""),
   /** true 时从 x-ferry-user 请求头读取身份,仅限本地开发 */

@@ -1,3 +1,4 @@
+import type { OrgSnapshot } from "../org/snapshot";
 import type { Directory } from "./types";
 
 /**
@@ -6,8 +7,19 @@ import type { Directory } from "./types";
  */
 export class MemoryDirectory implements Directory {
   /** 部门 ID → 上级部门 ID;根部门的上级是 null */
-  private readonly parents = new Map<string, string | null>();
-  private readonly members = new Map<string, string[]>();
+  private parents = new Map<string, string | null>();
+  private members = new Map<string, string[]>();
+
+  /**
+   * 用一份快照整体替换(同步完成后、服务启动时调用)。先建好新数据再一次性换上,
+   * 权限判定不会读到一半新一半旧的数据。离职的人也保留所属部门,见 mergeDeparted。
+   */
+  replace(snapshot: OrgSnapshot): void {
+    const parents = new Map<string, string | null>(snapshot.departments.map((d) => [d.id, d.parentId]));
+    const members = new Map<string, string[]>(snapshot.users.map((u) => [u.id, [...u.departmentIds]]));
+    this.parents = parents;
+    this.members = members;
+  }
 
   setDepartment(id: string, parentId: string | null): void {
     this.parents.set(id, parentId);

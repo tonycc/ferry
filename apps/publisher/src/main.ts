@@ -11,6 +11,10 @@ import { createDevIdentity } from "./identity";
 import { PublisherService } from "./service";
 import { Engine } from "./workflow/engine";
 import { openDatabase, PostgresStore } from "./db/postgres-store";
+import { PostgresOrgStore } from "./db/postgres-org-store";
+import { FileOrgSource } from "./adapters/org-file-source";
+import { MemoryOrgStore, type OrgStore } from "./org/store";
+import { OrgSync } from "./org/sync";
 import { MemoryStore, type Store } from "./workflow/store";
 
 const config = loadConfig();
@@ -21,7 +25,7 @@ if (config.DEV_AUTH !== "true") {
 }
 
 // 代码包保存在本地目录;FERRY_PLATFORM=dokploy 时部署平台和健康检查是真实的,密钥扫描、通知还是假实现
-// 组织架构目前只来自开发用的身份请求头,还没有接钉钉、企业微信
+// 组织架构:权限判定读内存里的这一份,由 OrgSync 从数据源同步、从数据库恢复
 const directory = new MemoryDirectory();
 const adapters: Adapters = {
   ...createFakeAdapters(),
@@ -43,14 +47,24 @@ if (config.FERRY_PLATFORM === "dokploy") {
 }
 
 let store: Store;
+let orgStore: OrgStore = new MemoryOrgStore();
 if (config.DATABASE_URL) {
   // 启动时自动执行尚未执行的数据库迁移
   const database = await openDatabase(config.DATABASE_URL);
   store = new PostgresStore(database.db);
+  orgStore = new PostgresOrgStore(database.db);
 } else {
   console.warn("未设置 DATABASE_URL,使用内存存储:服务重启后应用和发布记录都会丢失");
   store = new MemoryStore();
 }
+// 先用上次同步保存的组织架构,再同步一次,之后定时同步。同步失败只记日志,继续用现有数据
+// 组织架构目前来自文件(本地开发);接入钉钉后换成钉钉通讯录(任务 2.1)
+const orgSync = new OrgSync(config.ORG_FILE ? new FileOrgSource(config.ORG_FILE) : undefined, orgStore, directory);
+await orgSync.init();
+if (!config.ORG_FILE) console.warn("未设置 ORG_FILE:不同步组织架构,按部门的可见范围只能用上次保存的数据");
+await orgSync.run();
+setInterval(() => void orgSync.run(), config.ORG_SYNC_MINUTES * 60_000).unref();
+
 const engine = new Engine(store, adapters, {
   maxFixAttempts: config.MAX_FIX_ATTEMPTS,
   appsUrlScheme: config.APPS_URL_SCHEME,

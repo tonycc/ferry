@@ -15,6 +15,13 @@
       "when": 1794958939184,
       "tag": "0001_rollback_unpublish",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794964350374,
+      "tag": "0002_org_directory",
+      "breakpoints": true
     }
   ]
 }
