@@ -5,7 +5,9 @@ import { canAccess } from "./authz/decide";
 import { UserError } from "./errors";
 import type { User } from "./identity";
 import type { Engine } from "./workflow/engine";
+import type { TemplateFile, TemplateLibrary, TemplateSummary } from "./templates";
 import { pruneArchives } from "./workflow/retention";
+import { checkArchiveLayout, zipEntryNames } from "./zip";
 import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
 
@@ -19,6 +21,8 @@ export interface ServiceConfig {
   uploadTtlMs: number;
   /** 上传后多久还没发布的代码包可以清理,默认 24 小时 */
   archiveGraceMs?: number;
+  /** 应用模板。设置后发布时检查 app.yaml 的 template 是否存在 */
+  templates?: TemplateLibrary;
   now?: () => Date;
 }
 
@@ -150,7 +154,11 @@ export class PublisherService {
     if (ticket.expiresAt.getTime() <= Date.now()) {
       throw new UserError("forbidden", "上传地址已过期,请重新调用 prepare_app");
     }
-    if (!isZip(zip)) throw new UserError("invalid_input", "上传的内容不是 zip 文件");
+    const names = isZip(zip) ? zipEntryNames(zip) : undefined;
+    if (!names) throw new UserError("invalid_input", "上传的内容不是 zip 文件");
+    // 检查不通过时上传地址还能再用
+    const layoutProblem = checkArchiveLayout(names);
+    if (layoutProblem) throw new UserError("invalid_input", layoutProblem);
 
     ticket.receivedAt = new Date();
     await this.store.saveUpload(ticket);
@@ -158,10 +166,32 @@ export class PublisherService {
     return { app: ticket.appName, version: ticket.version, bytes: zip.length };
   }
 
+  async listTemplates(): Promise<TemplateSummary[]> {
+    return this.config.templates ? this.config.templates.list() : [];
+  }
+
+  async getTemplate(name: string): Promise<TemplateFile[]> {
+    const files = await this.config.templates?.get(name);
+    if (!files) {
+      const names = (await this.config.templates?.names()) ?? [];
+      throw new UserError("not_found", `没有模板 ${name},可用的模板:${names.join("、") || "无"}`);
+    }
+    return files;
+  }
+
   async publish(user: User, input: { manifestYaml: string; version: string }): Promise<ReleaseView> {
     const parsed = parseManifest(input.manifestYaml);
     if (!parsed.ok) throw new UserError("invalid_input", `app.yaml 有问题:\n${parsed.errors.join("\n")}`);
     const { manifest } = parsed;
+    if (this.config.templates) {
+      const templates = await this.config.templates.names();
+      if (!templates.includes(manifest.template)) {
+        throw new UserError(
+          "invalid_input",
+          `app.yaml 有问题:\ntemplate: 没有模板 ${manifest.template},可用的模板:${templates.join("、")}`,
+        );
+      }
+    }
 
     const app = await this.store.getApp(manifest.name);
     if (!app) throw new UserError("not_found", `应用 ${manifest.name} 还没有创建,请先调用 prepare_app`);
@@ -172,7 +202,11 @@ export class PublisherService {
 
     const upload = await this.store.getUpload(app.name, input.version);
     if (!upload?.receivedAt) {
-      throw new UserError("invalid_input", "还没有收到这个版本的代码包,请先把 zip 上传到 prepare_app 返回的 uploadUrl");
+      throw new UserError(
+        "invalid_input",
+        `应用 ${app.name} 还没有收到 version 为 ${input.version} 的代码包。请先把 zip 上传到 prepare_app 返回的 uploadUrl,` +
+          "并确认 app.yaml 里的 name 和调用 prepare_app 时用的应用名一致",
+      );
     }
 
     const releases = await this.store.listReleases(app.name);

@@ -4,6 +4,7 @@ import type { CommandResult } from "../adapters/types";
 import { PublisherService } from "../service";
 import { Engine } from "./engine";
 import { storeCases, type StoreCase } from "../test/stores";
+import { appZip } from "../test/zip";
 
 const alice = { id: "alice", departments: ["finance"], isAdmin: false };
 const bob = { id: "bob", departments: ["finance"], isAdmin: false };
@@ -14,7 +15,7 @@ const MANIFEST = "name: ledger\ntemplate: node-postgres\ndatabase: postgres\nmig
 
 /** 一个只有 zip 文件头的假代码包;marker 用来让假平台按内容决定部署成败 */
 function zipOf(marker: string): Buffer {
-  return Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from(marker)]);
+  return appZip(marker);
 }
 
 function tokenOf(uploadUrl: string): string {

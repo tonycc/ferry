@@ -9,6 +9,7 @@ import { MemoryDirectory } from "./adapters/directory";
 import { createFakeAdapters } from "./adapters/fake";
 import type { Adapters } from "./adapters/types";
 import { buildServer } from "./api/server";
+import { TemplateLibrary } from "./templates";
 import { loadConfig } from "./config";
 import { createIdentity } from "./identity";
 import { AuthService } from "./auth/service";
@@ -98,6 +99,7 @@ const service = new PublisherService(store, engine, adapters, {
   publicUrl: config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`,
   uploadTtlMs: config.UPLOAD_TTL_MINUTES * 60_000,
   archiveGraceMs: config.ARCHIVE_GRACE_HOURS * 3600_000,
+  templates: new TemplateLibrary(),
 });
 
 const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));
