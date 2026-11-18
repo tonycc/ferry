@@ -4,8 +4,9 @@ import { PublisherService } from "../service";
 import { Engine } from "../workflow/engine";
 import { MemoryStore } from "../workflow/store";
 import { setupGateway } from "./setup";
+import { appZip } from "../test/zip";
 
-const ZIP = Buffer.from("PK\x03\x04v1");
+const ZIP = appZip("v1");
 
 async function setup() {
   const adapters = createFakeAdapters();

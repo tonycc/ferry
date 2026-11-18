@@ -10,6 +10,7 @@ const STYLE = `
   button { margin-top: 12px; padding: 8px 16px; font-size: 15px; cursor: pointer; }
   .hint { color: #59636e; font-size: 14px; } .error { color: #cf222e; } .ok { color: #1a7f37; }
   code { background: #f6f8fa; padding: 2px 6px; word-break: break-all; }
+  pre { background: #f6f8fa; padding: 10px; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
   table { width: 100%; border-collapse: collapse; margin-top: 12px; } td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid #d1d9e0; font-size: 14px; }
 `;
 
@@ -83,7 +84,11 @@ export const TOKENS_PAGE = `<!doctype html>
   <input id="label" maxlength="60">
   <button type="submit">生成令牌</button>
 </form>
-<div id="new" hidden><p class="ok">新令牌(只显示这一次,请现在复制):</p><p><code id="token"></code></p></div>
+<div id="new" hidden><p class="ok">新令牌(只显示这一次,请现在复制):</p><p><code id="token"></code></p>
+<p class="hint">Claude Code:在终端里运行下面这条命令(<code>--scope user</code> 表示在你电脑上的所有项目里都能用):</p>
+<pre id="cli"></pre>
+<p class="hint">其他支持 MCP 的 agent:按下面的配置添加一个 HTTP 类型的 MCP 服务(不同 agent 的配置文件位置不同,字段含义一样):</p>
+<pre id="json"></pre></div>
 <table><thead><tr><th>名称</th><th>生成时间</th><th>最近使用</th><th></th></tr></thead><tbody id="list"></tbody></table>
 <p><button type="button" id="logout">退出登录</button></p>
 <p id="msg"></p>
@@ -109,7 +114,8 @@ ${POST}
         b.onclick = async () => {
           try {
             await post("/api/tokens/" + t.id + "/revoke");
-            document.getElementById("new").hidden = true; document.getElementById("token").textContent = "";
+            document.getElementById("new").hidden = true;
+            for (const id of ["token", "cli", "json"]) document.getElementById(id).textContent = "";
             await load();
           } catch (err) { msg(err.message, "error"); }
         };
@@ -122,7 +128,13 @@ ${POST}
     e.preventDefault(); msg("");
     try {
       const t = await post("/api/tokens", { label: document.getElementById("label").value });
-      document.getElementById("token").textContent = t.token; document.getElementById("new").hidden = false;
+      const mcp = location.origin + "/mcp";
+      document.getElementById("token").textContent = t.token;
+      document.getElementById("cli").textContent =
+        "claude mcp add --transport http --scope user ferry " + mcp + ' --header "Authorization: Bearer ' + t.token + '"';
+      document.getElementById("json").textContent = JSON.stringify(
+        { mcpServers: { ferry: { type: "http", url: mcp, headers: { Authorization: "Bearer " + t.token } } } }, null, 2);
+      document.getElementById("new").hidden = false;
       await load();
     } catch (err) { msg(err.message, "error"); }
   });

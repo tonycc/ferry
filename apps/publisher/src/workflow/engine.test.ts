@@ -4,6 +4,7 @@ import type { CommandResult } from "../adapters/types";
 import { PublisherService } from "../service";
 import { Engine } from "./engine";
 import { storeCases, type StoreCase } from "../test/stores";
+import { appZip } from "../test/zip";
 
 const alice = { id: "alice", departments: ["finance"], isAdmin: false };
 const bob = { id: "bob", departments: ["finance"], isAdmin: false };
@@ -14,7 +15,7 @@ const MANIFEST = "name: ledger\ntemplate: node-postgres\ndatabase: postgres\nmig
 
 /** 一个只有 zip 文件头的假代码包;marker 用来让假平台按内容决定部署成败 */
 function zipOf(marker: string): Buffer {
-  return Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from(marker)]);
+  return appZip(marker);
 }
 
 function tokenOf(uploadUrl: string): string {
@@ -373,12 +374,17 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const { adapters, service, startPublish, publish } = setup();
       const deploy = adapters.platform.deploy.bind(adapters.platform);
       let release: () => void = () => {};
+      let entered!: () => void;
+      const reached = new Promise<void>((r) => (entered = r));
       adapters.platform.deploy = async (appId, archive) => {
-        await new Promise<void>((r) => (release = r));
+        const gate = new Promise<void>((r) => (release = r));
+        entered();
+        await gate;
         return deploy(appId, archive);
       };
       const { releaseId } = await startPublish("v1");
-      await new Promise((r) => setTimeout(r, 10));
+      // 等发布真正卡在部署这一步;固定等几毫秒在较慢的 PostgreSQL 上不够
+      await reached;
       await expect(service.unpublish(alice, "ledger")).rejects.toThrow("还在进行中");
       release();
       await service.settle(releaseId);

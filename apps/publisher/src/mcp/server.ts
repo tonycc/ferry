@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { UserError } from "../errors";
@@ -5,11 +6,34 @@ import type { User } from "../identity";
 import type { PublisherService } from "../service";
 
 /**
+ * 给 agent 的使用说明,作为 MCP 的 instructions 在连接时发给 agent(Claude Code 等会放进提示词)。
+ * 员工的 agent 拿不到 Ferry 的仓库,所以说明和模板都只能经 MCP 送过去。
+ */
+export const AGENT_GUIDE = readFileSync(new URL("./agent-guide.md", import.meta.url), "utf8");
+
+/**
  * 给 agent 用的 MCP 工具。每个请求按当前登录用户建一个实例,
  * 所以工具里拿不到、也不需要任何平台凭据。
  */
 export function createMcpServer(service: PublisherService, user: User): McpServer {
-  const server = new McpServer({ name: "ferry", version: "0.0.0" });
+  const server = new McpServer({ name: "ferry", version: "0.0.0" }, { instructions: AGENT_GUIDE });
+
+  server.registerTool(
+    "list_templates",
+    { description: "列出可用的应用模板。新做应用时先调用,选一个模板再用 get_template 取文件。", inputSchema: {} },
+    () => respond(() => service.listTemplates()),
+  );
+
+  server.registerTool(
+    "get_template",
+    {
+      description:
+        "取一个模板的全部文件(path 和 content)。把它们原样写到一个新目录里,再在此基础上修改;" +
+        "先改 app.yaml 的 name 和 visibility。模板里的 README.md 说明了每个文件的作用。",
+      inputSchema: { name: z.string().describe("模板名,来自 list_templates") },
+    },
+    ({ name }) => respond(() => service.getTemplate(name)),
+  );
 
   server.registerTool(
     "prepare_app",
