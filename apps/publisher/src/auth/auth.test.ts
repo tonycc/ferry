@@ -160,7 +160,7 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
 });
 
 /** 起一个完整的服务,用 fastify 的 inject 发请求 */
-function server(options: { devAuth?: boolean } = {}) {
+function server(options: { devAuth?: boolean; adminIds?: string[] } = {}) {
   const directory = new MemoryDirectory();
   directory.replace(org());
   const adapters = { ...createFakeAdapters(), directory };
@@ -173,7 +173,7 @@ function server(options: { devAuth?: boolean } = {}) {
   });
   const auth = new AuthService(new MemoryAuthStore(), directory, adapters.notifier);
   const allowedOrigins = new Set(["http://ferry.test"]);
-  const identity = createIdentity({ auth, directory, adminIds: new Set(), devAuth: options.devAuth ?? false, allowedOrigins });
+  const identity = createIdentity({ auth, directory, adminIds: new Set(options.adminIds), devAuth: options.devAuth ?? false, allowedOrigins });
   const app = buildServer(service, identity, {
     maxArchiveBytes: 1024 * 1024,
     auth: { service: auth, directory, routes: { allowedOrigins, secureCookie: false, codeTtlMinutes: 5 } },
@@ -198,7 +198,7 @@ function server(options: { devAuth?: boolean } = {}) {
     expect(setCookie).not.toContain("Domain=");
     return setCookie.split(";")[0]!;
   }
-  return { app, auth, login, ORIGIN };
+  return { app, auth, login, ORIGIN, service, adapters };
 }
 
 const MCP_HEADERS = { "content-type": "application/json", accept: "application/json, text/event-stream" };
@@ -278,4 +278,34 @@ describe("HTTP 入口的身份", () => {
     expect((await app.inject({ method: "GET", url: "/login" })).body).toContain("登录 Ferry");
     expect((await app.inject({ method: "GET", url: "/me" })).body).toContain("我的个人令牌");
   });
+
+  it("管理页:只有管理员能看全部应用(含负责人姓名和部门名),停用要同源请求,停用后列表显示原因", async () => {
+    const { app, login, ORIGIN, service } = server({ adminIds: ["dingtalk:alice"] });
+    const page = await app.inject({ method: "GET", url: "/admin" });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain("Ferry 管理");
+
+    await service.prepareApp({ id: "dingtalk:bob", departments: ["dingtalk:finance"], isAdmin: false }, "bob-tool");
+    const bob = await login("A002");
+    expect((await app.inject({ method: "GET", url: "/api/admin/apps", headers: { cookie: bob } })).statusCode).toBe(403);
+
+    const alice = await login("A001");
+    const listed = await app.inject({ method: "GET", url: "/api/admin/apps", headers: { cookie: alice } });
+    expect(listed.json()).toEqual([
+      expect.objectContaining({ name: "bob-tool", ownerName: "Bob", departments: ["dingtalk:finance"], departmentNames: ["财务部"], disabled: false }),
+    ]);
+
+    const crossSite = await app.inject({ method: "POST", url: "/api/admin/apps/bob-tool/disable", headers: { cookie: alice }, payload: {} });
+    expect(crossSite.statusCode).toBe(403);
+    const disabled = await app.inject({
+      method: "POST",
+      url: "/api/admin/apps/bob-tool/disable",
+      headers: { cookie: alice, ...ORIGIN },
+      payload: { reason: "占用资源过多" },
+    });
+    expect(disabled.statusCode).toBeLessThan(300);
+    const after = (await app.inject({ method: "GET", url: "/api/admin/apps", headers: { cookie: alice } })).json();
+    expect(after[0]).toMatchObject({ disabled: true, disabledReason: "占用资源过多" });
+  });
 });
+

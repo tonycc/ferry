@@ -101,6 +101,10 @@ ${POST}
     if (me.status === 401) { location.href = "/login"; return; }
     const user = await me.json();
     document.getElementById("who").textContent = "当前登录:" + user.name;
+    if (user.isAdmin && !document.getElementById("admin")) {
+      const a = document.createElement("a"); a.id = "admin"; a.href = "/admin"; a.textContent = "管理全部应用";
+      document.getElementById("who").after(a);
+    }
     const tokens = await (await fetch("/api/tokens")).json();
     const list = document.getElementById("list"); list.textContent = "";
     for (const t of tokens) {
@@ -139,6 +143,123 @@ ${POST}
     } catch (err) { msg(err.message, "error"); }
   });
   document.getElementById("logout").addEventListener("click", async () => { await post("/auth/logout"); location.href = "/login"; });
+  load().catch((err) => msg(err.message, "error"));
+</script>
+</body></html>`;
+
+/** 管理页(任务 2.10):全部应用,停用和恢复。只有平台管理员能读到数据,接口自己会检查 */
+export const ADMIN_PAGE = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ferry 管理</title><style>${STYLE}
+  body { max-width: 1080px; }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .bar input { max-width: 320px; }
+  .wrap { overflow-x: auto; }
+  td button { margin: 0; padding: 4px 10px; font-size: 14px; }
+  .tag { font-size: 13px; padding: 1px 8px; border-radius: 10px; background: #eef1f4; white-space: nowrap; }
+  .tag.live { background: #dafbe1; color: #1a7f37; } .tag.off { background: #ffebe9; color: #cf222e; }
+  .muted { color: #59636e; font-size: 13px; }
+  tr.ask td { background: #fff8c5; } tr.ask input { max-width: 420px; margin-right: 8px; }
+</style></head>
+<body>
+<h1>Ferry 管理</h1>
+<p id="who" class="hint"></p>
+<div class="bar"><input id="filter" placeholder="按应用名、负责人或部门筛选"><span id="count" class="hint"></span></div>
+<div class="wrap"><table>
+<thead><tr><th>应用</th><th>负责人</th><th>负责人部门</th><th>谁能看</th><th>状态</th><th>创建时间</th><th></th></tr></thead>
+<tbody id="list"></tbody></table></div>
+<p id="msg"></p>
+<script>
+${POST}
+  const VIS = { self: "仅负责人", department: "本部门", company: "全公司" };
+  const msg = (text, cls) => { const el = document.getElementById("msg"); el.textContent = text; el.className = cls || ""; };
+  const cell = (tr, text, cls) => { const td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; tr.appendChild(td); return td; };
+  let apps = [];
+  /** 正在确认的操作:{ name, action } */
+  let pending = null;
+
+  function status(a) {
+    if (a.disabled) return ["已停用", "off", 0];
+    if (a.unpublished) return ["已下线", "", 3];
+    if (a.live) return ["在线", "live", 1];
+    return ["未上线", "", 2];
+  }
+
+  function render() {
+    const q = document.getElementById("filter").value.trim().toLowerCase();
+    const shown = apps.filter((a) => !q || [a.name, a.ownerName, ...a.departmentNames].some((t) => t.toLowerCase().includes(q)));
+    document.getElementById("count").textContent = "共 " + apps.length + " 个应用" + (q ? ",显示 " + shown.length + " 个" : "");
+    const list = document.getElementById("list"); list.textContent = "";
+    for (const a of shown) {
+      const tr = document.createElement("tr");
+      const name = cell(tr, "");
+      const link = document.createElement("a"); link.href = a.url; link.textContent = a.name; link.target = "_blank"; link.rel = "noopener";
+      name.appendChild(link);
+      cell(tr, a.ownerName);
+      cell(tr, a.departmentNames.join("、") || "—");
+      cell(tr, VIS[a.visibility] || a.visibility);
+      const [label, cls] = status(a);
+      const st = cell(tr, "");
+      const tag = document.createElement("span"); tag.className = "tag " + cls; tag.textContent = label; st.appendChild(tag);
+      if (a.disabled && a.disabledReason) { const r = document.createElement("div"); r.className = "muted"; r.textContent = a.disabledReason; st.appendChild(r); }
+      cell(tr, new Date(a.createdAt).toLocaleDateString(), "muted");
+      const act = cell(tr, "");
+      const b = document.createElement("button");
+      const action = a.disabled ? "enable" : "disable";
+      b.textContent = a.disabled ? "恢复" : "停用";
+      b.onclick = () => {
+        pending = { name: a.name, action }; msg(""); render();
+        // 只在展开时聚焦一次;筛选时会重画列表,不能每次都抢走输入框的焦点
+        const first = document.querySelector("tr.ask input, tr.ask button"); if (first) first.focus();
+      };
+      act.appendChild(b);
+      list.appendChild(tr);
+      if (pending && pending.name === a.name) list.appendChild(confirmRow(a.name, pending.action));
+    }
+  }
+
+  /** 在应用下面展开一行确认:停用要填原因(会通知负责人) */
+  function confirmRow(name, action) {
+    const tr = document.createElement("tr"); tr.className = "ask";
+    const td = document.createElement("td"); td.colSpan = 7; tr.appendChild(td);
+    const text = document.createElement("p");
+    text.textContent = action === "disable"
+      ? "停用 " + name + ":访问地址立即失效,负责人不能再发布;数据保留,可以随时恢复。"
+      : "恢复 " + name + ":同事可以重新访问,负责人也能再次发布。";
+    td.appendChild(text);
+    let reason;
+    if (action === "disable") {
+      reason = document.createElement("input"); reason.placeholder = "停用原因(会通知负责人)"; reason.maxLength = 200;
+      td.appendChild(reason);
+    }
+    const ok = document.createElement("button"); ok.textContent = action === "disable" ? "确认停用" : "确认恢复";
+    ok.onclick = async () => {
+      ok.disabled = true;
+      try {
+        await post("/api/admin/apps/" + encodeURIComponent(name) + "/" + action, reason && reason.value.trim() ? { reason: reason.value.trim() } : {});
+        pending = null;
+        msg((action === "disable" ? "已停用 " : "已恢复 ") + name, "ok");
+        await load();
+      } catch (err) { ok.disabled = false; msg(err.message, "error"); }
+    };
+    const cancel = document.createElement("button"); cancel.textContent = "取消"; cancel.type = "button";
+    cancel.onclick = () => { pending = null; render(); };
+    td.append(ok, " ", cancel);
+    return tr;
+  }
+
+  async function load() {
+    const res = await fetch("/api/admin/apps");
+    if (res.status === 401) { location.href = "/login?next=/admin"; return; }
+    if (res.status === 403) { msg("只有平台管理员可以使用这个页面", "error"); return; }
+    if (!res.ok) throw new Error("读取应用列表失败");
+    // 停用的排最前,然后是在线、未上线,已下线的放最后
+    apps = (await res.json()).sort((x, y) => status(x)[2] - status(y)[2] || x.name.localeCompare(y.name));
+    render();
+  }
+
+  fetch("/api/me").then((r) => r.ok ? r.json() : null).then((me) => { if (me) document.getElementById("who").textContent = "当前登录:" + me.name; });
+  document.getElementById("filter").addEventListener("input", render);
   load().catch((err) => msg(err.message, "error"));
 </script>
 </body></html>`;

@@ -105,6 +105,7 @@ export interface Directory {
   /** 按登录时输入的账号(工号或手机号)找在职的人 */
   findLogin(account: string): Promise<string | undefined>;
   nameOf(userId: string): Promise<string | undefined>;
+  departmentNameOf(departmentId: string): Promise<string | undefined>;
 }
 
 export interface Adapters {

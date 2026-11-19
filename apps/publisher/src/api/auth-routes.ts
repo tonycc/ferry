@@ -4,7 +4,7 @@ import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { UserError } from "../errors";
 import { readCookies, requireSameOrigin, SESSION_COOKIE, sessionUserFrom, type IdentityResolver } from "../identity";
-import { LOGIN_PAGE, TOKENS_PAGE } from "./pages";
+import { LOGIN_PAGE, TOKENS_PAGE, ADMIN_PAGE } from "./pages";
 import { safePath, type Gateway } from "../gateway/gateway";
 
 const codeBody = z.object({ account: z.string().min(1).max(100) });
@@ -67,6 +67,7 @@ export function registerAuthRoutes(
     });
   }
   app.get("/me", async (_req, reply) => reply.type("text/html; charset=utf-8").send(TOKENS_PAGE));
+  app.get("/admin", async (_req, reply) => reply.type("text/html; charset=utf-8").send(ADMIN_PAGE));
 
   app.post("/auth/code", async (req) => {
     requireSameOrigin(req, options.allowedOrigins);

@@ -40,6 +40,15 @@ const envSchema = z.object({
   /** 上传地址的有效期 */
   UPLOAD_TTL_MINUTES: z.coerce.number().int().default(15),
   MAX_APPS_PER_USER: z.coerce.number().int().default(5),
+  /**
+   * 每个应用的资源上限(任务 2.8):CPU 核数(可以是小数)和内存(MB)。设为 0 表示不限制。
+   * 超出内存上限的应用会被杀掉重启,不会拖垮同一台服务器上的其他应用和 Ferry
+   */
+  APP_CPU_LIMIT: z.coerce.number().min(0).default(1),
+  APP_MEMORY_LIMIT_MB: z.coerce.number().int().min(0).default(512),
+  /** 每个应用的数据库的资源上限,含义同上 */
+  DB_CPU_LIMIT: z.coerce.number().min(0).default(1),
+  DB_MEMORY_LIMIT_MB: z.coerce.number().int().min(0).default(512),
   /** 同一应用连续可修复失败达到这个次数后,不再让 agent 重试 */
   MAX_FIX_ATTEMPTS: z.coerce.number().int().default(3),
   /** fake:全部用内存假实现,本地开发用;dokploy:对接真实 Dokploy */
