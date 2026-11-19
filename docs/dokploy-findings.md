@@ -228,3 +228,11 @@ Ferry 经统一入口(Traefik,本机是 `http://127.0.0.1:80`)访问应用的健
 - 超出内存上限时,系统只杀掉容器里占内存最多的进程(实测应用的主进程还在,继续响应)。
   Docker 默认还允许再用同样大小的交换空间,所以实际能用到上限的大约两倍才被杀掉;Dokploy 没有提供设置交换空间的字段。
 - CPU 上限只限速,不会杀进程:占满 CPU 的应用自己变慢,不影响别的应用。
+
+## 读不到崩溃容器的日志(任务 2.7 发现)
+
+`application.readLogs` 只返回**正在运行的容器**的输出(没有按容器读的参数)。首次发布时崩溃的新容器是唯一的容器,能读到;
+但更新时旧版本还在运行(先启动新的再停旧的),读到的只有旧版本的 `listening on 3000`,新版本的崩溃信息丢了。
+所以启动即崩溃时,Ferry 用 `dokploy-server` 类型的一次性任务在服务器上执行
+`docker ps -a --filter "name=^<appName>\." --filter status=exited` 找到最近退出的容器,再 `docker logs --timestamps --tail N` 读它的输出;
+任务日志里 Dokploy 自己加的行(不带时间戳)过滤掉。读不到时退回 `application.readLogs`。

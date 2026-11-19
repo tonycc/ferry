@@ -290,6 +290,39 @@ describe("DokployPlatform", () => {
     expect(taskCalls).toBe(2);
   });
 
+  it("deploy:启动即崩溃时读退出容器自己的输出(更新时应用日志里只有还在运行的旧版本)", async () => {
+    let uploaded = false;
+    const { platform, called } = fakeDokploy({
+      "application.one": APP_ONE,
+      "deployment.all": () => (uploaded ? [{ deploymentId: "new", status: "done" }] : []),
+      "application.dropDeployment": () => {
+        uploaded = true;
+        return true;
+      },
+      "docker.getServiceContainersByAppName": () => {
+        const old = { containerId: "t-old", state: "running", currentState: "Running 5 minutes ago" };
+        if (!uploaded) return [old];
+        const failed = (id: string) => ({ containerId: id, state: "shutdown", currentState: "Failed 2 seconds ago" });
+        return [old, failed("t1"), failed("t2")];
+      },
+      "schedule.create": () => ({ scheduleId: "s1" }),
+      "schedule.runManually": () => ({ status: "done", deploymentId: "d1" }),
+      "deployment.readLogs": () =>
+        ["Initializing schedule", "2026-11-19T02:30:07.100Z Error: relation \"app_settings\" does not exist", "2026-11-19T02:30:07.200Z Node.js v22", "✅ done"].join("\n"),
+      "schedule.delete": () => true,
+      "application.readLogs": () => "2026-11-19T01:00:00.000Z listening on 3000",
+    });
+    const result = await platform.deploy("a1", ARCHIVE);
+    expect(result).toEqual({
+      ok: false,
+      reason: "start",
+      logs: '(应用启动后退出;下面是它最后一次启动的输出)\nError: relation "app_settings" does not exist\nNode.js v22',
+    });
+    expect(called("schedule.create")[0]?.input).toMatchObject({ scheduleType: "dokploy-server" });
+    expect(String(called("schedule.create")[0]?.input.script)).toContain('docker logs --timestamps --tail 200 "$cid"');
+    expect(called("schedule.delete")).toHaveLength(1);
+  });
+
   it("deploy:新容器短暂显示为运行中随即崩溃,不算启动成功", async () => {
     let uploaded = false;
     let taskCalls = 0;
