@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DokployClient, DokployError } from "./dokploy-client";
-import { DokployPlatform, formatEnv, parseEnv } from "./dokploy";
+import { DokployPlatform, formatEnv, lastStartLogs, parseEnv } from "./dokploy";
 
 type Handler = (input: Record<string, unknown>, request: Request) => unknown;
 
@@ -29,7 +29,7 @@ function fakeDokploy(handlers: Record<string, Handler>) {
     fetch: fetchImpl,
     logError: (m) => logged.push(m),
   });
-  const platform = new DokployPlatform(client, { pollIntervalMs: 0, deployTimeoutMs: 1000, sleep: async () => {} });
+  const platform = new DokployPlatform(client, { pollIntervalMs: 0, deployTimeoutMs: 1000, stableMs: 0, sleep: async () => {} });
   const called = (procedure: string) => calls.filter((c) => c.procedure === procedure);
   return { client, platform, calls, called, logged };
 }
@@ -196,7 +196,7 @@ describe("DokployPlatform", () => {
       "application.one": APP_ONE,
       "docker.getServiceContainersByAppName": () => [],
     });
-    expect(await platform.deploy("a1", ARCHIVE)).toEqual({ ok: false, logs: "Step 3/5 : RUN npm install\nnpm ERR! missing script" });
+    expect(await platform.deploy("a1", ARCHIVE)).toEqual({ ok: false, reason: "build", logs: "Step 3/5 : RUN npm install\nnpm ERR! missing script" });
     expect(called("deployment.readLogs")[0]?.input).toEqual({ deploymentId: "new", tail: "200" });
   });
 
@@ -255,6 +255,70 @@ describe("DokployPlatform", () => {
     expect(taskCalls).toBe(4);
   });
 
+  it("deploy:新容器启动即崩溃、被反复重启时,不等超时,返回最后一次启动的日志", async () => {
+    let uploaded = false;
+    let taskCalls = 0;
+    const { platform } = fakeDokploy({
+      "application.one": APP_ONE,
+      "deployment.all": () => (uploaded ? [{ deploymentId: "new", status: "done" }] : []),
+      "application.dropDeployment": () => {
+        uploaded = true;
+        return true;
+      },
+      "docker.getServiceContainersByAppName": () => {
+        if (!uploaded) return [];
+        taskCalls++;
+        const failed = (id: string) => ({ containerId: id, state: "shutdown", currentState: "Failed 3 seconds ago" });
+        return taskCalls === 1 ? [failed("t1")] : [failed("t1"), failed("t2")];
+      },
+      "application.readLogs": () =>
+        [
+          "2026-11-18T15:53:02.100Z Error: relation \"app_settings\" does not exist",
+          "2026-11-18T15:52:16.100Z Error: relation \"app_settings\" does not exist",
+          "2026-11-18T15:52:16.200Z Node.js v22",
+          "2026-11-18T15:53:02.200Z Node.js v22",
+        ].join("\n"),
+    });
+    const result = await platform.deploy("a1", ARCHIVE);
+    expect(result).toEqual({
+      ok: false,
+      reason: "start",
+      logs: '(容器启动后退出,被反复重启;下面是最后一次启动的输出)\nError: relation "app_settings" does not exist\nNode.js v22',
+    });
+    expect(taskCalls).toBe(2);
+  });
+
+  it("deploy:新容器短暂显示为运行中随即崩溃,不算启动成功", async () => {
+    let uploaded = false;
+    let taskCalls = 0;
+    let now = 0;
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      const { client } = fakeDokploy({
+        "application.one": APP_ONE,
+        "deployment.all": () => (uploaded ? [{ deploymentId: "new", status: "done" }] : []),
+        "application.dropDeployment": () => {
+          uploaded = true;
+          return true;
+        },
+        "docker.getServiceContainersByAppName": () => {
+          if (!uploaded) return [];
+          taskCalls++;
+          const failed = (id: string) => ({ containerId: id, state: "shutdown", currentState: "Failed 1 second ago" });
+          if (taskCalls === 1) return [{ containerId: "t1", state: "running", currentState: "Running less than a second ago" }];
+          if (taskCalls === 2) return [failed("t1"), { containerId: "t2", state: "running", currentState: "Running less than a second ago" }];
+          return [failed("t1"), failed("t2")];
+        },
+        "application.readLogs": () => "Error: boom",
+      });
+      const platform = new DokployPlatform(client, { pollIntervalMs: 3000, stableMs: 8000, sleep: async (ms) => void (now += ms) });
+      expect(await platform.deploy("a1", ARCHIVE)).toMatchObject({ ok: false, reason: "start" });
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   it("deploy:构建成功但新容器一直没起来时,返回失败和应用日志", async () => {
     let uploaded = false;
     const { client } = fakeDokploy({
@@ -281,7 +345,7 @@ describe("DokployPlatform", () => {
       });
       const result = await platform.deploy("a1", ARCHIVE);
       expect(result.ok).toBe(false);
-      expect(result.ok === false && result.logs).toContain("应用容器没有启动起来");
+      expect(result.ok === false && result.reason).toBe("start");
       expect(result.ok === false && result.logs).toContain("Cannot find module 'pg'");
     } finally {
       Date.now = realNow;
@@ -318,6 +382,40 @@ describe("DokployPlatform:数据库、命令、备份", () => {
     expect(db).toEqual({ databaseId: "pg1", connectionUrl: "postgresql://app:p%40ss%2Fword@ledger-db-x1:5432/app" });
     expect(called("postgres.create")[0]?.input).toMatchObject({ name: "ledger-db", environmentId: "e1", dockerImage: "postgres:16" });
     expect(called("postgres.deploy")).toHaveLength(1);
+  });
+
+  it("createDatabase:Dokploy 等数据库启动超时报错,但容器随后起来了,继续用它", async () => {
+    let taskCalls = 0;
+    const { platform } = fakeDokploy({
+      "project.one": () => ENV,
+      "postgres.create": () => ({ postgresId: "pg1" }),
+      "postgres.one": () => PG,
+      "postgres.deploy": () => new Response("did not converge within 45000ms", { status: 500 }),
+      "docker.getServiceContainersByAppName": () =>
+        ++taskCalls < 3 ? [{ containerId: "d1", state: "running", currentState: "Preparing 40 seconds ago" }]
+          : [{ containerId: "d1", state: "running", currentState: "Running 1 second ago" }],
+    });
+    expect((await platform.createDatabase({ projectId: "p1", name: "ledger" })).databaseId).toBe("pg1");
+    expect(taskCalls).toBe(3);
+  });
+
+  it("createDatabase:数据库一直没起来时,把 Dokploy 的错误抛出去", async () => {
+    let now = 0;
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      const { client } = fakeDokploy({
+        "project.one": () => ENV,
+        "postgres.create": () => ({ postgresId: "pg1" }),
+        "postgres.one": () => PG,
+        "postgres.deploy": () => new Response("boom", { status: 500 }),
+        "docker.getServiceContainersByAppName": () => [],
+      });
+      const platform = new DokployPlatform(client, { pollIntervalMs: 1000, startTimeoutMs: 5000, sleep: async (ms) => void (now += ms) });
+      await expect(platform.createDatabase({ projectId: "p1", name: "ledger" })).rejects.toThrow("postgres.deploy");
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   it("createDatabase:已有且在运行的数据库直接复用,不重复启动", async () => {
@@ -364,7 +462,7 @@ describe("DokployPlatform:数据库、命令、备份", () => {
       "deployment.readLogs": () => 'relation "items" already exists',
       "schedule.delete": () => true,
     });
-    expect(await platform.runCommand("a1", "node migrate.js")).toEqual({ ok: false, logs: 'relation "items" already exists' });
+    expect(await platform.runCommand("a1", "node migrate.js")).toEqual({ ok: false, reason: "command", logs: 'relation "items" already exists' });
     expect(called("schedule.delete")).toHaveLength(1);
   });
 
@@ -455,5 +553,14 @@ describe("环境变量文本", () => {
     const env = parseEnv("# comment\nA=1\n\nB=x=y\n");
     expect(env).toEqual({ A: "1", B: "x=y" });
     expect(parseEnv(formatEnv(env))).toEqual(env);
+  });
+});
+
+describe("lastStartLogs", () => {
+  it("没有时间戳的日志原样返回", () => {
+    expect(lastStartLogs("plain line\nanother")).toBe("plain line\nanother");
+  });
+  it("只启动过一次时只去掉时间戳", () => {
+    expect(lastStartLogs("2026-11-18T15:52:16.1Z a\n2026-11-18T15:52:16.2Z b\n")).toBe("a\nb");
   });
 });

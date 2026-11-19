@@ -4,6 +4,8 @@ import type {
   Adapters,
   Archive,
   CommandResult,
+  FailureReason,
+  HealthResult,
   DeployPlatform,
   Finding,
   HealthChecker,
@@ -23,6 +25,8 @@ export class FakePlatform implements DeployPlatform {
   deployedVersion = new Map<string, string>();
   /** 代码包内容里含有这些标记时,部署失败 */
   failDeployMarkers = new Set<string>();
+  /** 带标记的代码包部署失败时报告的原因 */
+  failDeployReason: FailureReason = "build";
   failMigrate = false;
   stopped = new Set<string>();
   private seq = 0;
@@ -95,7 +99,7 @@ export class FakePlatform implements DeployPlatform {
     this.calls.push(`deploy:${archive.version}`);
     const content = archive.zip.toString("latin1");
     if ([...this.failDeployMarkers].some((marker) => content.includes(marker))) {
-      return { ok: false, logs: "error: build failed\nnpm ERR! missing script: build" };
+      return { ok: false, reason: this.failDeployReason, logs: "error: build failed\nnpm ERR! missing script: build" };
     }
     this.deployedVersion.set(appId, archive.version);
     return { ok: true };
@@ -103,7 +107,7 @@ export class FakePlatform implements DeployPlatform {
 
   async runCommand(_appId: string, command: string): Promise<CommandResult> {
     this.calls.push(`runCommand:${command}`);
-    return this.failMigrate ? { ok: false, logs: "relation \"items\" already exists" } : { ok: true };
+    return this.failMigrate ? { ok: false, reason: "command", logs: "relation \"items\" already exists" } : { ok: true };
   }
 
   async backupDatabase(databaseId: string): Promise<string> {
@@ -147,8 +151,10 @@ export class FakeScanner implements Scanner {
 
 export class FakeHealth implements HealthChecker {
   healthy = true;
-  async check(): Promise<boolean> {
-    return this.healthy;
+  /** 不健康时报告的状态码 */
+  status = 502;
+  async check(): Promise<HealthResult> {
+    return this.healthy ? { ok: true } : { ok: false, status: this.status };
   }
 }
 

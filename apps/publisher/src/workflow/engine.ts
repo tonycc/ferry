@@ -1,4 +1,5 @@
 import type { Adapters, Archive } from "../adapters/types";
+import { deployFailure, healthFailure, migrationFailure } from "./failures";
 import { isTerminal, stepOrder, type ReleaseState, type StepState } from "./states";
 import type { AppRecord, ReleaseRecord, Store } from "./store";
 
@@ -52,7 +53,13 @@ export class Engine {
         // 最后一步通过后、上线之前再检查一次,避免停用和上线同时发生时应用仍在运行
         if (result.kind === "next" && !next) result = (await this.stopIfDisabled(release)) ?? result;
       } catch (err) {
-        result = { kind: "fail", fixable: false, type: "internal_error", message: (err as Error).message };
+        result = {
+          kind: "fail",
+          fixable: false,
+          type: "internal_error",
+          message: `Ferry 或部署平台出错,这不是代码的问题:${(err as Error).message}`,
+          hint: "不要修改代码。把情况告诉用户,请平台管理员检查;问题解决后重新发布即可",
+        };
       }
 
       if (result.kind === "fail") {
@@ -161,14 +168,10 @@ export class Engine {
       const archive = await this.archive(release.appName, release.version);
       const result = await this.adapters.platform.deploy(this.appId(app), archive);
       if (!result.ok) {
-        return {
-          kind: "fail",
-          fixable: true,
-          type: "build_failed",
-          message: "应用构建或启动失败",
-          logs: result.logs,
-          hint: "根据日志修复代码后重新发布",
-        };
+        const failure: Failure = { kind: "fail", ...deployFailure(result.reason, release.manifest), logs: result.logs };
+        // 启动即崩溃时新镜像已经替换了线上版本(Swarm 自己的回滚用的是同一个镜像标签,救不回来),
+        // 有上一个可用版本就把它部署回去;构建失败时线上版本没被动过
+        return result.reason === "start" ? this.restoreLive(app, failure) : failure;
       }
       return { kind: "next" };
     },
@@ -186,14 +189,9 @@ export class Engine {
       }
       const result = await platform.runCommand(this.appId(app), manifest.migrate);
       if (!result.ok) {
-        return {
-          kind: "fail",
-          fixable: true,
-          type: "migration_failed",
-          message: "数据库迁移失败",
-          logs: result.logs,
-          hint: "数据库在迁移前已备份。修复迁移脚本后重新发布;迁移脚本必须可以重复执行",
-        };
+        // 新代码已经在跑,但数据库没迁移成功(每个迁移文件在事务里执行,失败的那个没有生效),
+        // 新代码多半用不了;有上一个可用版本就把它部署回去
+        return this.restoreLive(app, { kind: "fail", ...migrationFailure(result.reason, manifest), logs: result.logs });
       }
       return { kind: "next" };
     },
@@ -201,29 +199,32 @@ export class Engine {
     VERIFYING: async (release) => {
       const { platform, health } = this.adapters;
       const app = await this.app(release);
-      if (await health.check(app.host, release.manifest.healthcheck)) return { kind: "next" };
+      const checked = await health.check(app.host, release.manifest.healthcheck);
+      if (checked.ok) return { kind: "next" };
 
       const appId = this.appId(app);
       const logs = await platform.getLogs(appId, 100);
-      const failure: Failure = {
-        kind: "fail",
-        fixable: true,
-        type: "healthcheck_failed",
-        message: `应用启动后健康检查 ${release.manifest.healthcheck} 没有通过`,
-        logs,
-        hint: "确认应用监听了清单里的端口,并且健康检查接口返回 200",
-      };
-      if (!app.liveVersion) return failure;
-
-      // 有上一个可用版本:用保存的代码包把它重新部署回去(只回滚代码,不动数据库)
-      const previous = await this.archive(app.name, app.liveVersion);
-      const rollback = await platform.deploy(appId, previous);
-      if (!rollback.ok) {
-        return { ...failure, fixable: false, type: "rollback_failed", message: "新版本不可用,且回滚到上一版本也失败了" };
-      }
-      return { ...failure, rolledBack: true };
+      const failure: Failure = { kind: "fail", ...healthFailure(checked.status, release.manifest), logs };
+      return this.restoreLive(app, failure);
     },
   };
+
+  /** 新版本不可用时:有上一个可用版本就用保存的代码包把它重新部署回去(只回滚代码,不动数据库) */
+  private async restoreLive(app: AppRecord, failure: Failure): Promise<Failure> {
+    if (!app.liveVersion) return failure;
+    const previous = await this.archive(app.name, app.liveVersion);
+    const rollback = await this.adapters.platform.deploy(this.appId(app), previous);
+    if (!rollback.ok) {
+      return {
+        ...failure,
+        fixable: false,
+        type: "rollback_failed",
+        message: `新版本不可用,且回滚到上一版本也失败了,应用现在可能无法访问。${failure.message}`,
+        hint: "不要修改代码。马上告诉用户应用可能无法访问,并请平台管理员处理",
+      };
+    }
+    return { ...failure, rolledBack: true };
+  }
 
   private async goLive(release: ReleaseRecord): Promise<void> {
     const app = await this.app(release);

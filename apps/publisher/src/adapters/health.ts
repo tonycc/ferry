@@ -1,5 +1,5 @@
 import { request } from "node:http";
-import type { HealthChecker } from "./types";
+import type { HealthChecker, HealthResult } from "./types";
 
 export interface HttpHealthCheckerOptions {
   /**
@@ -18,7 +18,8 @@ export interface HttpHealthCheckerOptions {
 }
 
 /**
- * 通过统一入口访问应用的健康检查接口,在限定时间内任意一次返回 2xx 即视为健康。
+ * 通过统一入口访问应用的健康检查接口,在限定时间内任意一次返回 2xx 即视为健康;
+ * 到时还不健康时返回最后一次的状态码。
  *
  * 登录网关会拦下未登录的请求,所以健康检查带上按域名计算的口令(extraHeaders),
  * 由 /authz 识别后放行;网关放行后会删掉这个请求头,应用收不到。
@@ -41,12 +42,12 @@ export class HttpHealthChecker implements HealthChecker {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  async check(host: string, path: string): Promise<boolean> {
+  async check(host: string, path: string): Promise<HealthResult> {
     const deadline = Date.now() + this.timeoutMs;
     for (;;) {
       const status = await this.get(host, path);
-      if (status >= 200 && status < 300) return true;
-      if (Date.now() >= deadline) return false;
+      if (status >= 200 && status < 300) return { ok: true };
+      if (Date.now() >= deadline) return { ok: false, status };
       await this.sleep(this.intervalMs);
     }
   }

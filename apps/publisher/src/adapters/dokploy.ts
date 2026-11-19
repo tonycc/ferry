@@ -24,6 +24,8 @@ export interface DokployPlatformOptions {
   deployTimeoutMs?: number;
   /** 构建完成后等新容器启动的最长时间(不超过 deployTimeoutMs 的剩余时间) */
   startTimeoutMs?: number;
+  /** 新容器要连续运行这么久才算启动成功:启动即崩溃的容器会短暂显示为 Running(实测) */
+  stableMs?: number;
   /** 构建失败时取多少行日志交给 agent */
   failureLogLines?: number;
   /** 一次性命令、备份的最长等待时间 */
@@ -93,6 +95,33 @@ function isActuallyRunning(task: DokployServiceTask): boolean {
   return task.currentState.startsWith("Running");
 }
 
+/** 容器已经退出(启动后崩溃) */
+function hasExited(task: DokployServiceTask): boolean {
+  return /^(Failed|Complete|Rejected)/.test(task.currentState);
+}
+
+const TIMESTAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) ?(.*)$/;
+
+/**
+ * 整理启动失败时的应用日志。Swarm 反复重启崩溃的容器,读到的日志是几次启动的输出混在一起,
+ * 每行带着 Docker 加的时间戳,顺序也可能是乱的。按时间排好,只保留最后一次启动的输出,去掉时间戳。
+ * 相邻两行间隔超过 2 秒就算另一次启动。
+ */
+export function lastStartLogs(raw: string): string {
+  const lines = raw.split("\n").filter((line) => line.trim());
+  const parsed = lines.map((line) => {
+    const m = TIMESTAMPED.exec(line);
+    return m ? { at: Date.parse(m[1]!), text: m[2]! } : undefined;
+  });
+  if (parsed.some((p) => p === undefined) || parsed.length === 0) return raw;
+  const sorted = (parsed as { at: number; text: string }[]).sort((a, b) => a.at - b.at);
+  let start = 0;
+  for (let i = 1; i < sorted.length; i++) if (sorted[i]!.at - sorted[i - 1]!.at > 2000) start = i;
+  const last = sorted.slice(start).map((p) => p.text);
+  const note = start > 0 ? "(容器启动后退出,被反复重启;下面是最后一次启动的输出)\n" : "";
+  return note + last.join("\n");
+}
+
 interface ScheduleRun {
   status: string;
   deploymentId?: string;
@@ -128,6 +157,7 @@ export class DokployPlatform implements DeployPlatform {
   private readonly pollIntervalMs: number;
   private readonly deployTimeoutMs: number;
   private readonly startTimeoutMs: number;
+  private readonly stableMs: number;
   private readonly failureLogLines: number;
   private readonly commandTimeoutMs: number;
   private readonly postgresImage: string;
@@ -146,6 +176,7 @@ export class DokployPlatform implements DeployPlatform {
     this.pollIntervalMs = options.pollIntervalMs ?? 3000;
     this.deployTimeoutMs = options.deployTimeoutMs ?? 15 * 60_000;
     this.startTimeoutMs = options.startTimeoutMs ?? 3 * 60_000;
+    this.stableMs = options.stableMs ?? 8000;
     this.failureLogLines = options.failureLogLines ?? 200;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 30 * 60_000;
     this.postgresImage = options.postgresImage ?? "postgres:16";
@@ -216,7 +247,12 @@ export class DokployPlatform implements DeployPlatform {
 
     let db = await this.postgres(postgresId);
     if (db.applicationStatus !== "done") {
-      await this.client.mutate("postgres.deploy", { postgresId });
+      try {
+        await this.client.mutate("postgres.deploy", { postgresId });
+      } catch (err) {
+        // Dokploy 只等 45 秒;机器忙的时候新数据库启动得慢,接口报错但容器随后会起来(实测)。再等一会儿
+        if (!(await this.waitUntilRunning(db.appName))) throw err;
+      }
       db = await this.postgres(postgresId);
     }
     const user = encodeURIComponent(db.databaseUser);
@@ -345,7 +381,7 @@ export class DokployPlatform implements DeployPlatform {
           deploymentId: current.deploymentId,
           tail: this.failureLogLines,
         });
-        return { ok: false, logs };
+        return { ok: false, reason: "build", logs };
       }
       if (Date.now() > deadline) return timeout(current ? "构建超时" : "上传后没有看到新的部署记录");
       await this.sleep(this.pollIntervalMs);
@@ -375,7 +411,7 @@ export class DokployPlatform implements DeployPlatform {
       enabled: false,
     });
     if (run.status === "done") return { ok: true };
-    return { ok: false, logs: run.logs };
+    return { ok: false, reason: "command", logs: run.logs };
   }
 
   /**
@@ -465,18 +501,40 @@ export class DokployPlatform implements DeployPlatform {
     return environment;
   }
 
-  /** 构建完成后,等新容器实际运行、旧容器全部停止 */
+  /**
+   * 构建完成后,等新容器实际运行、旧容器全部停止。
+   * 新容器连续退出两次就是启动即崩溃(Swarm 会一直重启它),不再等到超时
+   */
   private async waitForNewTask(appId: string, appName: string, oldTasks: Set<string>, deadline: number): Promise<CommandResult> {
     const startDeadline = Math.min(deadline, Date.now() + this.startTimeoutMs);
+    /** 新容器第一次被看到在运行的时间;它退出或换了一个容器就重新计时 */
+    let stable: { containerId: string; since: number } | undefined;
     for (;;) {
-      const running = (await this.tasks(appName)).filter(isActuallyRunning);
-      const newRunning = running.some((t) => !oldTasks.has(t.containerId));
+      const tasks = (await this.tasks(appName)).filter((t) => !oldTasks.has(t.containerId) || isActuallyRunning(t));
+      const running = tasks.filter(isActuallyRunning);
+      const newTask = running.find((t) => !oldTasks.has(t.containerId));
       const oldRunning = running.some((t) => oldTasks.has(t.containerId));
-      if (newRunning && !oldRunning) return { ok: true };
-      if (Date.now() > startDeadline) {
-        const logs = await this.getLogs(appId, this.failureLogLines).catch(() => "");
-        return { ok: false, logs: `构建成功,但应用容器没有启动起来。应用日志:\n${logs}` };
+      if (newTask && !oldRunning) {
+        if (stable?.containerId !== newTask.containerId) stable = { containerId: newTask.containerId, since: Date.now() };
+        if (Date.now() - stable.since >= this.stableMs) return { ok: true };
+      } else {
+        stable = undefined;
       }
+      const crashed = tasks.filter((t) => !oldTasks.has(t.containerId) && hasExited(t)).length;
+      if (crashed >= 2 || Date.now() > startDeadline) {
+        const raw = await this.getLogs(appId, this.failureLogLines).catch(() => "");
+        return { ok: false, reason: "start", logs: lastStartLogs(raw) };
+      }
+      await this.sleep(this.pollIntervalMs);
+    }
+  }
+
+  /** 等服务的容器实际运行起来,最多等 startTimeoutMs */
+  private async waitUntilRunning(appName: string): Promise<boolean> {
+    const deadline = Date.now() + this.startTimeoutMs;
+    for (;;) {
+      if ((await this.tasks(appName).catch(() => [])).some(isActuallyRunning)) return true;
+      if (Date.now() > deadline) return false;
       await this.sleep(this.pollIntervalMs);
     }
   }
@@ -531,7 +589,7 @@ export class DokployPlatform implements DeployPlatform {
 }
 
 function timeout(reason: string): CommandResult {
-  return { ok: false, logs: `部署平台:${reason},已等待超过上限。请联系平台管理员查看部署平台的状态` };
+  return { ok: false, reason: "platform", logs: `部署平台:${reason},已等待超过上限` };
 }
 
 /** 解析 KEY=value 按行拼接的环境变量文本 */
