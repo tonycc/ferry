@@ -124,6 +124,11 @@ export function buildServer(
     return { ok: true };
   });
 
+  app.post<{ Params: { name: string } }>("/api/admin/apps/:name/delete", async (req) => {
+    await service.deleteApp(await identity(req, "api"), req.params.name);
+    return { ok: true };
+  });
+
   app.post<{ Params: { name: string } }>("/api/admin/apps/:name/enable", async (req) => {
     await service.enableApp(await identity(req, "api"), req.params.name);
     return { ok: true };

@@ -8,6 +8,8 @@ const apps = ref<AdminAppView[]>([]);
 const loading = ref(true);
 const forbidden = ref(false);
 const filter = ref("");
+/** 正在删除的应用;删除要停数据库、删数据卷,可能要十几秒 */
+const deleting = ref<string>();
 
 /** 停用的排最前,然后是在线、未上线,已下线的放最后 */
 const shown = computed(() => {
@@ -54,6 +56,41 @@ async function enable(app: AdminAppView) {
   await act(app.name, "enable", {});
 }
 
+/** 已下线多少天 */
+function offlineDays(app: AdminAppView): number | undefined {
+  if (!app.unpublishedAt) return undefined;
+  return Math.floor((Date.now() - Date.parse(app.unpublishedAt)) / 86_400_000);
+}
+
+async function remove(app: AdminAppView) {
+  try {
+    await ElMessageBox.prompt(
+      `彻底删除 ${app.name}:删除它的数据库(全部数据)、备份、代码包和发布记录,应用名释放给别人使用。` +
+        `删除后无法恢复。负责人是 ${app.ownerName},删除后会通知负责人。请输入应用名 ${app.name} 确认:`,
+      "删除应用",
+      {
+        confirmButtonText: "彻底删除",
+        cancelButtonText: "取消",
+        type: "error",
+        confirmButtonClass: "el-button--danger",
+        inputValidator: (value: string) => value === app.name || "应用名不一致",
+      },
+    );
+  } catch {
+    return;
+  }
+  deleting.value = app.name;
+  try {
+    await api.post(`/api/admin/apps/${encodeURIComponent(app.name)}/delete`);
+    ElMessage.success(`已删除 ${app.name}`);
+    await load();
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  } finally {
+    deleting.value = undefined;
+  }
+}
+
 async function act(name: string, action: "disable" | "enable", body: object) {
   try {
     await api.post(`/api/admin/apps/${encodeURIComponent(name)}/${action}`, body);
@@ -90,15 +127,24 @@ onMounted(load);
         <template #default="{ row }">
           <el-tag :type="appStatus(row)[1]" disable-transitions>{{ appStatus(row)[0] }}</el-tag>
           <div v-if="row.disabled && row.disabledReason" class="muted">{{ row.disabledReason }}</div>
+          <div v-if="offlineDays(row) !== undefined" class="muted">已下线 {{ offlineDays(row) }} 天</div>
         </template>
       </el-table-column>
       <el-table-column label="创建时间" width="110">
         <template #default="{ row }"><span class="muted">{{ time(row.createdAt).split(" ")[0] }}</span></template>
       </el-table-column>
-      <el-table-column width="90" align="right">
+      <el-table-column width="150" align="right">
         <template #default="{ row }">
           <el-button v-if="row.disabled" size="small" @click="enable(row)">恢复</el-button>
           <el-button v-else size="small" type="danger" plain @click="disable(row)">停用</el-button>
+          <el-button
+            v-if="row.disabled || row.unpublished"
+            size="small"
+            type="danger"
+            :loading="deleting === row.name"
+            :disabled="!!deleting && deleting !== row.name"
+            @click="remove(row)"
+          >删除</el-button>
         </template>
       </el-table-column>
     </el-table>

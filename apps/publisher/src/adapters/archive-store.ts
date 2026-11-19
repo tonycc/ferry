@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ArchiveStore } from "./types";
 
@@ -70,6 +70,8 @@ export class FsArchiveStore implements ArchiveStore {
 
   async remove(appName: string, version: string): Promise<void> {
     await rm(this.path(appName, version), { force: true });
+    // 最后一个代码包删掉后,把应用的目录也删掉(目录不空时 rmdir 失败,忽略)
+    await rmdir(join(this.dir, this.segment(appName))).catch(() => {});
   }
 
   private path(appName: string, version: string): string {

@@ -140,6 +140,16 @@ export class FakePlatform implements DeployPlatform {
     this.calls.push(`stopDatabase:${databaseId}`);
     for (const db of this.databases.values()) if (db.id === databaseId) db.running = false;
   }
+
+  async deleteDatabase(databaseId: string): Promise<void> {
+    this.calls.push(`deleteDatabase:${databaseId}`);
+    for (const [name, db] of this.databases) if (db.id === databaseId) this.databases.delete(name);
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    this.calls.push(`deleteProject:${projectId}`);
+    for (const [name, id] of this.projects) if (id === projectId) this.projects.delete(name);
+  }
 }
 
 export class FakeScanner implements Scanner {

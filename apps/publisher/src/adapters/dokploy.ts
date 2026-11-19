@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { DokployClient } from "./dokploy-client";
+import { DokployError, type DokployClient } from "./dokploy-client";
 import type { Archive, CommandResult, DeployPlatform } from "./types";
 
 /**
@@ -119,6 +119,11 @@ interface DokployServiceTask {
 
 function isActuallyRunning(task: DokployServiceTask): boolean {
   return task.currentState.startsWith("Running");
+}
+
+/** 部署平台上已经没有这个资源(删除时可以当作已经删掉) */
+function isNotFound(err: unknown): boolean {
+  return err instanceof DokployError && err.status === 404;
 }
 
 /** 容器已经退出(启动后崩溃) */
@@ -526,6 +531,67 @@ export class DokployPlatform implements DeployPlatform {
   /** 停止数据库,数据卷保留(实测 postgres.stop 后状态变为 idle,重新部署后数据还在) */
   async stopDatabase(databaseId: string): Promise<void> {
     await this.client.mutate("postgres.stop", { postgresId: databaseId });
+  }
+
+  /**
+   * 彻底删除数据库。先停掉数据库、在服务器上删掉数据卷和迁移前备份,最后才删 Dokploy 里的记录:
+   * 中途失败时记录还在,再调用一次能接着做完(反过来先删记录的话,就查不到数据卷叫什么了)。
+   * postgres.remove 本身不删数据卷(实测,见 dokploy-findings.md)
+   */
+  async deleteDatabase(databaseId: string): Promise<void> {
+    let db: DokployPostgres;
+    try {
+      db = await this.postgres(databaseId);
+    } catch (err) {
+      if (isNotFound(err)) return;
+      throw err;
+    }
+    // 名称拼进要在服务器上执行的脚本,只允许安全字符;备份目录必须是绝对路径且不是根目录
+    // 这里会 rm -rf 备份目录:名称必须以字母或数字开头、不含 "..",免得拼出上级目录
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(db.appName) || db.appName.includes("..")) {
+      throw new Error(`数据库名称含有不支持的字符,无法删除: ${databaseId}`);
+    }
+    if (!/^\/[a-zA-Z0-9._/-]+$/.test(this.backupRoot) || this.backupRoot.split("/").filter(Boolean).length < 2) {
+      throw new Error(`备份目录不安全,拒绝删除: ${this.backupRoot}`);
+    }
+    await this.client.mutate("postgres.stop", { postgresId: databaseId });
+
+    const volume = `${db.appName}-data`;
+    const backups = `${this.backupRoot}/${db.appName}`;
+    const script = [
+      "set -u",
+      // 容器停下来之前删不掉数据卷,最多等 60 秒
+      "for i in $(seq 1 30); do",
+      `  docker volume inspect ${volume} >/dev/null 2>&1 || break`,
+      `  docker volume rm ${volume} >/dev/null 2>&1 && break`,
+      "  sleep 2",
+      "done",
+      `if docker volume inspect ${volume} >/dev/null 2>&1; then echo "数据卷 ${volume} 删不掉"; exit 1; fi`,
+      `rm -rf -- ${backups}`,
+      `echo "已删除数据卷 ${volume} 和备份目录 ${backups}"`,
+    ].join("\n");
+    const run = await this.runOnce({
+      name: `${BACKUP_SCHEDULE_PREFIX}delete-${this.now().getTime()}`,
+      cronExpression: NEVER,
+      command: "ferry-delete-database",
+      script,
+      shellType: "bash",
+      scheduleType: "dokploy-server",
+      enabled: false,
+    });
+    if (run.status !== "done") {
+      console.error(`删除数据库 ${db.appName} 的数据失败:\n${run.logs}`);
+      throw new Error("删除数据库的数据失败,请查看 Ferry 的日志后重试");
+    }
+    await this.client.mutate("postgres.remove", { postgresId: databaseId }).catch((err: unknown) => {
+      if (!isNotFound(err)) throw err;
+    });
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    await this.client.mutate("project.remove", { projectId }).catch((err: unknown) => {
+      if (!isNotFound(err)) throw err;
+    });
   }
 
   private async defaultEnvironment(projectId: string): Promise<DokployEnvironment> {

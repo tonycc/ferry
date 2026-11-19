@@ -89,6 +89,15 @@ export class PostgresStore implements Store {
     if (updated.length === 0) throw new Error(`应用 ${app.name} 不存在`);
   }
 
+  async deleteApp(name: string) {
+    // 发布记录和上传凭据引用了应用,先删它们;放在一个事务里,不会只删一半
+    await this.db.transaction(async (tx) => {
+      await tx.delete(schema.uploads).where(eq(schema.uploads.appName, name));
+      await tx.delete(schema.releases).where(eq(schema.releases.appName, name));
+      await tx.delete(schema.apps).where(eq(schema.apps.name, name));
+    });
+  }
+
   async setAppDisabled(name: string, disabled: AppRecord["disabled"]) {
     const updated = await this.db
       .update(schema.apps)

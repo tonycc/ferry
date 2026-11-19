@@ -77,6 +77,8 @@ export interface Store {
   saveApp(app: AppRecord): Promise<void>;
   /** 设置或清除停用状态 */
   setAppDisabled(name: string, disabled: AppRecord["disabled"]): Promise<void>;
+  /** 删除应用和它的全部发布记录、上传凭据(管理员删除应用时);之后应用名可以被重新使用 */
+  deleteApp(name: string): Promise<void>;
 
   getRelease(id: string): Promise<ReleaseRecord | undefined>;
   /** 按创建时间从旧到新 */
@@ -125,6 +127,12 @@ export class MemoryStore implements Store {
     const current = this.apps.get(app.name);
     if (!current) throw new Error(`应用 ${app.name} 不存在`);
     this.apps.set(app.name, { ...copy(app), disabled: current.disabled });
+  }
+
+  async deleteApp(name: string) {
+    this.apps.delete(name);
+    for (const [id, release] of this.releases) if (release.appName === name) this.releases.delete(id);
+    for (const [key, upload] of this.uploads) if (upload.appName === name) this.uploads.delete(key);
   }
 
   async setAppDisabled(name: string, disabled: AppRecord["disabled"]) {

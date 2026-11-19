@@ -640,3 +640,55 @@ describe("资源上限", () => {
     });
   });
 });
+
+describe("删除数据库和项目", () => {
+  const PG_ONE = { appName: "ledger-db-x1", databaseUser: "app", databasePassword: "p", databaseName: "app", applicationStatus: "idle" };
+  const schedule = (status: string) => ({
+    "schedule.create": () => ({ scheduleId: "s1" }),
+    "schedule.runManually": () => ({ status, deploymentId: "d1" }),
+    "deployment.readLogs": () => "数据卷删不掉",
+    "schedule.delete": () => true,
+  });
+
+  it("先停数据库、在服务器上删数据卷和备份,最后才删记录", async () => {
+    const { platform, calls, called } = fakeDokploy({
+      "postgres.one": () => PG_ONE,
+      "postgres.stop": () => true,
+      "postgres.remove": () => true,
+      ...schedule("done"),
+    });
+    await platform.deleteDatabase("pg1");
+    const order = calls.map((c) => c.procedure).filter((p) => /^(postgres\.(stop|remove)|schedule\.runManually)$/.test(p));
+    expect(order).toEqual(["postgres.stop", "schedule.runManually", "postgres.remove"]);
+    const script = String(called("schedule.create")[0]?.input.script);
+    expect(script).toContain("docker volume rm ledger-db-x1-data");
+    expect(script).toContain("rm -rf -- /etc/dokploy/ferry-backups/ledger-db-x1");
+    expect(called("schedule.create")[0]?.input).toMatchObject({ scheduleType: "dokploy-server" });
+  });
+
+  it("服务器上删数据失败时不删记录,再调用一次能接着做", async () => {
+    const { platform, called } = fakeDokploy({
+      "postgres.one": () => PG_ONE,
+      "postgres.stop": () => true,
+      "postgres.remove": () => true,
+      ...schedule("error"),
+    });
+    await expect(platform.deleteDatabase("pg1")).rejects.toThrow("删除数据库的数据失败");
+    expect(called("postgres.remove")).toHaveLength(0);
+  });
+
+  it("已经删掉的数据库和项目不报错", async () => {
+    const notFound = () => new Response('{"message":"not found"}', { status: 404 });
+    const { platform, called } = fakeDokploy({ "postgres.one": notFound, "project.remove": notFound });
+    await platform.deleteDatabase("gone");
+    await platform.deleteProject("gone");
+    expect(called("postgres.stop")).toHaveLength(0);
+  });
+
+  it("名称可能拼出上级目录时拒绝删除,不执行任何脚本", async () => {
+    const { platform, called } = fakeDokploy({ "postgres.one": () => ({ ...PG_ONE, appName: ".." }) });
+    await expect(platform.deleteDatabase("pg1")).rejects.toThrow("不支持的字符");
+    expect(called("schedule.create")).toHaveLength(0);
+  });
+});
+
