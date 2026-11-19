@@ -523,6 +523,103 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
     });
   });
 
+  describe("管理员删除应用", () => {
+    it("在线的应用不能删;下线后管理员删除:清掉数据库、项目、代码包和记录,通知负责人,应用名可以给别人用", async () => {
+      const { adapters, service, publish } = setup();
+      await publish("v1");
+      await expect(service.deleteApp(admin, "ledger")).rejects.toThrow("还在线");
+      await expect(service.deleteApp(bob, "ledger")).rejects.toThrow("只有平台管理员");
+
+      await service.unpublish(alice, "ledger");
+      await service.deleteApp(admin, "ledger");
+
+      expect(adapters.platform.calls).toEqual(expect.arrayContaining(["deleteDatabase:db_3", "deleteProject:proj_1"]));
+      expect(await adapters.archives.list("ledger")).toEqual([]);
+      expect(await service.listApps(alice)).toEqual([]);
+      await expect(service.appDetail(alice, "ledger")).rejects.toThrow("不存在");
+      expect(adapters.notifier.sent.at(-1)).toMatchObject({ userId: alice.id, message: expect.stringContaining("已被管理员删除") });
+      // 应用名已释放,别人可以用
+      expect((await service.prepareApp(bob, "ledger")).name).toBe("ledger");
+    });
+
+    it("停用(没下线)的应用也能删,会先删掉部署平台上的应用", async () => {
+      const { adapters, service, publish } = setup();
+      await publish("v1");
+      await service.disableApp(admin, "ledger", "违规");
+      await service.deleteApp(admin, "ledger");
+      expect(adapters.platform.calls.filter((c) => /^(removeApp|deleteDatabase|deleteProject)/.test(c))).toEqual([
+        "removeApp:app_2",
+        "deleteDatabase:db_3",
+        "deleteProject:proj_1",
+      ]);
+      expect((await service.listAllApps(admin)).map((a) => a.name)).toEqual([]);
+    });
+
+    it("删除期间负责人不能重新发布已下线的应用;发不出通知不影响删除", async () => {
+      const { adapters, service, publish } = setup();
+      await publish("v1");
+      await service.unpublish(alice, "ledger");
+      const deleteDatabase = adapters.platform.deleteDatabase.bind(adapters.platform);
+      let republish: Promise<unknown> | undefined;
+      adapters.platform.deleteDatabase = async (id) => {
+        republish = service.prepareApp(alice, "ledger");
+        await expect(republish).rejects.toThrow("停用");
+        return deleteDatabase(id);
+      };
+      adapters.notifier.notify = async () => {
+        throw new Error("钉钉接口超时");
+      };
+      await service.deleteApp(admin, "ledger");
+      expect(republish).toBeDefined();
+      expect(await service.listAllApps(admin)).toEqual([]);
+    });
+
+    it("标记停用时刚好开始了一次发布:先不删,撤回停用标记", async () => {
+      const { adapters, service, publish, startPublish, store } = setup();
+      await publish("v1");
+      await service.unpublish(alice, "ledger");
+      // 让这次发布停在第一步(扫描代码)里:已经过了停用检查,删除再检查时它还在进行
+      let entered!: () => void;
+      const scanning = { reached: new Promise<void>((resolve) => (entered = resolve)) };
+      adapters.scanner.scan = () => {
+        entered();
+        return new Promise(() => {});
+      };
+      const setAppDisabled = store.setAppDisabled.bind(store);
+      let started = false;
+      store.setAppDisabled = async (name, disabled) => {
+        await setAppDisabled(name, disabled);
+        // 模拟检查和标记之间,负责人刚好发起了发布(此时还没被标记拦住)
+        if (disabled && !started) {
+          started = true;
+          await setAppDisabled(name, undefined);
+          await startPublish("v2");
+          await scanning.reached;
+          await setAppDisabled(name, disabled);
+        }
+      };
+      await expect(service.deleteApp(admin, "ledger")).rejects.toThrow("刚刚开始");
+      expect((await store.getApp("ledger"))?.disabled).toBeUndefined();
+    });
+
+    it("中途失败后再删一次,接着做完,不重复删已经删掉的", async () => {
+      const { adapters, service, publish } = setup();
+      await publish("v1");
+      await service.unpublish(alice, "ledger");
+      const deleteProject = adapters.platform.deleteProject.bind(adapters.platform);
+      adapters.platform.deleteProject = async () => {
+        throw new Error("部署平台暂时不可用");
+      };
+      await expect(service.deleteApp(admin, "ledger")).rejects.toThrow("暂时不可用");
+      expect((await service.listAllApps(admin)).map((a) => a.name)).toEqual(["ledger"]);
+
+      adapters.platform.deleteProject = deleteProject;
+      await service.deleteApp(admin, "ledger");
+      expect(adapters.platform.calls.filter((c) => c.startsWith("deleteDatabase"))).toHaveLength(1);
+      expect(await service.listAllApps(admin)).toEqual([]);
+    });
+  });
+
   describe("代码包清理", () => {
     it("发布结束后清掉不再需要的代码包,自动回滚仍然可用", async () => {
       const { adapters, publish } = setup({ archiveGraceMs: 0 });

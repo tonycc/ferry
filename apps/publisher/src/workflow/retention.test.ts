@@ -1,4 +1,4 @@
-import { mkdtemp, rm, utimes } from "node:fs/promises";
+import { mkdtemp, readdir, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseManifest } from "@ferry/manifest";
@@ -125,5 +125,13 @@ describe("FsArchiveStore", () => {
     expect(await archives.read("ledger", "v1")).toBeUndefined();
     expect(await archives.list("crm")).toEqual([]);
     await expect(archives.remove("../etc", "v1")).rejects.toThrow("代码包路径不合法");
+
+    // 删除应用的全部代码包:连目录一起删掉,别的应用不受影响
+    await archives.save("crm", "v1", ZIP);
+    await archives.removeAll("ledger");
+    await archives.removeAll("ledger");
+    expect((await readdir(dir)).sort()).toEqual(["crm"]);
+    expect(await archives.list("ledger")).toEqual([]);
+    await expect(archives.removeAll("../etc")).rejects.toThrow("代码包路径不合法");
   });
 });

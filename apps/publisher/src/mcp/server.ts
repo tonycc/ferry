@@ -118,7 +118,8 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
     {
       description:
         "下线应用:访问地址立即失效,同事都无法再访问。只在用户明确要求下线时调用,调用前先向用户确认。" +
-        "数据库会停止,但数据保留;应用名仍归用户所有,以后对同名应用重新走一遍 prepare_app、上传、publish_app 即可恢复,原来的数据还在。",
+        "数据库会停止,但数据保留;应用名仍归用户所有,以后对同名应用重新走一遍 prepare_app、上传、publish_app 即可恢复,原来的数据还在。" +
+        "要告诉用户:长期不用的已下线应用,平台管理员可能会彻底删除,删除后数据无法恢复。",
       inputSchema: { name: z.string().describe("应用名") },
     },
     ({ name }) => respond(() => service.unpublish(user, name)),

@@ -91,6 +91,7 @@ export interface AdminAppView extends AppView {
   ownerName: string;
   departmentNames: string[];
   createdAt: string;
+  unpublishedAt?: string;
 }
 
 export interface TokenView {

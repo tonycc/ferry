@@ -92,7 +92,8 @@ async function rollback() {
 async function unpublish() {
   try {
     await ElMessageBox.prompt(
-      `下线后访问地址立即失效,同事都无法再访问。数据库会停止,但数据保留;以后用同一个应用名重新发布即可恢复。请输入应用名 ${props.name} 确认:`,
+      `下线后访问地址立即失效,同事都无法再访问。数据库会停止,但数据保留;以后用同一个应用名重新发布即可恢复。` +
+        `长期不用的已下线应用,平台管理员可能会彻底删除,删除后数据无法恢复。请输入应用名 ${props.name} 确认:`,
       "下线应用",
       {
         confirmButtonText: "下线",
@@ -182,7 +183,8 @@ onBeforeUnmount(() => {
         title="应用已被管理员停用:同事无法访问,也不能发布。请联系平台管理员。"
         :description="app.disabledReason ? `原因:${app.disabledReason}` : undefined" />
       <el-alert v-else-if="app.unpublished" type="info" :closable="false" show-icon class="alert"
-        title="应用已下线,数据保留。让 agent 用同一个应用名重新发布即可恢复。" />
+        title="应用已下线,数据保留。让 agent 用同一个应用名重新发布即可恢复。"
+        description="长期不用的已下线应用,平台管理员可能会彻底删除,删除后数据无法恢复。" />
       <el-alert v-if="running" type="info" :closable="false" show-icon class="alert" title="有一次发布正在进行,页面会自动刷新。" />
 
       <el-card shadow="never" class="card">

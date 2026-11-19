@@ -26,6 +26,10 @@ export class MemoryArchiveStore implements ArchiveStore {
   async remove(appName: string, version: string): Promise<void> {
     this.archives.delete(`${appName}/${version}`);
   }
+
+  async removeAll(appName: string): Promise<void> {
+    for (const { version } of await this.list(appName)) this.archives.delete(`${appName}/${version}`);
+  }
 }
 
 const SAFE_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
@@ -70,6 +74,10 @@ export class FsArchiveStore implements ArchiveStore {
 
   async remove(appName: string, version: string): Promise<void> {
     await rm(this.path(appName, version), { force: true });
+  }
+
+  async removeAll(appName: string): Promise<void> {
+    await rm(join(this.dir, this.segment(appName)), { recursive: true, force: true });
   }
 
   private path(appName: string, version: string): string {

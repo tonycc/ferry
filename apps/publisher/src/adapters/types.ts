@@ -52,6 +52,13 @@ export interface DeployPlatform {
   removeApp(appId: string): Promise<void>;
   /** 下线:停止数据库,数据保留;之后 createDatabase 会重新启动它 */
   stopDatabase(databaseId: string): Promise<void>;
+  /**
+   * 管理员删除应用时:彻底删除数据库,连同数据卷和服务器上的迁移前备份,数据无法恢复。
+   * 可以重复调用:中途失败后再调用一次会把剩下的做完,已经删掉的不报错
+   */
+  deleteDatabase(databaseId: string): Promise<void>;
+  /** 删除部署平台上的项目;应用和数据库要先删掉。已经删掉的不报错 */
+  deleteProject(projectId: string): Promise<void>;
 }
 
 /** 代码包存储:每次上传保存一份,部署和回滚时取回,按保留规则清理 */
@@ -62,6 +69,8 @@ export interface ArchiveStore {
   list(appName: string): Promise<{ version: string; savedAt: Date }[]>;
   /** 删除一个代码包;不存在时不报错 */
   remove(appName: string, version: string): Promise<void>;
+  /** 删除应用的全部代码包(管理员删除应用时);没有时不报错 */
+  removeAll(appName: string): Promise<void>;
 }
 
 export interface Finding {

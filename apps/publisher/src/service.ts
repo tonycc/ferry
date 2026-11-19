@@ -107,6 +107,8 @@ export interface AdminAppView extends AppView {
   /** 对应的部门名称;查不到名称的部门显示 ID */
   departmentNames: string[];
   createdAt: string;
+  /** 负责人下线的时间;管理员据此决定要不要删除 */
+  unpublishedAt?: string;
   disabledReason?: string;
 }
 
@@ -414,6 +416,7 @@ export class PublisherService {
           departments,
           departmentNames: await Promise.all(departments.map(async (id) => (await directory.departmentNameOf(id)) ?? id)),
           createdAt: app.createdAt.toISOString(),
+          unpublishedAt: app.unpublishedAt?.toISOString(),
           disabledReason: app.disabled?.reason,
         };
       }),
@@ -436,6 +439,57 @@ export class PublisherService {
       app.ownerId,
       `应用 ${app.name} 已被管理员停用${reason ? `,原因: ${reason}` : ""}`,
     );
+  }
+
+  /**
+   * 管理员彻底删除应用:删除部署平台上的应用、数据库(连同数据卷和迁移前备份)和项目,
+   * 删除代码包和全部记录,释放应用名。数据无法恢复。
+   * 只能删除已下线或已停用的应用:在线的应用要先停用,免得误删正在使用的应用。
+   * 每删完一类资源就记下来,中途失败时再删一次会接着做完
+   */
+  async deleteApp(admin: User, appName: string): Promise<void> {
+    requireAdmin(admin);
+    const app = await this.store.getApp(appName);
+    if (!app) throw new UserError("not_found", `应用 ${appName} 不存在`);
+    if (!app.unpublishedAt && !app.disabled) {
+      throw new UserError("invalid_input", `应用 ${app.name} 还在线,不能删除。请先停用,或者请负责人先下线`);
+    }
+    const running = async () => (await this.store.listReleases(app.name)).some((r) => !isTerminal(r.state));
+    if (await running()) {
+      throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
+    }
+    // 先标记为停用:删除要十几秒,这期间负责人不能再发布(已下线的应用本来可以随时重新发布)。
+    // 标记前刚好开始的发布,会在下一步检查到停用后自行终止;这里再查一次,有就先不删
+    if (!app.disabled) {
+      await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason: "管理员正在删除这个应用" });
+      if (await running()) {
+        await this.store.setAppDisabled(app.name, undefined);
+        throw new UserError("conflict", `应用 ${app.name} 有一次发布刚刚开始,请等它结束后再删除`);
+      }
+    }
+
+    const { platform } = this.adapters;
+    if (app.platform.appId) {
+      await platform.removeApp(app.platform.appId);
+      app.platform = { ...app.platform, appId: undefined, domainAttached: false };
+      await this.store.saveApp(app);
+    }
+    if (app.platform.databaseId) {
+      await platform.deleteDatabase(app.platform.databaseId);
+      app.platform = { ...app.platform, databaseId: undefined };
+      await this.store.saveApp(app);
+    }
+    if (app.platform.projectId) {
+      await platform.deleteProject(app.platform.projectId);
+      app.platform = { ...app.platform, projectId: undefined };
+      await this.store.saveApp(app);
+    }
+    await this.adapters.archives.removeAll(app.name);
+    await this.store.deleteApp(app.name);
+    // 删除已经完成,通知发不出去不影响结果,只记日志
+    await this.adapters.notifier
+      .notify(app.ownerId, `应用 ${app.name} 已被管理员删除,数据已清除,应用名已释放`)
+      .catch((err: unknown) => console.error(`应用 ${app.name} 已删除,但通知负责人失败:`, err));
   }
 
   async enableApp(admin: User, appName: string): Promise<void> {
