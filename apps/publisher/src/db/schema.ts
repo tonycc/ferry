@@ -12,6 +12,8 @@ export const apps = pgTable(
     name: text("name").primaryKey(),
     ownerId: text("owner_id").notNull(),
     visibility: text("visibility").notNull().default("self"),
+    /** 为 true 时可见范围以控制台为准,发布时不再用 app.yaml 里的值 */
+    visibilityPinned: boolean("visibility_pinned").notNull().default(false),
     host: text("host").notNull().unique(),
     /** 部署平台上的资源 ID: { projectId, appId, databaseId, domainAttached } */
     platform: jsonb("platform").notNull().default({}),

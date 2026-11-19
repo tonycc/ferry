@@ -557,11 +557,44 @@ export class DokployPlatform implements DeployPlatform {
       }
       const crashed = tasks.filter((t) => !oldTasks.has(t.containerId) && hasExited(t)).length;
       if (crashed >= 2 || Date.now() > startDeadline) {
+        // 先读退出的容器自己的输出;读不到再用应用日志(更新时它返回的是还在运行的旧版本的输出)
+        const exited = await this.exitedContainerLogs(appName).catch(() => undefined);
+        if (exited) return { ok: false, reason: "start", logs: `(应用启动后退出;下面是它最后一次启动的输出)\n${exited}` };
         const raw = await this.getLogs(appId, this.failureLogLines).catch(() => "");
         return { ok: false, reason: "start", logs: lastStartLogs(raw) };
       }
       await this.sleep(this.pollIntervalMs);
     }
+  }
+
+  /**
+   * 读应用最近一个已退出容器的输出。Dokploy 的 application.readLogs 只返回正在运行的容器的输出:
+   * 更新时旧版本还在运行,读到的是旧版本的日志,新版本的崩溃信息就丢了(实测)。
+   * 所以在 Dokploy 所在服务器上直接用 docker logs 读(和迁移前备份一样,用 dokploy-server 类型的一次性任务)。
+   * 没有已退出的容器时返回 undefined
+   */
+  private async exitedContainerLogs(appName: string): Promise<string | undefined> {
+    if (!SAFE_NAME.test(appName)) return undefined;
+    const script = [
+      `cid=$(docker ps -a -q --filter "name=^${appName}\\." --filter status=exited | head -n1)`,
+      'if [ -z "$cid" ]; then exit 0; fi',
+      `docker logs --timestamps --tail ${this.failureLogLines} "$cid" 2>&1`,
+    ].join("\n");
+    const run = await this.runOnce(
+      {
+        name: `${COMMAND_SCHEDULE_PREFIX}logs-${this.now().getTime()}`,
+        cronExpression: NEVER,
+        command: "ferry-logs",
+        script,
+        shellType: "bash",
+        scheduleType: "dokploy-server",
+        enabled: false,
+      },
+      { logsOnSuccess: true },
+    );
+    // 一次性任务的日志里还有 Dokploy 自己加的行,只留 docker logs 输出的(每行以时间戳开头)
+    const lines = run.logs.split("\n").filter((line) => TIMESTAMPED.test(line));
+    return lines.length > 0 ? lastStartLogs(lines.join("\n")) : undefined;
   }
 
   /** 等服务的容器实际运行起来,最多等 startTimeoutMs */
@@ -583,7 +616,10 @@ export class DokployPlatform implements DeployPlatform {
   }
 
   /** 新建一个只手动触发的定时任务,执行一次后删除,返回结果和(失败时的)日志 */
-  private async runOnce(schedule: Record<string, unknown>): Promise<{ status: string; logs: string }> {
+  private async runOnce(
+    schedule: Record<string, unknown>,
+    options: { logsOnSuccess?: boolean } = {},
+  ): Promise<{ status: string; logs: string }> {
     const created = await this.client.mutate<DokploySchedule>("schedule.create", schedule);
     try {
       const run = await this.client.mutate<ScheduleRun>("schedule.runManually", { scheduleId: created.scheduleId });
@@ -596,7 +632,7 @@ export class DokployPlatform implements DeployPlatform {
         deploymentId = latest?.deploymentId ?? deploymentId;
       }
       const logs =
-        status === "done" || !deploymentId
+        (status === "done" && !options.logsOnSuccess) || !deploymentId
           ? ""
           : await this.client.query<string>("deployment.readLogs", { deploymentId, tail: this.failureLogLines });
       return { status, logs };

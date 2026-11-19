@@ -17,7 +17,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 发布状态机、配额、可见范围判定、失败回传与回滚 | 已实现,有测试 |
 | 管理员停用和恢复应用(后端接口) | 已实现,有测试 |
 | 代码包上传(一次性上传地址、本地目录存储、用旧包回滚) | 已实现,有测试,本地用真实 zip 验证过 |
-| REST 接口、MCP 工具(7 个) | 已实现,本地验证过 |
+| REST 接口、MCP 工具(10 个) | 已实现,本地验证过 |
 | Dokploy 对接(`adapters/dokploy.ts`)、真实健康检查 | 已实现,对本机 Dokploy 的集成测试通过;经 MCP 完整发布模板应用已验证(M1 验收) |
 | 密钥扫描、通知 | 只有假实现 |
 | 持久化(PostgreSQL) | 已实现,有测试;设置 `DATABASE_URL` 后启用,启动时自动执行数据库迁移。不设置时用内存存储 |
@@ -26,7 +26,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 登录网关(访问应用要先登录,按可见范围放行,把访问者身份传给应用) | 已实现,有测试,在本机 Dokploy 上端到端验证过。Ferry 停了时所有应用都无法访问 |
 | 组织架构与“本部门可见”判定(同部门或上级部门) | 已实现,有测试。组织架构定时从数据源同步(本地用 `ORG_FILE` 指向的文件,示例 `infra/dev-org.json`),存进 PostgreSQL,重启后直接恢复;有问题的快照整份拒绝。钉钉数据源待 P5 |
 | 手动回滚和下线(`rollback_app`、`unpublish_app`) | 已实现,有测试,在本机 Dokploy 上端到端验证过。下线 30 天后自动删除数据还没有实现(任务 2.12) |
-| 控制台 | 只有应用列表页,没有管理页面 |
+| 控制台(`/console/`,Vue 3 + Element Plus) | 已实现,在本机 Dokploy 上用浏览器验证过:我的应用、应用详情(发布历史和失败日志、运行日志、修改可见范围、回滚、下线)、个人令牌、管理全部应用。登录页仍是 Ferry 直接提供的普通网页 |
 | 生产部署配置 | 未写 |
 
 ## 目录结构
@@ -41,7 +41,7 @@ apps/
     src/authz/          应用访问权限判定
     src/db/             PostgreSQL 表结构(尚未接入)
     src/service.ts      REST 和 MCP 共用的业务入口
-  console/              “我的应用”网页
+  console/              控制台(Vue 3 + Element Plus),构建后由 Ferry 在 /console/ 下提供
 packages/
   manifest/             app.yaml 的结构定义与校验
   templates/            给 agent 用的应用模板
@@ -109,6 +109,15 @@ pnpm dev
 每次发布结束后清理该应用的代码包:保留线上版本、最近两个上线过的版本、进行中的发布用到的版本,以及 `ARCHIVE_GRACE_HOURS`(默认 24)小时内上传的。
 迁移前备份存在 Dokploy 所在服务器的 `/etc/dokploy/ferry-backups/<数据库>/`,每个数据库保留最新 `BACKUP_KEEP`(默认 5)份。
 
+控制台要先构建一次,Ferry 才能在 `/console/` 下提供(改了控制台代码后重新构建):
+
+```bash
+pnpm --filter @ferry/console build
+```
+
+改控制台时可以用开发服务器(http://localhost:5173/console/,接口转给本机 8080 端口的 Ferry;
+Ferry 的 `ALLOWED_ORIGINS` 要加上 `http://localhost:5173`,否则修改类操作会被拒绝):
+
 ```bash
 pnpm dev:console
 ```
@@ -141,7 +150,7 @@ pnpm typecheck
 ### 登录和身份
 
 - **网页**:打开 http://127.0.0.1:8080/login ,输入工号或手机号,把收到的验证码填回去。本地开发时验证码打印在服务日志里
-  (`NOTIFY_VIA=log`,形如 `[通知 → dingtalk:alice] Ferry 登录验证码:123456`)。登录后在 http://127.0.0.1:8080/me 生成个人令牌。
+  (`NOTIFY_VIA=log`,形如 `[通知 → dingtalk:alice] Ferry 登录验证码:123456`)。登录后在控制台的“个人令牌”(http://127.0.0.1:8080/console/tokens)生成个人令牌。
 - **agent**:把个人令牌配进 agent 的 MCP 配置,请求头 `Authorization: Bearer fry_...`。MCP 只认个人令牌。
 - **开发用请求头**:`DEV_AUTH=true` 时,没带凭据的请求可以用 `x-ferry-user` 自称是谁,方便调试;默认关闭。
 - 所属部门一律从组织架构查。示例组织架构 `infra/dev-org.json`(工号在括号里):`dingtalk:alice`(财务部,A001)、

@@ -1,4 +1,4 @@
-# 每次推送到 main 和每个 PR 都跑:类型检查,以及内存存储和 PostgreSQL 存储两套测试。
+# 每次推送到 main 和每个 PR 都跑:类型检查、控制台构建,以及内存存储和 PostgreSQL 存储两套测试。
 # 对接本机 Dokploy 的集成测试(pnpm test:dokploy)和网关端到端检查需要一整套 Dokploy,不在 CI 里跑。
 name: CI
 
@@ -49,6 +49,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm typecheck
+
+      # 控制台(Vue + Element Plus)能构建出来;Ferry 在 /console/ 下提供构建结果
+      - run: pnpm --filter @ferry/console build
 
       # 设置了 TEST_DATABASE_URL 时,存储相关的测试会在内存和 PostgreSQL 上各跑一遍
       - name: Test (in-memory and PostgreSQL)

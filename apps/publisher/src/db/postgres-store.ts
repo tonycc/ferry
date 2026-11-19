@@ -61,6 +61,7 @@ export class PostgresStore implements Store {
         name: app.name,
         ownerId: app.ownerId,
         visibility: app.visibility,
+        visibilityPinned: app.visibilityPinned ?? false,
         host: app.host,
         platform: app.platform,
         liveVersion: app.liveVersion ?? null,
@@ -80,6 +81,7 @@ export class PostgresStore implements Store {
         platform: app.platform,
         liveVersion: app.liveVersion ?? null,
         visibility: app.visibility,
+        visibilityPinned: app.visibilityPinned ?? false,
         unpublishedAt: app.unpublishedAt ?? null,
       })
       .where(eq(schema.apps.name, app.name))
@@ -175,6 +177,7 @@ function toApp(row: AppRow): AppRecord {
     name: row.name,
     ownerId: row.ownerId,
     visibility: row.visibility as Visibility,
+    visibilityPinned: row.visibilityPinned || undefined,
     host: row.host,
     platform: row.platform as AppRecord["platform"],
     liveVersion: row.liveVersion ?? undefined,

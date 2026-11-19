@@ -273,17 +273,17 @@ describe("HTTP 入口的身份", () => {
     expect(badCookie.statusCode).toBe(401);
   });
 
-  it("登录页和令牌页可以打开", async () => {
+  it("登录页可以打开;旧的令牌页和管理页地址跳到控制台", async () => {
     const { app } = server();
     expect((await app.inject({ method: "GET", url: "/login" })).body).toContain("登录 Ferry");
-    expect((await app.inject({ method: "GET", url: "/me" })).body).toContain("我的个人令牌");
+    const me = await app.inject({ method: "GET", url: "/me" });
+    expect([me.statusCode, me.headers.location]).toEqual([302, "/console/tokens"]);
+    const admin = await app.inject({ method: "GET", url: "/admin" });
+    expect([admin.statusCode, admin.headers.location]).toEqual([302, "/console/admin"]);
   });
 
-  it("管理页:只有管理员能看全部应用(含负责人姓名和部门名),停用要同源请求,停用后列表显示原因", async () => {
+  it("管理接口:只有管理员能看全部应用(含负责人姓名和部门名),停用要同源请求,停用后列表显示原因", async () => {
     const { app, login, ORIGIN, service } = server({ adminIds: ["dingtalk:alice"] });
-    const page = await app.inject({ method: "GET", url: "/admin" });
-    expect(page.statusCode).toBe(200);
-    expect(page.body).toContain("Ferry 管理");
 
     await service.prepareApp({ id: "dingtalk:bob", departments: ["dingtalk:finance"], isAdmin: false }, "bob-tool");
     const bob = await login("A002");

@@ -5,6 +5,11 @@ export interface AppRecord {
   name: string;
   ownerId: string;
   visibility: Visibility;
+  /**
+   * 为 true 时可见范围以控制台(或 agent 的 set_visibility)为准,发布时不再用 app.yaml 里的值。
+   * 应用第一次上线或负责人改过可见范围后变为 true
+   */
+  visibilityPinned?: boolean;
   /** 访问域名,如 expense-tracker.apps.corp.example */
   host: string;
   /** 已在部署平台上创建的资源 ID;有值就不再重复创建(幂等) */
