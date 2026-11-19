@@ -44,7 +44,7 @@ apps/
   console/              控制台(Vue 3 + Element Plus),构建后由 Ferry 在 /console/ 下提供
 packages/
   manifest/             app.yaml 的结构定义与校验
-  templates/            给 agent 用的应用模板
+  templates/            给 agent 用的应用模板(node-postgres、static,都用 TypeScript)
 infra/                  本地开发依赖和登录网关配置示例
 ```
 

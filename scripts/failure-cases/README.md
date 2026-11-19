@@ -1,6 +1,6 @@
 # 典型失败案例(任务 2.5)
 
-用来检查 Ferry 在发布失败时给 agent 的信息够不够它自己修好。案例都从 node-postgres 模板改出来,每个只埋一个问题:
+用来检查 Ferry 在发布失败时给 agent 的信息够不够它自己修好。案例都从 node-postgres 模板(TypeScript)改出来,每个只埋一个问题:
 
 | 编号 | 问题 | 预期的错误类型 |
 |---|---|---|
@@ -15,6 +15,7 @@
 | c09 | app.yaml 的 healthcheck 路径不存在 | healthcheck_failed(404) |
 | c10 | 健康检查接口查询不存在的表 | healthcheck_failed(500) |
 | c11 | 线上已有正常版本,新版本启动即崩溃 | start_failed,线上恢复为旧版本(ROLLED_BACK) |
+| c12 | TypeScript 类型错误(属性名拼错) | build_failed,logs 里有 文件(行,列): error TS… |
 
 ## 用法
 
@@ -31,7 +32,7 @@ python3 -I scripts/failure-cases/make_cases.py packages/templates/node-postgres 
   `claude -p "帮我把 <目录> 里的应用发布上去……直接发布,不用再问我" --strict-mcp-config --mcp-config <只含 ferry 的配置>`,
   再到 Ferry 的数据库里看这个应用的发布记录。
 
-## 2026-11-18 的结果
+## 2026-11-18 的结果(模板还是 JavaScript 时)
 
 改进前,直接发布看 Ferry 返回的错误:
 

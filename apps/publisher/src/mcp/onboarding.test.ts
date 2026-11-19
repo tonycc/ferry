@@ -62,10 +62,13 @@ describe("agent 接入", () => {
 
     const templates = (await tool("list_templates")).json();
     expect(templates).toContainEqual({ name: "node-postgres", description: expect.stringContaining("PostgreSQL") });
+    expect(templates).toContainEqual({ name: "static", description: expect.stringContaining("静态网页") });
 
     const files: { path: string; content: string }[] = (await tool("get_template", { name: "node-postgres" })).json();
     const paths = files.map((f) => f.path);
-    expect(paths).toEqual(expect.arrayContaining(["app.yaml", "Dockerfile", "server.js", "migrations/001_init.sql"]));
+    expect(paths).toEqual(
+      expect.arrayContaining(["app.yaml", "Dockerfile", "tsconfig.json", "src/server.ts", "src/migrate.ts", "migrations/001_init.sql"]),
+    );
     expect(paths.some((p) => p.startsWith("node_modules"))).toBe(false);
 
     for (const name of ["../manifest", "..", "node-postgres/../../manifest"]) {

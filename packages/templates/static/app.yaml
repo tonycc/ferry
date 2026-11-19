@@ -1,0 +1,6 @@
+name: my-page
+template: static
+port: 3000
+healthcheck: /healthz
+database: none
+visibility: self

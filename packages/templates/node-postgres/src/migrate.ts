@@ -1,12 +1,12 @@
 import { readdir, readFile } from "node:fs/promises";
 import pg from "pg";
 
-// 依次执行 migrations/ 下还没执行过的 .sql 文件。可以重复运行。
+// 依次执行 migrations/ 下还没执行过的 .sql 文件,每个文件在一个事务里。可以重复运行(每次发布都会运行)。
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 try {
   await client.query("create table if not exists _migrations (name text primary key, applied_at timestamptz default now())");
-  const applied = new Set((await client.query("select name from _migrations")).rows.map((row) => row.name));
+  const applied = new Set((await client.query<{ name: string }>("select name from _migrations")).rows.map((row) => row.name));
   const files = (await readdir("migrations")).filter((file) => file.endsWith(".sql")).sort();
 
   for (const file of files) {
