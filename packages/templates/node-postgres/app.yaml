@@ -3,5 +3,5 @@ template: node-postgres
 port: 3000
 healthcheck: /healthz
 database: postgres
-migrate: node migrate.js
+migrate: node dist/migrate.js
 visibility: self

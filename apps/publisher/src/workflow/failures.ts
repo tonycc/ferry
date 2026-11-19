@@ -29,7 +29,8 @@ export function deployFailure(reason: FailureReason, manifest: Manifest): Failur
         type: "build_failed",
         message: "构建失败(按 Dockerfile 构建镜像时出错)",
         hint:
-          "看 logs 末尾的报错修复后重新发布。常见原因:package.json 里的依赖名或版本号不存在、" +
+          "看 logs 末尾的报错修复后重新发布。常见原因:TypeScript 类型错误(logs 里有 文件(行,列): error TS…," +
+          "本地可以先运行 npx tsc --noEmit 检查)、package.json 里的依赖名或版本号不存在、" +
           "Dockerfile 里 COPY 的文件不在代码包里、构建命令写错",
       };
     case "start":

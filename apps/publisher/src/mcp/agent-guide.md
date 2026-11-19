@@ -4,9 +4,10 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 
 1. 和用户确认要做什么。先用 list_templates 看有哪些模板,用 get_template 取模板文件写到一个新目录里,在模板基础上改。
    不要从零开始写,也不要换别的语言或框架:模板之外的写法很可能发布不了。
+   要保存数据用 node-postgres;只是页面、文档、看板或纯浏览器里的小工具用 static(没有数据库)。
 2. 应用不要做注册登录。同事打开应用前,Ferry 已经确认了他是谁、能不能看;
    访问者身份在请求头里:X-Ferry-User-Id、X-Ferry-User-Name(UTF-8 百分号编码,要解码)、X-Ferry-User-Departments(逗号分隔)。
-   用法见模板 server.js 里的 visitor()。`/__ferry/` 开头的路径留给 Ferry,应用不要用。
+   用法见模板 src/server.ts 里的 visitor();static 模板的页面用 fetch("/whoami") 读取。`/__ferry/` 开头的路径留给 Ferry,应用不要用。
 3. 数据库连接串只从 DATABASE_URL 读取,端口从 PORT 读取,不要在代码里写任何密码或密钥。
 4. 改表结构时在 migrations/ 下新增文件,不要改已经发布过的迁移文件。
    发布顺序是:构建 → 启动新代码 → 执行迁移 → 健康检查。所以应用启动时不能依赖这次迁移才建的表或字段:
@@ -22,10 +23,12 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 
 ## 发布流程
 
+0. 本机有 Node.js 时,先在应用目录里运行 `npm install && npx tsc --noEmit`,没有类型错误再发布。
+
 1. prepare_app(应用名):返回 version 和一次性的 uploadUrl(只能用一次,很快过期,过期了就重新调用 prepare_app)。
 2. 打包:进入应用目录,在里面打包,让 app.yaml 和 Dockerfile 在 zip 的根目录;排除 node_modules、.git、.env 等:
-   `cd 应用目录 && zip -r ../app.zip . -x 'node_modules/*' '.git/*' '.env*'`
-   没有 zip 命令时(如 Windows):`python -c "import shutil; shutil.make_archive('../app', 'zip', '.')"`(先删掉 node_modules),
+   `cd 应用目录 && zip -r ../app.zip . -x 'node_modules/*' 'dist/*' '.git/*' '.env*'`
+   没有 zip 命令时(如 Windows):`python -c "import shutil; shutil.make_archive('../app', 'zip', '.')"`(先删掉 node_modules 和 dist),
    或 PowerShell 的 `Compress-Archive -Path * -DestinationPath ..\app.zip`。
 3. 上传:`curl -sS -T ../app.zip "<uploadUrl>"`。返回里有 version 表示成功;返回错误时按提示改,再重新上传(地址没用掉之前可以再用)。
 4. publish_app(app.yaml 的完整内容, version)。app.yaml 里的 name 必须和 prepare_app 用的应用名一致。
@@ -37,7 +40,8 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 - state 为 FAILED_FIXABLE 或 ROLLED_BACK:读 error 里的 type、message、logs 和 hint,找到原因,修改代码,
   再从 prepare_app 开始走一遍。每次修改都要有明确的依据,不要盲目重试同样的代码。
   ROLLED_BACK 表示线上已恢复为上一个版本,同事不受影响,可以从容修复。各类型的含义:
-  - build_failed:构建镜像时出错,看 logs 末尾。常见:依赖名或版本号不存在、Dockerfile 里的文件路径不对。
+  - build_failed:构建镜像时出错,看 logs 末尾。常见:TypeScript 类型错误(logs 里有 文件(行,列): error TS…)、
+    依赖名或版本号不存在、Dockerfile 里的文件路径不对。
   - start_failed:构建成功,但应用一启动就退出。logs 是应用最后一次启动的输出,找退出前的报错。
     常见:启动命令指向的文件不存在、import 了没装的依赖、启动时查询了还不存在的表
     (迁移在启动之后才执行,把建表语句加进 migrations 解决不了,要让启动阶段不依赖这张表)。
