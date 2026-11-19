@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { DokployPlatform } from "./adapters/dokploy";
+import { DokployPlatform, type ResourceLimits } from "./adapters/dokploy";
 import { DokployClient } from "./adapters/dokploy-client";
 import { FsArchiveStore } from "./adapters/archive-store";
 import { HttpHealthChecker } from "./adapters/health";
@@ -57,7 +57,12 @@ if (config.FERRY_PLATFORM === "dokploy") {
   }
   adapters.platform = new DokployPlatform(
     new DokployClient({ baseUrl: config.DOKPLOY_URL, apiKey: config.DOKPLOY_API_KEY }),
-    { https: config.APPS_URL_SCHEME === "https", backupKeep: config.BACKUP_KEEP },
+    {
+      https: config.APPS_URL_SCHEME === "https",
+      backupKeep: config.BACKUP_KEEP,
+      appLimits: limits(config.APP_CPU_LIMIT, config.APP_MEMORY_LIMIT_MB),
+      databaseLimits: limits(config.DB_CPU_LIMIT, config.DB_MEMORY_LIMIT_MB),
+    },
   );
   adapters.health = new HttpHealthChecker({
     gateway: config.HEALTHCHECK_GATEWAY,
@@ -145,3 +150,9 @@ if (config.FERRY_PLATFORM === "dokploy") {
 // 继续执行上次没跑完的发布(进程重启前正在进行的)
 const resumed = await service.resumeUnfinished();
 if (resumed.length > 0) server.log.info({ releases: resumed }, `继续执行 ${resumed.length} 个未完成的发布`);
+
+/** 0 表示不限制;只限制其中一项时另一项不限 */
+function limits(cpus: number, memoryMb: number): ResourceLimits | null {
+  if (!cpus && !memoryMb) return null;
+  return { cpus, memoryMb };
+}

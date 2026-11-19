@@ -41,8 +41,34 @@ export interface DokployPlatformOptions {
    * 那时没有运行 Ferry,挂上网关就访问不了应用)
    */
   gatewayMiddleware?: string | null;
+  /**
+   * 每个应用和每个数据库的资源上限,让单个应用耗尽 CPU 或内存时不影响其他应用和 Ferry。
+   * null 表示不限制。超出内存上限的容器会被系统杀掉并重启;CPU 只会被限速
+   */
+  appLimits?: ResourceLimits | null;
+  databaseLimits?: ResourceLimits | null;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
+}
+
+export interface ResourceLimits {
+  /** CPU 核数,可以是小数,如 0.5;0 表示不限制 */
+  cpus: number;
+  /** 0 表示不限制 */
+  memoryMb: number;
+}
+
+/**
+ * Dokploy 原样把这两个字段交给 Docker:CPU 是纳核(1 核 = 10^9),内存是字节(实测,见 dokploy-findings.md)。
+ * 预留值为空:本机和小规模部署不需要预留,只要上限
+ */
+function limitFields(limits: ResourceLimits | null) {
+  return {
+    cpuLimit: limits?.cpus ? String(Math.round(limits.cpus * 1e9)) : null,
+    memoryLimit: limits?.memoryMb ? String(Math.round(limits.memoryMb * 1024 * 1024)) : null,
+    cpuReservation: null,
+    memoryReservation: null,
+  };
 }
 
 const PROJECT_PREFIX = "ferry-";
@@ -164,6 +190,8 @@ export class DokployPlatform implements DeployPlatform {
   private readonly backupRoot: string;
   private readonly backupKeep: number;
   private readonly gatewayMiddleware: string | null;
+  private readonly appLimits: ResourceLimits | null;
+  private readonly databaseLimits: ResourceLimits | null;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => Date;
 
@@ -183,6 +211,8 @@ export class DokployPlatform implements DeployPlatform {
     this.backupRoot = options.backupRoot ?? "/etc/dokploy/ferry-backups";
     this.backupKeep = Math.max(1, Math.floor(options.backupKeep ?? 5));
     this.gatewayMiddleware = options.gatewayMiddleware === undefined ? GATEWAY_MIDDLEWARE : options.gatewayMiddleware;
+    this.appLimits = options.appLimits ?? null;
+    this.databaseLimits = options.databaseLimits ?? null;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? (() => new Date());
   }
@@ -245,6 +275,8 @@ export class DokployPlatform implements DeployPlatform {
         })
       ).postgresId;
 
+    // 每次都设一遍资源上限;已经在运行的数据库要等下次重新启动(下线后重新发布)才生效
+    await this.client.mutate("postgres.update", { postgresId, ...limitFields(this.databaseLimits) });
     let db = await this.postgres(postgresId);
     if (db.applicationStatus !== "done") {
       try {
@@ -367,6 +399,9 @@ export class DokployPlatform implements DeployPlatform {
     const seen = new Set(before.map((d) => d.deploymentId));
     // 上传前已有的容器(不论状态),之后出现的才算这次部署的新容器
     const oldTasks = new Set((await this.tasks(appName)).map((t) => t.containerId));
+
+    // 每次部署前都设一遍资源上限:已有的应用和调整过的配置,在下次发布或回滚时生效
+    await this.client.mutate("application.update", { applicationId: appId, ...limitFields(this.appLimits) });
 
     const form = new FormData();
     form.set("applicationId", appId);

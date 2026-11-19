@@ -70,8 +70,13 @@ export interface RollbackView extends ReleaseView {
 
 export interface AdminAppView extends AppView {
   ownerId: string;
-  /** 负责人当前所属的部门,来自组织架构 */
+  /** 负责人姓名;已不在组织架构里时为 ownerId */
+  ownerName: string;
+  /** 负责人当前所属的部门 ID,来自组织架构 */
   departments: string[];
+  /** 对应的部门名称;查不到名称的部门显示 ID */
+  departmentNames: string[];
+  createdAt: string;
   disabledReason?: string;
 }
 
@@ -325,12 +330,19 @@ export class PublisherService {
     requireAdmin(admin);
     const apps = await this.store.listApps();
     return Promise.all(
-      apps.map(async (app) => ({
-        ...toAppView(app, this.appUrl(app.host)),
-        ownerId: app.ownerId,
-        departments: await this.adapters.directory.departmentsOf(app.ownerId),
-        disabledReason: app.disabled?.reason,
-      })),
+      apps.map(async (app) => {
+        const { directory } = this.adapters;
+        const departments = await directory.departmentsOf(app.ownerId);
+        return {
+          ...toAppView(app, this.appUrl(app.host)),
+          ownerId: app.ownerId,
+          ownerName: (await directory.nameOf(app.ownerId)) ?? app.ownerId,
+          departments,
+          departmentNames: await Promise.all(departments.map(async (id) => (await directory.departmentNameOf(id)) ?? id)),
+          createdAt: app.createdAt.toISOString(),
+          disabledReason: app.disabled?.reason,
+        };
+      }),
     );
   }
 

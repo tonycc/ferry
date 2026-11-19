@@ -5,7 +5,9 @@ import { DokployPlatform, formatEnv, lastStartLogs, parseEnv } from "./dokploy";
 type Handler = (input: Record<string, unknown>, request: Request) => unknown;
 
 /** 按接口名应答的假 Dokploy,记录每次调用 */
-function fakeDokploy(handlers: Record<string, Handler>) {
+function fakeDokploy(overrides: Record<string, Handler>) {
+  // 设置资源上限的接口默认成功
+  const handlers: Record<string, Handler> = { "application.update": () => true, "postgres.update": () => true, ...overrides };
   const calls: { procedure: string; input: Record<string, unknown>; request: Request }[] = [];
   const fetchImpl: typeof fetch = async (url, init) => {
     const request = new Request(url as string, init);
@@ -562,5 +564,46 @@ describe("lastStartLogs", () => {
   });
   it("只启动过一次时只去掉时间戳", () => {
     expect(lastStartLogs("2026-11-18T15:52:16.1Z a\n2026-11-18T15:52:16.2Z b\n")).toBe("a\nb");
+  });
+});
+
+describe("资源上限", () => {
+  it("每次部署前给应用设上限,创建数据库时给数据库设上限:CPU 按纳核、内存按字节;0 表示不限", async () => {
+    let uploaded = false;
+    const { client, called } = fakeDokploy({
+      "application.one": APP_ONE,
+      "deployment.all": () => (uploaded ? [{ deploymentId: "new", status: "done" }] : []),
+      "application.dropDeployment": () => {
+        uploaded = true;
+        return true;
+      },
+      "docker.getServiceContainersByAppName": () => (uploaded ? NEW_TASK_RUNNING() : []),
+      "project.one": () => ({ environments: [{ environmentId: "e1", isDefault: true, applications: [], postgres: [] }] }),
+      "postgres.create": () => ({ postgresId: "pg1" }),
+      "postgres.one": () => ({ appName: "x-db", databaseUser: "u", databasePassword: "p", databaseName: "d", applicationStatus: "done" }),
+    });
+    const platform = new DokployPlatform(client, {
+      pollIntervalMs: 0,
+      stableMs: 0,
+      sleep: async () => {},
+      appLimits: { cpus: 0.5, memoryMb: 256 },
+      databaseLimits: { cpus: 1, memoryMb: 0 },
+    });
+
+    expect(await platform.deploy("a1", ARCHIVE)).toEqual({ ok: true });
+    await platform.createDatabase({ projectId: "p1", name: "ledger" });
+
+    expect(called("application.update")[0]?.input).toEqual({
+      applicationId: "a1",
+      cpuLimit: "500000000",
+      memoryLimit: String(256 * 1024 * 1024),
+      cpuReservation: null,
+      memoryReservation: null,
+    });
+    expect(called("postgres.update")[0]?.input).toMatchObject({
+      postgresId: "pg1",
+      cpuLimit: "1000000000",
+      memoryLimit: null,
+    });
   });
 });

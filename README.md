@@ -101,7 +101,10 @@ pnpm dev
 修改 `apps/publisher/src/db/schema.ts` 后,用 `pnpm --filter @ferry/publisher db:generate` 生成新的迁移文件。
 
 服务监听 `http://127.0.0.1:8080`,MCP 入口是 `POST /mcp`。默认全部使用假实现,发布会立刻成功。
-管理员的用户 ID 通过环境变量 `ADMIN_USERS` 指定(逗号分隔),管理接口在 `/api/admin/apps` 下。
+管理员的用户 ID 通过环境变量 `ADMIN_USERS` 指定(逗号分隔)。管理员登录后打开 `/admin` 可以查看全部应用、停用和恢复;
+接口在 `/api/admin/apps` 下。
+每个应用和它的数据库默认最多用 1 核 CPU、512 MB 内存(`APP_CPU_LIMIT`、`APP_MEMORY_LIMIT_MB`、`DB_CPU_LIMIT`、`DB_MEMORY_LIMIT_MB`,设为 0 不限制),
+在每次发布时生效。
 上传的代码包保存在 `ARCHIVE_DIR`(默认 `apps/publisher/data/archives`),单个上限 `MAX_ARCHIVE_MB`(默认 100)。
 每次发布结束后清理该应用的代码包:保留线上版本、最近两个上线过的版本、进行中的发布用到的版本,以及 `ARCHIVE_GRACE_HOURS`(默认 24)小时内上传的。
 迁移前备份存在 Dokploy 所在服务器的 `/etc/dokploy/ferry-backups/<数据库>/`,每个数据库保留最新 `BACKUP_KEEP`(默认 5)份。

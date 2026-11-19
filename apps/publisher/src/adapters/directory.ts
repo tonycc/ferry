@@ -11,6 +11,7 @@ export class MemoryDirectory implements Directory {
   private members = new Map<string, string[]>();
   private inactive = new Set<string>();
   private names = new Map<string, string>();
+  private departmentNames = new Map<string, string>();
   /** 规范化后的工号、手机号 → 在职的人 */
   private logins = new Map<string, string>();
 
@@ -23,12 +24,14 @@ export class MemoryDirectory implements Directory {
     const members = new Map<string, string[]>(snapshot.users.map((u) => [u.id, [...u.departmentIds]]));
     const inactive = new Set(snapshot.users.filter((u) => !u.active).map((u) => u.id));
     const names = new Map(snapshot.users.map((u) => [u.id, u.name]));
+    const departmentNames = new Map(snapshot.departments.map((d) => [d.id, d.name]));
     const logins = new Map<string, string>();
     for (const u of snapshot.users) if (u.active) for (const key of loginKeys(u)) logins.set(key, u.id);
     this.parents = parents;
     this.members = members;
     this.inactive = inactive;
     this.names = names;
+    this.departmentNames = departmentNames;
     this.logins = logins;
   }
 
@@ -52,6 +55,10 @@ export class MemoryDirectory implements Directory {
 
   async nameOf(userId: string): Promise<string | undefined> {
     return this.names.get(userId);
+  }
+
+  async departmentNameOf(departmentId: string): Promise<string | undefined> {
+    return this.departmentNames.get(departmentId);
   }
 
   async departmentsOf(userId: string): Promise<string[]> {

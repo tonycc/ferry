@@ -218,3 +218,13 @@ Ferry 经统一入口(Traefik,本机是 `http://127.0.0.1:80`)访问应用的健
 - Docker 配置了镜像加速(daocloud),部分镜像拉不下来:`minio/minio` 返回 403,`quay.io/minio/minio` 返回 401。
   `node:22-alpine`、`postgres:16`、Dokploy 自己的镜像都正常。
 - 本机通过 `http://<名称>.apps.localhost` 访问应用,curl 和浏览器都能直接解析到本机。
+
+## 资源上限(任务 2.8)
+
+- `application.update` 和 `postgres.update` 都有 `cpuLimit`、`memoryLimit`(以及 `cpuReservation`、`memoryReservation`),类型是字符串。
+  Dokploy 原样交给 Docker:**CPU 是纳核**(`"1000000000"` 是 1 核),**内存是字节**。实测 `docker service inspect` 看到
+  `{"NanoCPUs":1000000000,"MemoryBytes":536870912}`。
+- 应用的上限在下次部署时生效,所以 Ferry 每次部署前都设一遍;数据库的上限在下次启动时生效(下线后重新发布)。
+- 超出内存上限时,系统只杀掉容器里占内存最多的进程(实测应用的主进程还在,继续响应)。
+  Docker 默认还允许再用同样大小的交换空间,所以实际能用到上限的大约两倍才被杀掉;Dokploy 没有提供设置交换空间的字段。
+- CPU 上限只限速,不会杀进程:占满 CPU 的应用自己变慢,不影响别的应用。
