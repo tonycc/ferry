@@ -454,9 +454,18 @@ export class PublisherService {
     if (!app.unpublishedAt && !app.disabled) {
       throw new UserError("invalid_input", `应用 ${app.name} 还在线,不能删除。请先停用,或者请负责人先下线`);
     }
-    const releases = await this.store.listReleases(app.name);
-    if (releases.some((r) => !isTerminal(r.state))) {
+    const running = async () => (await this.store.listReleases(app.name)).some((r) => !isTerminal(r.state));
+    if (await running()) {
       throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
+    }
+    // 先标记为停用:删除要十几秒,这期间负责人不能再发布(已下线的应用本来可以随时重新发布)。
+    // 标记前刚好开始的发布,会在下一步检查到停用后自行终止;这里再查一次,有就先不删
+    if (!app.disabled) {
+      await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason: "管理员正在删除这个应用" });
+      if (await running()) {
+        await this.store.setAppDisabled(app.name, undefined);
+        throw new UserError("conflict", `应用 ${app.name} 有一次发布刚刚开始,请等它结束后再删除`);
+      }
     }
 
     const { platform } = this.adapters;
@@ -475,11 +484,12 @@ export class PublisherService {
       app.platform = { ...app.platform, projectId: undefined };
       await this.store.saveApp(app);
     }
-    for (const archive of await this.adapters.archives.list(app.name)) {
-      await this.adapters.archives.remove(app.name, archive.version);
-    }
+    await this.adapters.archives.removeAll(app.name);
     await this.store.deleteApp(app.name);
-    await this.adapters.notifier.notify(app.ownerId, `应用 ${app.name} 已被管理员删除,数据已清除,应用名已释放`);
+    // 删除已经完成,通知发不出去不影响结果,只记日志
+    await this.adapters.notifier
+      .notify(app.ownerId, `应用 ${app.name} 已被管理员删除,数据已清除,应用名已释放`)
+      .catch((err: unknown) => console.error(`应用 ${app.name} 已删除,但通知负责人失败:`, err));
   }
 
   async enableApp(admin: User, appName: string): Promise<void> {

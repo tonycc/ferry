@@ -69,6 +69,8 @@ export interface ArchiveStore {
   list(appName: string): Promise<{ version: string; savedAt: Date }[]>;
   /** 删除一个代码包;不存在时不报错 */
   remove(appName: string, version: string): Promise<void>;
+  /** 删除应用的全部代码包(管理员删除应用时);没有时不报错 */
+  removeAll(appName: string): Promise<void>;
 }
 
 export interface Finding {

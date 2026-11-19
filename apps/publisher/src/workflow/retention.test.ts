@@ -126,9 +126,12 @@ describe("FsArchiveStore", () => {
     expect(await archives.list("crm")).toEqual([]);
     await expect(archives.remove("../etc", "v1")).rejects.toThrow("代码包路径不合法");
 
-    // 最后一个代码包删掉后,应用的目录也删掉;还有代码包时目录保留
-    expect(await readdir(dir)).toEqual(["ledger"]);
-    await archives.remove("ledger", "v2");
-    expect(await readdir(dir)).toEqual([]);
+    // 删除应用的全部代码包:连目录一起删掉,别的应用不受影响
+    await archives.save("crm", "v1", ZIP);
+    await archives.removeAll("ledger");
+    await archives.removeAll("ledger");
+    expect((await readdir(dir)).sort()).toEqual(["crm"]);
+    expect(await archives.list("ledger")).toEqual([]);
+    await expect(archives.removeAll("../etc")).rejects.toThrow("代码包路径不合法");
   });
 });

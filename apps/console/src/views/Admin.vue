@@ -135,8 +135,8 @@ onMounted(load);
       </el-table-column>
       <el-table-column width="150" align="right">
         <template #default="{ row }">
-          <el-button v-if="row.disabled" size="small" @click="enable(row)">恢复</el-button>
-          <el-button v-else size="small" type="danger" plain @click="disable(row)">停用</el-button>
+          <el-button v-if="row.disabled" size="small" :disabled="!!deleting" @click="enable(row)">恢复</el-button>
+          <el-button v-else size="small" type="danger" plain :disabled="!!deleting" @click="disable(row)">停用</el-button>
           <el-button
             v-if="row.disabled || row.unpublished"
             size="small"

@@ -661,7 +661,11 @@ describe("删除数据库和项目", () => {
     const order = calls.map((c) => c.procedure).filter((p) => /^(postgres\.(stop|remove)|schedule\.runManually)$/.test(p));
     expect(order).toEqual(["postgres.stop", "schedule.runManually", "postgres.remove"]);
     const script = String(called("schedule.create")[0]?.input.script);
-    expect(script).toContain("docker volume rm ledger-db-x1-data");
+    // 出错就停,不会在删备份失败时报成功;数据卷名从数据库服务的配置里读
+    expect(script.split("\n")[0]).toBe("set -eu");
+    expect(script).toContain("docker service inspect ledger-db-x1 --format");
+    expect(script).toContain('vols="ledger-db-x1-data"');
+    expect(script).toContain('docker volume rm "$v"');
     expect(script).toContain("rm -rf -- /etc/dokploy/ferry-backups/ledger-db-x1");
     expect(called("schedule.create")[0]?.input).toMatchObject({ scheduleType: "dokploy-server" });
   });
@@ -683,6 +687,21 @@ describe("删除数据库和项目", () => {
     await platform.deleteDatabase("gone");
     await platform.deleteProject("gone");
     expect(called("postgres.stop")).toHaveLength(0);
+  });
+
+  it("备份目录里有 .. 时拒绝删除", async () => {
+    const { client, called } = fakeDokploy({ "postgres.one": () => PG_ONE });
+    const platform = new DokployPlatform(client, { backupRoot: "/etc/dokploy/../..", sleep: async () => {} });
+    await expect(platform.deleteDatabase("pg1")).rejects.toThrow("备份目录不安全");
+    expect(called("postgres.stop")).toHaveLength(0);
+  });
+
+  it("应用已经删掉时,removeApp 当作完成(删除应用中途失败后重试)", async () => {
+    const { platform, called } = fakeDokploy({
+      "application.one": () => new Response('{"message":"not found"}', { status: 404 }),
+    });
+    await platform.removeApp("gone");
+    expect(called("application.delete")).toHaveLength(0);
   });
 
   it("名称可能拼出上级目录时拒绝删除,不执行任何脚本", async () => {

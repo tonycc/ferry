@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ArchiveStore } from "./types";
 
@@ -25,6 +25,10 @@ export class MemoryArchiveStore implements ArchiveStore {
 
   async remove(appName: string, version: string): Promise<void> {
     this.archives.delete(`${appName}/${version}`);
+  }
+
+  async removeAll(appName: string): Promise<void> {
+    for (const { version } of await this.list(appName)) this.archives.delete(`${appName}/${version}`);
   }
 }
 
@@ -70,8 +74,10 @@ export class FsArchiveStore implements ArchiveStore {
 
   async remove(appName: string, version: string): Promise<void> {
     await rm(this.path(appName, version), { force: true });
-    // 最后一个代码包删掉后,把应用的目录也删掉(目录不空时 rmdir 失败,忽略)
-    await rmdir(join(this.dir, this.segment(appName))).catch(() => {});
+  }
+
+  async removeAll(appName: string): Promise<void> {
+    await rm(join(this.dir, this.segment(appName)), { recursive: true, force: true });
   }
 
   private path(appName: string, version: string): string {

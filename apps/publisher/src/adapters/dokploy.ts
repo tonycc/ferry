@@ -513,7 +513,14 @@ export class DokployPlatform implements DeployPlatform {
    * 先删这个应用上可能残留的 ferry-command-* 任务:它们属于应用,删除应用后就无法再通过接口找到。
    */
   async removeApp(appId: string): Promise<void> {
-    const { appName } = await this.client.query<DokployApplication>("application.one", { applicationId: appId });
+    let appName: string;
+    try {
+      ({ appName } = await this.client.query<DokployApplication>("application.one", { applicationId: appId }));
+    } catch (err) {
+      // 已经删掉了(上次删到一半):当作完成,重试才能接着往下做
+      if (isNotFound(err)) return;
+      throw err;
+    }
     const schedules = await this.client.query<DokploySchedule[]>("schedule.list", { id: appId, scheduleType: "application" });
     for (const schedule of schedules.filter((s) => s.name.startsWith(COMMAND_SCHEDULE_PREFIX))) {
       await this.client.mutate("schedule.delete", { scheduleId: schedule.scheduleId });
@@ -551,24 +558,41 @@ export class DokployPlatform implements DeployPlatform {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(db.appName) || db.appName.includes("..")) {
       throw new Error(`数据库名称含有不支持的字符,无法删除: ${databaseId}`);
     }
-    if (!/^\/[a-zA-Z0-9._/-]+$/.test(this.backupRoot) || this.backupRoot.split("/").filter(Boolean).length < 2) {
+    const rootSegments = this.backupRoot.split("/").filter(Boolean);
+    if (
+      !/^\/[a-zA-Z0-9._/-]+$/.test(this.backupRoot) ||
+      rootSegments.length < 2 ||
+      rootSegments.some((segment) => segment === "." || segment === "..")
+    ) {
       throw new Error(`备份目录不安全,拒绝删除: ${this.backupRoot}`);
     }
     await this.client.mutate("postgres.stop", { postgresId: databaseId });
 
-    const volume = `${db.appName}-data`;
     const backups = `${this.backupRoot}/${db.appName}`;
+    // 数据卷的名字从数据库服务的配置里读(停止后服务还在,只是没有容器),不靠命名规则猜;
+    // 服务已经不在了(上次删到一半)才按 Dokploy 的命名规则 <appName>-data 找。
+    // 服务在、却没有数据卷时直接失败,不能报“已删除”
     const script = [
-      "set -u",
+      "set -eu",
+      `if docker service inspect ${db.appName} >/dev/null 2>&1; then`,
+      `  vols=$(docker service inspect ${db.appName} --format '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{if eq .Type "volume"}}{{.Source}} {{end}}{{end}}')`,
+      `  if [ -z "$vols" ]; then echo "数据库服务 ${db.appName} 没有数据卷,不知道数据存在哪里,停止删除"; exit 1; fi`,
+      "else",
+      `  vols="${db.appName}-data"`,
+      "fi",
+      "for v in $vols; do",
+      '  case "$v" in *[!a-zA-Z0-9._-]*) echo "数据卷名称不安全: $v"; exit 1;; esac',
       // 容器停下来之前删不掉数据卷,最多等 60 秒
-      "for i in $(seq 1 30); do",
-      `  docker volume inspect ${volume} >/dev/null 2>&1 || break`,
-      `  docker volume rm ${volume} >/dev/null 2>&1 && break`,
-      "  sleep 2",
+      "  for i in $(seq 1 30); do",
+      '    docker volume inspect "$v" >/dev/null 2>&1 || break',
+      '    docker volume rm "$v" >/dev/null 2>&1 && break',
+      "    sleep 2",
+      "  done",
+      '  if docker volume inspect "$v" >/dev/null 2>&1; then echo "数据卷 $v 删不掉"; exit 1; fi',
+      '  echo "已删除数据卷 $v"',
       "done",
-      `if docker volume inspect ${volume} >/dev/null 2>&1; then echo "数据卷 ${volume} 删不掉"; exit 1; fi`,
       `rm -rf -- ${backups}`,
-      `echo "已删除数据卷 ${volume} 和备份目录 ${backups}"`,
+      `echo "已删除备份目录 ${backups}"`,
     ].join("\n");
     const run = await this.runOnce({
       name: `${BACKUP_SCHEDULE_PREFIX}delete-${this.now().getTime()}`,
