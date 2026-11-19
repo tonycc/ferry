@@ -158,8 +158,11 @@ export class Engine {
         app.platform.domainAttached = true;
         await this.store.saveApp(app);
       }
-      app.visibility = manifest.visibility;
-      await this.store.saveApp(app);
+      // 应用上线之前,可见范围按 app.yaml;上线之后以控制台为准(见 AppRecord.visibilityPinned)
+      if (!app.visibilityPinned) {
+        app.visibility = manifest.visibility;
+        await this.store.saveApp(app);
+      }
       return { kind: "next" };
     },
 
@@ -229,6 +232,7 @@ export class Engine {
   private async goLive(release: ReleaseRecord): Promise<void> {
     const app = await this.app(release);
     app.liveVersion = release.version;
+    app.visibilityPinned = true;
     await this.store.saveApp(app);
     release.url = `${this.config.appsUrlScheme ?? "https"}://${app.host}`;
     await this.transition(release, "LIVE");

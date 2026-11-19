@@ -4,7 +4,7 @@ import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { UserError } from "../errors";
 import { readCookies, requireSameOrigin, SESSION_COOKIE, sessionUserFrom, type IdentityResolver } from "../identity";
-import { LOGIN_PAGE, TOKENS_PAGE, ADMIN_PAGE } from "./pages";
+import { LOGIN_PAGE } from "./pages";
 import { safePath, type Gateway } from "../gateway/gateway";
 
 const codeBody = z.object({ account: z.string().min(1).max(100) });
@@ -66,8 +66,9 @@ export function registerAuthRoutes(
       return reply.status(result.status).headers(result.headers).send(result.body);
     });
   }
-  app.get("/me", async (_req, reply) => reply.type("text/html; charset=utf-8").send(TOKENS_PAGE));
-  app.get("/admin", async (_req, reply) => reply.type("text/html; charset=utf-8").send(ADMIN_PAGE));
+  // 个人令牌页和管理页已并入控制台,旧地址跳过去
+  app.get("/me", async (_req, reply) => reply.redirect("/console/tokens"));
+  app.get("/admin", async (_req, reply) => reply.redirect("/console/admin"));
 
   app.post("/auth/code", async (req) => {
     requireSameOrigin(req, options.allowedOrigins);

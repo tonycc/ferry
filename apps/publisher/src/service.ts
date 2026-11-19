@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { manifestSchema, parseManifest } from "@ferry/manifest";
+import { manifestSchema, parseManifest, type Visibility } from "@ferry/manifest";
 import type { Adapters } from "./adapters/types";
 import { canAccess } from "./authz/decide";
 import { UserError } from "./errors";
@@ -49,6 +49,8 @@ export interface ReleaseView {
   error?: ReleaseError;
   /** 写给 agent 的下一步指引 */
   nextAction: string;
+  /** 发布时需要 agent 知道、但不影响发布的情况(如 app.yaml 的可见范围被忽略) */
+  notice?: string;
 }
 
 export interface AppView {
@@ -60,6 +62,34 @@ export interface AppView {
   disabled: boolean;
   /** 已被负责人下线,数据保留,重新发布即恢复 */
   unpublished: boolean;
+  disabledReason?: string;
+}
+
+/** 控制台的应用详情 */
+export interface AppDetailView extends AppView {
+  /** 为 true 时可见范围以控制台为准,发布时不再用 app.yaml 里的值 */
+  visibilityPinned: boolean;
+  createdAt: string;
+  /** 最近一次发布用的清单里的设置;没发布过时没有 */
+  port?: number;
+  healthcheck?: string;
+  database?: "none" | "postgres";
+  /** 发布历史,最新的在前,最多 50 条。日志不在这里,用 releaseId 查单次发布 */
+  releases: ReleaseSummary[];
+}
+
+export interface ReleaseSummary {
+  releaseId: string;
+  kind: "publish" | "rollback";
+  state: ReleaseState;
+  done: boolean;
+  version: string;
+  /** 这个版本正是线上运行的版本 */
+  live: boolean;
+  createdAt: string;
+  /** 结束时间;进行中为空 */
+  finishedAt?: string;
+  error?: { stage: ReleaseState; type: string; message: string; hint?: string };
 }
 
 /** 回滚时返回:发起的回滚发布单,以及从哪个版本回到哪个版本(用上线时间让用户分辨) */
@@ -237,13 +267,57 @@ export class PublisherService {
     };
     await this.store.saveRelease(release);
     this.schedule(release.id);
-    return toView(release);
+    const view = toView(release);
+    if (app.visibilityPinned && manifest.visibility !== app.visibility) {
+      view.notice =
+        `app.yaml 里的 visibility(${manifest.visibility})和应用当前的可见范围(${app.visibility})不同,已忽略:` +
+        `应用上线后可见范围以控制台为准。请把 app.yaml 的 visibility 改成 ${app.visibility};` +
+        "用户要改可见范围时用 set_visibility";
+    }
+    return view;
   }
 
   async status(user: User, releaseId: string): Promise<ReleaseView> {
     const release = await this.store.getRelease(releaseId);
     if (!release || release.ownerId !== user.id) throw new UserError("not_found", "发布单不存在");
     return toView(release);
+  }
+
+  async appDetail(user: User, appName: string): Promise<AppDetailView> {
+    const app = await this.ownApp(user, appName);
+    const releases = await this.store.listReleases(app.name);
+    const latest = releases.at(-1)?.manifest;
+    return {
+      ...toAppView(app, this.appUrl(app.host)),
+      visibilityPinned: app.visibilityPinned ?? false,
+      createdAt: app.createdAt.toISOString(),
+      port: latest?.port,
+      healthcheck: latest?.healthcheck,
+      database: latest?.database,
+      releases: releases
+        .slice(-50)
+        .reverse()
+        .map((r) => ({
+          releaseId: r.id,
+          kind: r.kind,
+          state: r.state,
+          done: isTerminal(r.state),
+          version: r.version,
+          live: !app.unpublishedAt && r.version === app.liveVersion && r.state === "LIVE",
+          createdAt: r.createdAt.toISOString(),
+          finishedAt: isTerminal(r.state) ? r.history.at(-1)?.at.toISOString() : undefined,
+          error: r.error && { stage: r.error.stage, type: r.error.type, message: r.error.message, hint: r.error.hint },
+        })),
+    };
+  }
+
+  /** 负责人修改可见范围,立即生效(网关每个请求都按它判断);之后发布时不再用 app.yaml 里的值 */
+  async setVisibility(user: User, appName: string, visibility: Visibility): Promise<AppView> {
+    const app = await this.ownApp(user, appName);
+    app.visibility = visibility;
+    app.visibilityPinned = true;
+    await this.store.saveApp(app);
+    return toAppView(app, this.appUrl(app.host));
   }
 
   async listApps(user: User): Promise<AppView[]> {
@@ -496,6 +570,7 @@ function toAppView(app: AppRecord, url: string): AppView {
     live: app.liveVersion !== undefined,
     disabled: app.disabled !== undefined,
     unpublished: app.unpublishedAt !== undefined,
+    disabledReason: app.disabled?.reason,
   };
 }
 

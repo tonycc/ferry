@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { visibilitySchema } from "@ferry/manifest";
 import { z } from "zod";
 import { UserError } from "../errors";
 import type { User } from "../identity";
@@ -83,6 +84,20 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
       inputSchema: { name: z.string(), lines: z.number().int().min(1).max(1000).optional() },
     },
     ({ name, lines }) => respond(() => service.getLogs(user, name, lines)),
+  );
+
+  server.registerTool(
+    "set_visibility",
+    {
+      description:
+        "修改应用的可见范围,立即生效。只在用户明确要求时调用。应用上线后可见范围以这里(和网页控制台)的设置为准," +
+        "发布时 app.yaml 里的 visibility 不再起作用;改完后把 app.yaml 也改成一致,免得以后混淆。",
+      inputSchema: {
+        name: z.string().describe("应用名"),
+        visibility: visibilitySchema.describe("self 仅自己;department 本部门(同部门和上级部门的同事);company 全公司"),
+      },
+    },
+    ({ name, visibility }) => respond(() => service.setVisibility(user, name, visibility)),
   );
 
   server.registerTool(

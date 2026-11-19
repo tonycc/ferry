@@ -179,6 +179,56 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       expect(failed.error?.hint).toContain(hint);
     });
 
+    it("可见范围:上线前按 app.yaml,上线后以控制台为准,app.yaml 不同时忽略并提醒 agent", async () => {
+      const { service, publish, startPublish } = setup();
+      expect((await publish("v1", "visibility: department\n")).state).toBe("LIVE");
+      expect((await service.appDetail(alice, "ledger")).visibility).toBe("department");
+
+      await service.setVisibility(alice, "ledger", "company");
+      const { releaseId } = await startPublish("v2", "visibility: self\n");
+      expect((await service.status(alice, releaseId)).notice).toBeUndefined();
+      await service.settle(releaseId);
+      const detail = await service.appDetail(alice, "ledger");
+      expect(detail.visibility).toBe("company");
+      expect(detail.visibilityPinned).toBe(true);
+      expect(await canSee(service, carol, "ledger.apps.test")).toBe(true);
+    });
+
+    it("上线后发布时 app.yaml 的可见范围不同:发布结果里带 notice", async () => {
+      const { service, publish } = setup();
+      await publish("v1");
+      const prepared = await service.prepareApp(alice, "ledger");
+      await service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v2"));
+      const view = await service.publish(alice, { manifestYaml: MANIFEST + "visibility: company\n", version: prepared.version });
+      expect(view.notice).toContain("已忽略");
+      await service.settle(view.releaseId);
+      expect((await service.appDetail(alice, "ledger")).visibility).toBe("self");
+    });
+
+    it("上线前在控制台改过可见范围,第一次发布也不会被 app.yaml 覆盖", async () => {
+      const { service, publish } = setup();
+      await service.prepareApp(alice, "ledger");
+      await service.setVisibility(alice, "ledger", "department");
+      await publish("v1", "visibility: company\n");
+      expect((await service.appDetail(alice, "ledger")).visibility).toBe("department");
+    });
+
+    it("应用详情:发布历史最新的在前,标出线上版本和失败原因;别人看不到", async () => {
+      const { adapters, service, publish } = setup();
+      const v1 = await publish("v1");
+      adapters.platform.failDeployMarkers.add("bad");
+      await publish("bad");
+
+      const detail = await service.appDetail(alice, "ledger");
+      expect(detail).toMatchObject({ name: "ledger", port: 3000, healthcheck: "/healthz", database: "postgres", live: true });
+      expect(detail.releases.map((r) => r.state)).toEqual(["FAILED_FIXABLE", "LIVE"]);
+      expect(detail.releases[1]).toMatchObject({ version: v1.version, live: true, done: true });
+      expect(detail.releases[0]).toMatchObject({ live: false, error: { type: "build_failed" } });
+      expect(detail.releases[0]?.finishedAt).toBeDefined();
+      expect(JSON.stringify(detail)).not.toContain("npm ERR");
+      await expect(service.appDetail(bob, "ledger")).rejects.toThrow("不存在");
+    });
+
     it("代码里有密钥:发布被拦截,不会建任何资源", async () => {
       const { adapters, publish } = setup();
       adapters.scanner.findings = [{ file: "config.js", detail: "疑似 API 密钥" }];
@@ -348,7 +398,8 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
     it("回到上一个上线过的版本:只部署代码和检查,不迁移、不备份、不改可见范围", async () => {
       const { adapters, service, store, publish } = setup();
       const v1 = await publish("v1");
-      const v2 = await publish("v2", "visibility: department\n");
+      const v2 = await publish("v2");
+      await service.setVisibility(alice, "ledger", "department");
       const migrationsBefore = adapters.platform.calls.filter((c) => c.startsWith("runCommand")).length;
       const backupsBefore = adapters.platform.calls.filter((c) => c.startsWith("backupDatabase")).length;
 

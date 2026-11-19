@@ -1,5 +1,6 @@
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import Fastify, { type FastifyInstance } from "fastify";
+import { visibilitySchema } from "@ferry/manifest";
 import { z } from "zod";
 import { HTTP_STATUS, UserError } from "../errors";
 import type { IdentityResolver } from "../identity";
@@ -8,13 +9,18 @@ import type { PublisherService } from "../service";
 import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { registerAuthRoutes, type AuthRouteOptions } from "./auth-routes";
+import { registerConsole } from "./console";
 import type { Gateway } from "../gateway/gateway";
 
 const prepareBody = z.object({ name: z.string() });
 const publishBody = z.object({ manifestYaml: z.string(), version: z.string().min(1) });
 const disableBody = z.object({ reason: z.string().max(500).optional() });
+const visibilityBody = z.object({ visibility: visibilitySchema });
+const logsQuery = z.object({ lines: z.coerce.number().int().min(1).max(1000).optional() });
 
 export interface ServerOptions {
+  /** 控制台构建结果所在目录,默认 apps/console/dist */
+  consoleDir?: string;
   maxArchiveBytes: number;
   /** 验证码登录和个人令牌;不传时只有开发用的请求头身份 */
   auth?: { service: AuthService; directory: Directory; routes: AuthRouteOptions };
@@ -46,6 +52,8 @@ export function buildServer(
   });
 
   app.get("/healthz", async () => ({ ok: true }));
+  app.get("/", async (_req, reply) => reply.redirect("/console/"));
+  registerConsole(app, options.consoleDir);
 
   if (options.auth) {
     const { service: auth, directory, routes } = options.auth;
@@ -61,9 +69,17 @@ export function buildServer(
 
   app.get("/api/apps", async (req) => service.listApps(await identity(req, "api")));
 
+  app.get<{ Params: { name: string } }>("/api/apps/:name", async (req) =>
+    service.appDetail(await identity(req, "api"), req.params.name),
+  );
+
   app.get<{ Params: { name: string } }>("/api/apps/:name/logs", async (req) => ({
-    logs: await service.getLogs(await identity(req, "api"), req.params.name),
+    logs: await service.getLogs(await identity(req, "api"), req.params.name, logsQuery.parse(req.query).lines),
   }));
+
+  app.post<{ Params: { name: string } }>("/api/apps/:name/visibility", async (req) =>
+    service.setVisibility(await identity(req, "api"), req.params.name, visibilityBody.parse(req.body).visibility),
+  );
 
   app.post<{ Params: { name: string } }>("/api/apps/:name/rollback", async (req, reply) => {
     const view = await service.rollback(await identity(req, "api"), req.params.name);
