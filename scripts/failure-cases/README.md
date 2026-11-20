@@ -59,3 +59,4 @@ python3 -I scripts/failure-cases/make_cases.py packages/templates/node-postgres 
   停下来问用户,选项里还有“原样发布”(扫描一定会拦)。原因是给 agent 的使用说明只写了不要写密钥,
   没说会被拦截,也没说第三方密钥怎么办;补上后重跑,agent 发布前就改为从 DINGTALK_WEBHOOK 读取、没配置时不发通知,直接上线。
   另一轮让 agent 不检查代码直接打包:被 scan_failed 拦下后按提示做了同样的修改,第二次上线。
+  后两轮 agent 在最后一次发布后撞到了 Claude 的用量上限,没有看到它们给用户的总结;上线是从 Ferry 的发布记录和网关的响应确认的。

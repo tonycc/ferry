@@ -104,7 +104,6 @@ export class GitleaksScanner implements Scanner {
     try {
       await writeFile(join(dir, "app.zip"), zip);
       await writeFile(join(dir, "ferry.toml"), GITLEAKS_CONFIG);
-      const timeoutSeconds = Math.max(1, Math.floor(this.timeoutMs / 1000));
       const { code, stderr } = await run(
         this.binary,
         [
@@ -126,10 +125,9 @@ export class GitleaksScanner implements Scanner {
           "report.json",
           "--exit-code",
           String(LEAKS_EXIT_CODE),
-          "--timeout",
-          String(timeoutSeconds),
+          // 不用 gitleaks 自己的 --timeout:没验证过它到时后的退出码,可能当作扫描完成。超时由这里杀掉进程,按出错处理
         ],
-        { cwd: dir, timeoutMs: this.timeoutMs + 5000 },
+        { cwd: dir, timeoutMs: this.timeoutMs },
       );
       if (code !== 0 && code !== LEAKS_EXIT_CODE) {
         throw new Error(`密钥扫描出错(gitleaks 退出码 ${code}):${stderr.trim().slice(-500)}`);

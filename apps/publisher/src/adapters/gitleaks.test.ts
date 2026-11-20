@@ -81,6 +81,11 @@ describe.skipIf(!installed)("GitleaksScanner(真实 gitleaks)", () => {
     await expect(scanner.scan(Buffer.from("not a zip"))).rejects.toThrow("不是合法的 zip");
   });
 
+  it("扫描超时:报错,不当作没有密钥", async () => {
+    const slow = new GitleaksScanner({ binary, timeoutMs: 1 });
+    await expect(slow.scan(makeZip({ ...base, "src/a.ts": `const url = "${dingtalk}";\n` }))).rejects.toThrow("超时");
+  });
+
   it("找不到 gitleaks:报错,不当作没有密钥", async () => {
     const missing = new GitleaksScanner({ binary: "/nonexistent/gitleaks" });
     await expect(missing.scan(makeZip(base))).rejects.toThrow("找不到 gitleaks");
