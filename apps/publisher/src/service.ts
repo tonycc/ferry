@@ -543,6 +543,11 @@ export class PublisherService {
     return app;
   }
 
+  /** 全部应用的名字(网关要接入它们的网络;下线的应用网络还在,数据库在里面) */
+  async allAppNames(): Promise<string[]> {
+    return (await this.store.listApps()).map((app) => app.name);
+  }
+
   /** 网关用:应用当前的健康检查路径(最近一次发布的清单里的) */
   async healthcheckPath(appName: string): Promise<string | undefined> {
     return (await this.store.listReleases(appName)).at(-1)?.manifest.healthcheck;

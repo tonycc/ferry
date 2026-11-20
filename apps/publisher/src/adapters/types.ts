@@ -40,7 +40,11 @@ export interface DeployPlatform {
   /** 合并写入:只更新传入的变量,保留已有的其他变量 */
   setEnv(appId: string, env: Record<string, string>): Promise<void>;
   /** 上传代码包并构建部署,结束后才返回 */
-  deploy(appId: string, archive: Archive): Promise<CommandResult>;
+  /**
+   * 部署一个代码包。databaseId 是应用的数据库:网络隔离时数据库要和应用一起挪进应用自己的网络,
+   * 回滚也要传(回滚不经过建库那一步)
+   */
+  deploy(appId: string, archive: Archive, options?: { databaseId?: string }): Promise<CommandResult>;
   /** 在应用容器里执行一条命令(用于数据库迁移) */
   runCommand(appId: string, command: string): Promise<CommandResult>;
   backupDatabase(databaseId: string): Promise<string>;
@@ -60,10 +64,10 @@ export interface DeployPlatform {
   /** 删除部署平台上的项目;应用和数据库要先删掉。已经删掉的不报错 */
   deleteProject(projectId: string): Promise<void>;
   /**
-   * 网络隔离:让网关(Traefik)接入所有应用的网络。启动时和之后定时调用,网关容器被重建后据此恢复。
+   * 网络隔离:让网关(Traefik)接入这些应用的网络。启动时和之后定时调用,网关容器被重建后据此恢复。
    * 返回接入的网络数,以及需要提醒管理员的问题(如 Traefik 管理接口没关)
    */
-  ensureGatewayNetworks(): Promise<{ networks: number; warnings: string[] }>;
+  ensureGatewayNetworks(appNames: string[]): Promise<{ networks: number; warnings: string[] }>;
   /** 删除应用自己的网络(管理员删除应用时,应用和数据库删掉之后)。已经删掉的不报错 */
   deleteAppNetwork(name: string): Promise<void>;
 }

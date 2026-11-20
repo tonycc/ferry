@@ -145,10 +145,14 @@ if (config.FERRY_PLATFORM === "dokploy") {
     info: (m) => server.log.info(m),
     error: (m) => server.log.error(m),
   });
-  // 网关容器被重建(升级 Dokploy、改 Traefik 设置)后,它接入的应用网络会丢,应用全成 502。定时检查并接回去
+  // 网关容器被重建(升级 Dokploy、改 Traefik 设置)后,它接入的应用网络会丢,应用全成 502。
+  // 每分钟查一次(只是一次接口调用;缺了才去服务器上接),出事后最多一分钟恢复
   setInterval(() => {
-    adapters.platform.ensureGatewayNetworks().catch((err: Error) => server.log.error(`把网关接入应用网络失败: ${err.message}`));
-  }, 10 * 60_000).unref();
+    service
+      .allAppNames()
+      .then((names) => adapters.platform.ensureGatewayNetworks(names))
+      .catch((err: Error) => server.log.error(`把网关接入应用网络失败: ${err.message}`));
+  }, 60_000).unref();
 }
 
 // 继续执行上次没跑完的发布(进程重启前正在进行的)

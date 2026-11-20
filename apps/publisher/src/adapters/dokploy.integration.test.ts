@@ -40,7 +40,7 @@ const CHECK_DB_REACHABLE =
  */
 const CHECK_ISOLATED = `node -e "
 const net=require('net');
-const pgAnswers=(h)=>new Promise(r=>{const s=net.connect(5432,h,()=>s.write(Buffer.from([0,0,0,8,4,210,22,47])));s.setTimeout(4000,()=>{s.destroy();r(false)});s.on('data',d=>{s.destroy();r(d[0]===78||d[0]===83)});s.on('error',()=>r(false))});
+const pgAnswers=(h)=>new Promise(r=>{const s=net.connect(5432,h,()=>s.write(Buffer.from([0,0,0,8,4,210,22,47])));s.setTimeout(4000,()=>{s.destroy();r(false)});s.on('data',d=>{s.destroy();r(d[0]===78||d[0]===83)});s.on('error',()=>r(false));s.on('close',()=>r(false))});
 (async()=>{
  const api=await fetch('http://dokploy:3000/api/settings.health',{signal:AbortSignal.timeout(4000)}).then(()=>true,()=>false);
  const db=await pgAnswers('dokploy-postgres');

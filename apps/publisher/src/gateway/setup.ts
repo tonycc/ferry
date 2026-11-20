@@ -25,7 +25,7 @@ export async function setupGateway(
   try {
     await platform.ensureGateway({ authAddress });
     // 网络隔离:网关要接入每个应用的网络才转发得到;网关容器被重建过的话,这里接回去
-    networks = await platform.ensureGatewayNetworks();
+    networks = await platform.ensureGatewayNetworks(await service.allAppNames());
   } catch (err) {
     log.error(`写入登录网关配置失败,${Math.round(retryMs / 1000)} 秒后重试: ${(err as Error).message}`);
     schedule(() => void setupGateway(platform, service, authAddress, log, options), retryMs);
