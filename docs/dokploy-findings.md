@@ -239,3 +239,40 @@ Ferry 的做法(任务 2.12,实测有效):先 `postgres.stop`,再用 `dokploy-se
 所以启动即崩溃时,Ferry 用 `dokploy-server` 类型的一次性任务在服务器上执行
 `docker ps -a --filter "name=^<appName>\." --filter status=exited` 找到最近退出的容器,再 `docker logs --timestamps --tail N` 读它的输出;
 任务日志里 Dokploy 自己加的行(不带时间戳)过滤掉。读不到时退回 `application.readLogs`。
+
+## 网络隔离(任务 3.2)
+
+**隔离前**:所有应用和它们的数据库都在 `dokploy-network` 里,和 Dokploy 自己的服务在一起。实测在一个应用的容器里
+能连上 Dokploy 的接口(HTTP 401)、Dokploy 的数据库和 Redis、别的应用的数据库,还能直接连上别的应用的端口——
+绕过登录网关,可以伪造访问者身份请求头。
+
+**做法**:Dokploy 自带网络管理。`network.create {name, driver: "overlay", attachable: true}` 建一条记录,
+应用和数据库用 `application.update` / `postgres.update` 设 `networkIds: [网络 ID]`、`detachDokployNetwork: true`,
+部署时 Dokploy 才真正建出 Docker 网络(记录里的 `dockerId` 一直是空的),服务只接入这个网络。
+Ferry 给每个应用一个网络 `ferry-<应用名>`,应用和它的数据库都在里面。
+
+- **Dokploy 不会把 Traefik 接入自定义网络**,接不上时健康检查失败、访问 502。Ferry 在部署完成后用
+  `dokploy-server` 任务执行 `docker network connect ferry-<应用名> dokploy-traefik`。
+- **不要建一个所有应用共用的“入口网络”**:共用的话应用之间又能直接互访。Traefik 接入每个应用自己的网络。
+- **Traefik 的这些接入不记在 Dokploy 里**。重启容器(`settings.reloadTraefik`、`docker restart`)不会丢(实测);
+  容器被重建(升级 Dokploy、在管理页面改 Traefik 设置)会丢。所以 Ferry 启动时和每 10 分钟把 Traefik 接回所有 `ferry-` 网络。
+- **数据库挪网络要重新部署**:还没隔离的数据库(隔离上线前建的)在下次发布时重新部署一次,
+  这时还在旧网络上的应用容器会短暂连不上数据库,直到新版本部署完。
+- **删除应用**时,在删掉应用和数据库之后先断开 Traefik,再 `network.remove`,Docker 网络几秒后消失。下线不删网络(数据库还在里面)。
+- **Traefik 的管理接口**:Dokploy 默认 `api.insecure: true`,在 Traefik 容器的 8080 端口。Traefik 接入了每个应用的网络后,
+  所有应用都能读到全部路由配置。在 `traefik.yml` 里改成 `insecure: false` 后重启 Traefik;Dokploy 读 Traefik 状态不依赖它(实测)。
+  Ferry 启动时如果发现还开着,会在日志里提醒。
+
+**怎样验证**:要按协议判断,不能只看 TCP 能不能连上。本机装了“虚拟 IP”模式的代理(Clash、Surge 一类)时,
+容器里解析不到的名字会被代理解析成 198.18.0.x,任何 TCP 连接都会成功,看起来像“能连上”。
+`pnpm test:dokploy` 在应用容器里检查:Dokploy 的接口没有回 HTTP 响应,Dokploy 的数据库没有回 Postgres 的 SSL 协商。
+
+**经宿主机绕过(部署时要处理)**:Dokploy 的 3000 端口默认发布在宿主机所有网卡上。隔离后的应用仍能经
+`host.docker.internal:3000`(Docker Desktop)或宿主机的局域网地址访问到 Dokploy 的接口(HTTP 401)。
+本机 Docker Desktop 上 `host.docker.internal` 总是通向本机,堵不住;Linux 服务器上要:Dokploy 只发布在管理网段或本机地址,
+并用防火墙(`DOCKER-USER` 链)禁止容器访问宿主机的 3000 端口和 Ferry 的数据库端口。Ferry 自己的地址需要对容器开放
+(Traefik 要访问 `/authz`),它的接口都要先登录。写进生产部署文档(任务 3.6)。
+
+**本机 Docker Desktop 的限制**:Traefik 接着 overlay 网络重启后(包括 `settings.reloadTraefik`),从 macOS 访问 80、443 就没有响应,
+接入的网络越多越明显(`--gw-priority` 也没用)。用 `infra/dokploy/restart-traefik-local.sh`:断开 overlay 网络、重启、再接回去。
+Linux 服务器上没有这个问题。

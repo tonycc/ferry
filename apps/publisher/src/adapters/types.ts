@@ -59,6 +59,13 @@ export interface DeployPlatform {
   deleteDatabase(databaseId: string): Promise<void>;
   /** 删除部署平台上的项目;应用和数据库要先删掉。已经删掉的不报错 */
   deleteProject(projectId: string): Promise<void>;
+  /**
+   * 网络隔离:让网关(Traefik)接入所有应用的网络。启动时和之后定时调用,网关容器被重建后据此恢复。
+   * 返回接入的网络数,以及需要提醒管理员的问题(如 Traefik 管理接口没关)
+   */
+  ensureGatewayNetworks(): Promise<{ networks: number; warnings: string[] }>;
+  /** 删除应用自己的网络(管理员删除应用时,应用和数据库删掉之后)。已经删掉的不报错 */
+  deleteAppNetwork(name: string): Promise<void>;
 }
 
 /** 代码包存储:每次上传保存一份,部署和回滚时取回,按保留规则清理 */

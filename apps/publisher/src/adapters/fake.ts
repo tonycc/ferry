@@ -146,6 +146,14 @@ export class FakePlatform implements DeployPlatform {
     for (const [name, db] of this.databases) if (db.id === databaseId) this.databases.delete(name);
   }
 
+  async ensureGatewayNetworks(): Promise<{ networks: number; warnings: string[] }> {
+    return { networks: 0, warnings: [] };
+  }
+
+  async deleteAppNetwork(name: string): Promise<void> {
+    this.calls.push(`deleteAppNetwork:${name}`);
+  }
+
   async deleteProject(projectId: string): Promise<void> {
     this.calls.push(`deleteProject:${projectId}`);
     for (const [name, id] of this.projects) if (id === projectId) this.projects.delete(name);

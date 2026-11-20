@@ -31,7 +31,7 @@ function fakeDokploy(overrides: Record<string, Handler>) {
     fetch: fetchImpl,
     logError: (m) => logged.push(m),
   });
-  const platform = new DokployPlatform(client, { pollIntervalMs: 0, deployTimeoutMs: 1000, stableMs: 0, sleep: async () => {} });
+  const platform = new DokployPlatform(client, { isolateApps: false, pollIntervalMs: 0, deployTimeoutMs: 1000, stableMs: 0, sleep: async () => {} });
   const called = (procedure: string) => calls.filter((c) => c.procedure === procedure);
   return { client, platform, calls, called, logged };
 }
@@ -213,7 +213,7 @@ describe("DokployPlatform", () => {
     const realNow = Date.now;
     Date.now = () => now;
     try {
-      const platform = new DokployPlatform(client, {
+      const platform = new DokployPlatform(client, { isolateApps: false,
         pollIntervalMs: 1000,
         deployTimeoutMs: 5000,
         sleep: async (ms) => {
@@ -347,7 +347,7 @@ describe("DokployPlatform", () => {
         },
         "application.readLogs": () => "Error: boom",
       });
-      const platform = new DokployPlatform(client, { pollIntervalMs: 3000, stableMs: 8000, sleep: async (ms) => void (now += ms) });
+      const platform = new DokployPlatform(client, { isolateApps: false, pollIntervalMs: 3000, stableMs: 8000, sleep: async (ms) => void (now += ms) });
       expect(await platform.deploy("a1", ARCHIVE)).toMatchObject({ ok: false, reason: "start" });
     } finally {
       Date.now = realNow;
@@ -371,7 +371,7 @@ describe("DokployPlatform", () => {
     const realNow = Date.now;
     Date.now = () => now;
     try {
-      const platform = new DokployPlatform(client, {
+      const platform = new DokployPlatform(client, { isolateApps: false,
         pollIntervalMs: 1000,
         startTimeoutMs: 5000,
         sleep: async (ms) => {
@@ -446,7 +446,7 @@ describe("DokployPlatform:数据库、命令、备份", () => {
         "postgres.deploy": () => new Response("boom", { status: 500 }),
         "docker.getServiceContainersByAppName": () => [],
       });
-      const platform = new DokployPlatform(client, { pollIntervalMs: 1000, startTimeoutMs: 5000, sleep: async (ms) => void (now += ms) });
+      const platform = new DokployPlatform(client, { isolateApps: false, pollIntervalMs: 1000, startTimeoutMs: 5000, sleep: async (ms) => void (now += ms) });
       await expect(platform.createDatabase({ projectId: "p1", name: "ledger" })).rejects.toThrow("postgres.deploy");
     } finally {
       Date.now = realNow;
@@ -508,7 +508,7 @@ describe("DokployPlatform:数据库、命令、备份", () => {
       "schedule.runManually": () => ({ status: "done", deploymentId: "r1" }),
       "schedule.delete": () => true,
     });
-    const platform = new DokployPlatform(client, { now: () => new Date("2026-11-17T08:00:00.000Z") });
+    const platform = new DokployPlatform(client, { isolateApps: false, now: () => new Date("2026-11-17T08:00:00.000Z") });
     const file = await platform.backupDatabase("pg1");
     expect(file).toBe("/etc/dokploy/ferry-backups/ledger-db-x1/2026-11-17T08-00-00-000Z.sql.gz");
     const input = called("schedule.create")[0]?.input;
@@ -615,7 +615,7 @@ describe("资源上限", () => {
       "postgres.create": () => ({ postgresId: "pg1" }),
       "postgres.one": () => ({ appName: "x-db", databaseUser: "u", databasePassword: "p", databaseName: "d", applicationStatus: "done" }),
     });
-    const platform = new DokployPlatform(client, {
+    const platform = new DokployPlatform(client, { isolateApps: false,
       pollIntervalMs: 0,
       stableMs: 0,
       sleep: async () => {},
@@ -691,7 +691,7 @@ describe("删除数据库和项目", () => {
 
   it("备份目录里有 .. 时拒绝删除", async () => {
     const { client, called } = fakeDokploy({ "postgres.one": () => PG_ONE });
-    const platform = new DokployPlatform(client, { backupRoot: "/etc/dokploy/../..", sleep: async () => {} });
+    const platform = new DokployPlatform(client, { isolateApps: false, backupRoot: "/etc/dokploy/../..", sleep: async () => {} });
     await expect(platform.deleteDatabase("pg1")).rejects.toThrow("备份目录不安全");
     expect(called("postgres.stop")).toHaveLength(0);
   });
@@ -708,6 +708,109 @@ describe("删除数据库和项目", () => {
     const { platform, called } = fakeDokploy({ "postgres.one": () => ({ ...PG_ONE, appName: ".." }) });
     await expect(platform.deleteDatabase("pg1")).rejects.toThrow("不支持的字符");
     expect(called("schedule.create")).toHaveLength(0);
+  });
+});
+
+describe("网络隔离", () => {
+  const scheduleOk = (status = "done") => ({
+    "schedule.create": () => ({ scheduleId: "s1" }),
+    "schedule.runManually": () => ({ status, deploymentId: "d1" }),
+    "deployment.readLogs": () => "网络 ferry-ledger 不存在",
+    "schedule.delete": () => true,
+  });
+
+  function deployHandlers(networks: { networkId: string; name: string }[], status = "done") {
+    let uploaded = false;
+    return {
+      "application.one": () => ({ ...APP_ONE(), name: "ledger" }),
+      "deployment.all": () => (uploaded ? [{ deploymentId: "new", status: "done" }] : []),
+      "application.dropDeployment": () => {
+        uploaded = true;
+        return true;
+      },
+      "docker.getServiceContainersByAppName": () => (uploaded ? NEW_TASK_RUNNING() : []),
+      "network.all": () => networks,
+      "network.create": () => ({ networkId: "net1", name: "ferry-ledger" }),
+      ...scheduleOk(status),
+    };
+  }
+
+  it("部署时把应用放进自己的网络、离开 dokploy-network,部署完把 Traefik 接进这个网络", async () => {
+    const { client, called } = fakeDokploy(deployHandlers([]));
+    const platform = new DokployPlatform(client, { pollIntervalMs: 0, stableMs: 0, sleep: async () => {} });
+    expect(await platform.deploy("a1", ARCHIVE)).toEqual({ ok: true });
+    expect(called("network.create")[0]?.input).toMatchObject({ name: "ferry-ledger", driver: "overlay", attachable: true });
+    expect(called("application.update")[0]?.input).toMatchObject({ networkIds: ["net1"], detachDokployNetwork: true });
+    const script = String(called("schedule.create")[0]?.input.script);
+    expect(script).toContain("for n in ferry-ledger; do");
+    expect(script).toContain('docker network connect "$n" "$T"');
+    expect(script).toContain("T=dokploy-traefik");
+  });
+
+  it("网络已经有了就复用,不重复建", async () => {
+    const { client, called } = fakeDokploy(deployHandlers([{ networkId: "old", name: "ferry-ledger" }]));
+    const platform = new DokployPlatform(client, { pollIntervalMs: 0, stableMs: 0, sleep: async () => {} });
+    await platform.deploy("a1", ARCHIVE);
+    expect(called("network.create")).toHaveLength(0);
+    expect(called("application.update")[0]?.input).toMatchObject({ networkIds: ["old"] });
+  });
+
+  it("Traefik 接不进应用网络时,部署按平台问题失败(不让 agent 改代码)", async () => {
+    const { client } = fakeDokploy(deployHandlers([], "error"));
+    const platform = new DokployPlatform(client, { pollIntervalMs: 0, stableMs: 0, sleep: async () => {} });
+    expect(await platform.deploy("a1", ARCHIVE)).toMatchObject({ ok: false, reason: "platform" });
+  });
+
+  const ENV = { environments: [{ environmentId: "e1", isDefault: true, applications: [], postgres: [{ postgresId: "pg1", name: "ledger-db" }] }] };
+  const PG = { appName: "ledger-db-x1", databaseUser: "u", databasePassword: "p", databaseName: "d", applicationStatus: "done" };
+
+  it("还没隔离的数据库挪进应用网络时重新部署一次;已经隔离的不重复部署", async () => {
+    const moving = fakeDokploy({
+      "project.one": () => ENV,
+      "network.all": () => [{ networkId: "net1", name: "ferry-ledger" }],
+      "postgres.one": () => ({ ...PG, networkIds: [], detachDokployNetwork: false }),
+      "postgres.deploy": () => true,
+    });
+    await new DokployPlatform(moving.client, { sleep: async () => {} }).createDatabase({ projectId: "p1", name: "ledger" });
+    expect(moving.called("postgres.update")[0]?.input).toMatchObject({ networkIds: ["net1"], detachDokployNetwork: true });
+    expect(moving.called("postgres.deploy")).toHaveLength(1);
+
+    const settled = fakeDokploy({
+      "project.one": () => ENV,
+      "network.all": () => [{ networkId: "net1", name: "ferry-ledger" }],
+      "postgres.one": () => ({ ...PG, networkIds: ["net1"], detachDokployNetwork: true }),
+    });
+    await new DokployPlatform(settled.client, { sleep: async () => {} }).createDatabase({ projectId: "p1", name: "ledger" });
+    expect(settled.called("postgres.deploy")).toHaveLength(0);
+  });
+
+  it("启动时把 Traefik 接入全部应用网络,Traefik 管理接口开着时提醒", async () => {
+    const { client, called } = fakeDokploy({
+      "settings.readTraefikConfig": () => "api:\n  insecure: true\n",
+      "network.all": () => [
+        { networkId: "n1", name: "ferry-a" },
+        { networkId: "n2", name: "someone-else" },
+        { networkId: "n3", name: "ferry-b" },
+      ],
+      ...scheduleOk(),
+    });
+    const result = await new DokployPlatform(client, { sleep: async () => {} }).ensureGatewayNetworks();
+    expect(result.networks).toBe(2);
+    expect(result.warnings[0]).toContain("api.insecure");
+    const script = String(called("schedule.create")[0]?.input.script);
+    expect(script).toContain("for n in ferry-a ferry-b; do");
+    expect(script).toContain("continue; }");
+  });
+
+  it("删除应用的网络:先断开 Traefik 再删;没有这个网络时什么都不做", async () => {
+    const present = fakeDokploy({ "network.all": () => [{ networkId: "n1", name: "ferry-ledger" }], "network.remove": () => true, ...scheduleOk() });
+    await new DokployPlatform(present.client, { sleep: async () => {} }).deleteAppNetwork("ledger");
+    expect(String(present.called("schedule.create")[0]?.input.script)).toContain("docker network disconnect ferry-ledger dokploy-traefik");
+    expect(present.called("network.remove")[0]?.input).toEqual({ networkId: "n1" });
+
+    const absent = fakeDokploy({ "network.all": () => [] });
+    await new DokployPlatform(absent.client, { sleep: async () => {} }).deleteAppNetwork("ledger");
+    expect(absent.called("schedule.create")).toHaveLength(0);
   });
 });
 

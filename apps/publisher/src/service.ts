@@ -479,6 +479,8 @@ export class PublisherService {
       app.platform = { ...app.platform, databaseId: undefined };
       await this.store.saveApp(app);
     }
+    // 应用和数据库都删掉后才能删它们的网络;网络按应用名找,重试时已经删掉的不报错
+    await platform.deleteAppNetwork(app.name);
     if (app.platform.projectId) {
       await platform.deleteProject(app.platform.projectId);
       app.platform = { ...app.platform, projectId: undefined };
