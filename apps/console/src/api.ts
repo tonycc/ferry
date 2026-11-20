@@ -94,6 +94,12 @@ export interface AdminAppView extends AppView {
   unpublishedAt?: string;
 }
 
+/** 应用密钥:只有名称和更新时间,值保存后不再返回 */
+export interface SecretView {
+  name: string;
+  updatedAt: string;
+}
+
 export interface TokenView {
   id: string;
   label: string;

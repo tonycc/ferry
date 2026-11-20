@@ -589,6 +589,41 @@ describe("环境变量文本", () => {
     expect(env).toEqual({ A: "1", B: "x=y" });
     expect(parseEnv(formatEnv(env))).toEqual(env);
   });
+
+  it("dotenv 会改动的值(#、首尾空格、引号开头)加引号原样写入;普通值不加", () => {
+    const env = {
+      PLAIN: "postgres://u:p@db:5432/app?ssl=a=b",
+      HASH: "https://example.com/hook#frag",
+      SPACES: "  padded  ",
+      DOUBLE: '"quoted"',
+      SINGLE: "it's",
+      LEAD_SINGLE: "'x' #y",
+    };
+    const text = formatEnv(env);
+    expect(text.split("\n")).toEqual([
+      "PLAIN=postgres://u:p@db:5432/app?ssl=a=b",
+      "HASH='https://example.com/hook#frag'",
+      "SPACES='  padded  '",
+      `DOUBLE='"quoted"'`,
+      "SINGLE=it's",
+      "LEAD_SINGLE=`'x' #y`",
+    ]);
+    expect(parseEnv(text)).toEqual(env);
+    expect(() => formatEnv({ BAD: "' ` #" })).toThrow("单引号和反引号");
+  });
+
+  it("setEnv 传了 keep 时整体替换:只留下 env 和 keep 里已有的变量", async () => {
+    let saved = "";
+    const { platform } = fakeDokploy({
+      "application.one": () => ({ applicationId: "a1", env: "DATABASE_URL=pg\nPORT=3000\nOLD_SECRET=x" }),
+      "application.saveEnvironment": (input) => {
+        saved = input.env as string;
+        return true;
+      },
+    });
+    await platform.setEnv("a1", { NEW: "1" }, ["DATABASE_URL", "PORT"]);
+    expect(parseEnv(saved)).toEqual({ DATABASE_URL: "pg", PORT: "3000", NEW: "1" });
+  });
 });
 
 describe("lastStartLogs", () => {

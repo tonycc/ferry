@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, type AppDetail, type ReleaseSummary, type ReleaseView, type Visibility } from "../api";
+import { api, type AppDetail, type ReleaseSummary, type ReleaseView, type SecretView, type Visibility } from "../api";
 import { appStatus, STATE, time, VISIBILITY, VISIBILITY_HINT } from "../labels";
+import { secretNameProblem } from "@ferry/manifest/secrets";
 
 const props = defineProps<{ name: string }>();
 
@@ -10,12 +11,19 @@ const app = ref<AppDetail>();
 const loading = ref(true);
 const visibility = ref<Visibility>("self");
 const savingVisibility = ref(false);
-const tab = ref<"releases" | "logs">("releases");
+const tab = ref<"releases" | "logs" | "secrets">(location.hash === "#secrets" ? "secrets" : "releases");
 const releaseLogs = ref<Record<string, string>>({});
 const logs = ref("");
 const logLines = ref(200);
 const loadingLogs = ref(false);
 let timer: ReturnType<typeof setTimeout> | undefined;
+/** 应用密钥:值只在这里输入,保存后不再显示 */
+const secrets = ref<SecretView[]>([]);
+const secretForm = ref<{ name: string; value: string }>({ name: "", value: "" });
+/** 替换已有密钥时锁定名称 */
+const replacing = ref(false);
+const savingSecret = ref(false);
+const secretDialog = ref(false);
 /** 正在进行的操作;下线要等容器停止,可能要十几秒 */
 const acting = ref<"rollback" | "unpublish">();
 /** 窄屏(手机)时信息改成一列 */
@@ -41,6 +49,58 @@ async function load() {
   // 有发布在进行时每 5 秒刷新一次
   clearTimeout(timer);
   if (running.value) timer = setTimeout(load, 5000);
+}
+
+async function loadSecrets() {
+  try {
+    secrets.value = await api.get<SecretView[]>(`/api/apps/${encodeURIComponent(props.name)}/secrets`);
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  }
+}
+
+function openSecret(name?: string) {
+  secretForm.value = { name: name ?? "", value: "" };
+  replacing.value = !!name;
+  secretDialog.value = true;
+}
+
+/** 名称规则和发布服务共用 */
+const secretNameError = computed(() => (secretForm.value.name ? secretNameProblem(secretForm.value.name) ?? "" : ""));
+
+async function saveSecret() {
+  const { name, value } = secretForm.value;
+  if (!name || secretNameError.value || !value) return;
+  savingSecret.value = true;
+  try {
+    secrets.value = await api.post<SecretView[]>(`/api/apps/${encodeURIComponent(props.name)}/secrets`, { name, value });
+    secretDialog.value = false;
+    ElMessage.success("已保存。下次发布或回滚后生效");
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  } finally {
+    // 不管成没成功都不把值留在页面里
+    secretForm.value.value = "";
+    savingSecret.value = false;
+  }
+}
+
+async function deleteSecret(name: string) {
+  try {
+    await ElMessageBox.confirm(`删除后,应用下次发布或回滚时就读不到 ${name} 了。`, "删除密钥", {
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+      type: "warning",
+    });
+  } catch {
+    return;
+  }
+  try {
+    secrets.value = await api.post<SecretView[]>(`/api/apps/${encodeURIComponent(props.name)}/secrets/${encodeURIComponent(name)}/delete`);
+    ElMessage.success("已删除。下次发布或回滚后生效");
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  }
 }
 
 async function saveVisibility() {
@@ -148,14 +208,20 @@ function duration(r: ReleaseSummary): string {
 
 watch(tab, (t) => {
   if (t === "logs" && !logs.value) void loadLogs();
+  if (t === "secrets") void loadSecrets();
 });
 watch(() => props.name, () => {
   loading.value = true;
   logs.value = "";
   releaseLogs.value = {};
+  secrets.value = [];
+  if (tab.value === "secrets") void loadSecrets();
   void load();
 });
-onMounted(load);
+onMounted(() => {
+  void load();
+  if (tab.value === "secrets") void loadSecrets();
+});
 onBeforeUnmount(() => {
   clearTimeout(timer);
   narrowQuery.removeEventListener("change", onNarrow);
@@ -249,6 +315,31 @@ onBeforeUnmount(() => {
               <template #empty>还没有发布过</template>
             </el-table>
           </el-tab-pane>
+          <el-tab-pane label="密钥" name="secrets">
+            <p class="muted secret-intro">
+              应用要用的第三方密钥(大模型 API key、群机器人 webhook 等)填在这里,不要写进代码。
+              应用里用 <code>process.env.名称</code> 读取。值保存后不再显示,只能替换或删除;
+              <b>改动在下次发布或回滚后生效</b>(改完让 agent 再发布一次)。
+            </p>
+            <div class="log-bar">
+              <el-button type="primary" @click="openSecret()">添加密钥</el-button>
+            </div>
+            <el-table :data="secrets" row-key="name">
+              <el-table-column label="名称" min-width="200">
+                <template #default="{ row }"><code>{{ row.name }}</code></template>
+              </el-table-column>
+              <el-table-column label="更新时间" width="180">
+                <template #default="{ row }">{{ time(row.updatedAt) }}</template>
+              </el-table-column>
+              <el-table-column label="" width="160" align="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openSecret(row.name)">替换</el-button>
+                  <el-button link type="danger" @click="deleteSecret(row.name)">删除</el-button>
+                </template>
+              </el-table-column>
+              <template #empty>还没有密钥</template>
+            </el-table>
+          </el-tab-pane>
           <el-tab-pane label="运行日志" name="logs">
             <div class="log-bar">
               <span class="muted">最近</span>
@@ -262,6 +353,22 @@ onBeforeUnmount(() => {
         </el-tabs>
       </el-card>
     </template>
+
+    <el-dialog v-model="secretDialog" :title="replacing ? `替换 ${secretForm.name}` : '添加密钥'" width="min(480px, 92vw)" @closed="secretForm = { name: '', value: '' }">
+      <el-form label-position="top" @submit.prevent="saveSecret">
+        <el-form-item label="名称" :error="secretNameError">
+          <el-input v-model.trim="secretForm.name" :disabled="replacing" placeholder="如 LLM_API_KEY" autocomplete="off" spellcheck="false" />
+        </el-form-item>
+        <el-form-item label="值">
+          <el-input v-model="secretForm.value" type="password" show-password placeholder="保存后不再显示" autocomplete="new-password" spellcheck="false" />
+        </el-form-item>
+        <p v-if="!replacing && secrets.some((s) => s.name === secretForm.name)" class="muted">已有同名密钥,保存会替换它。</p>
+      </el-form>
+      <template #footer>
+        <el-button @click="secretDialog = false">取消</el-button>
+        <el-button type="primary" :loading="savingSecret" :disabled="!secretForm.name || !!secretNameError || !secretForm.value" @click="saveSecret">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -277,6 +384,7 @@ onBeforeUnmount(() => {
 .expand { padding: 0 16px; }
 .log-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .logs { background: #1e1e1e; color: #ddd; padding: 12px; border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 360px; overflow: auto; margin: 8px 0 0; }
+.secret-intro { margin: 0 0 12px; line-height: 1.6; }
 .logs.tall { max-height: 560px; min-height: 120px; }
 @media (max-width: 640px) {
   .page-title { flex-direction: column; align-items: flex-start; gap: 8px; }

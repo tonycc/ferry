@@ -91,8 +91,11 @@ export class FakePlatform implements DeployPlatform {
     this.gatewayAddress = input.authAddress;
   }
 
-  async setEnv(appId: string, env: Record<string, string>): Promise<void> {
-    this.env.set(appId, { ...this.env.get(appId), ...env });
+  async setEnv(appId: string, env: Record<string, string>, keep?: readonly string[]): Promise<void> {
+    this.calls.push(`setEnv:${appId}`);
+    const current = { ...this.env.get(appId) };
+    if (keep) for (const name of Object.keys(current)) if (!keep.includes(name)) delete current[name];
+    this.env.set(appId, { ...current, ...env });
   }
 
   /** 每次部署带的数据库 ID(网络隔离时数据库要和应用一起挪,回滚也要带) */

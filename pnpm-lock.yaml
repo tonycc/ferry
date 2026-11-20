@@ -23,6 +23,9 @@ importers:
 
   apps/console:
     dependencies:
+      '@ferry/manifest':
+        specifier: workspace:*
+        version: link:../../packages/manifest
       element-plus:
         specifier: ^2.14.8
         version: 2.14.8(vue@3.5.45(typescript@5.9.3))

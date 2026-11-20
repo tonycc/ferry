@@ -120,8 +120,8 @@ const MAX_LISTED_FINDINGS = 30;
 
 /**
  * 密钥扫描发现了硬编码的密钥。按密钥种类给出 agent 能执行的修复方法:
- * Ferry 只会给应用注入 DATABASE_URL 和 PORT,还不能给应用配置别的密钥(第三方 API key、群机器人 webhook 等),
- * 所以这类密钥只能让功能在没有密钥时关闭,并告诉用户。
+ * 自己的数据库连接串用 Ferry 注入的 DATABASE_URL;第三方密钥(API key、群机器人 webhook 等)
+ * 由用户在控制台上配置(任务 3.8),代码改为从同名环境变量读取。值不经过 agent。
  */
 export function scanFailure(findings: Finding[], manifest: Manifest): FailureInfo & { logs: string } {
   const listed = findings.slice(0, MAX_LISTED_FINDINGS).map((f) => {
@@ -142,20 +142,24 @@ export function scanFailure(findings: Finding[], manifest: Manifest): FailureInf
       manifest.database === "postgres"
         ? "PostgreSQL 连接串:应用自己的数据库连接串由 Ferry 注入在环境变量 DATABASE_URL 里,改为直接使用 process.env.DATABASE_URL,不要自己拼连接串。"
         : "PostgreSQL 连接串:要用数据库就在 app.yaml 里写 database: postgres,Ferry 会建库并把连接串注入环境变量 DATABASE_URL,代码里用 process.env.DATABASE_URL。",
-      "连的如果是别的系统的 PostgreSQL(不是本应用自己的库),Ferry 目前不支持,去掉这部分功能并告诉用户。",
+      "连的如果是别的系统的 PostgreSQL(不是本应用自己的库),不要用 DATABASE_URL,另起一个名称(如 HR_DB_URL)从 process.env 读取," +
+        `读不到时关闭这个功能,并告诉用户到 Ferry 控制台(Ferry 地址加 /console/apps/${manifest.name}#secrets)的“密钥”里填写,不要向用户索要值。`,
     );
   }
   if (hasOtherSystem) {
     parts.push(
-      "MySQL、Redis、MongoDB、消息队列等的连接串:不要换成 DATABASE_URL(那是本应用自己的 PostgreSQL),Ferry 目前不支持连接这些系统。" +
-        "数据要存在本应用的 PostgreSQL 里(app.yaml 写 database: postgres);连接别的系统的功能按下面的办法处理。",
+      "MySQL、Redis、MongoDB、消息队列等的连接串:不要换成 DATABASE_URL(那是本应用自己的 PostgreSQL),Ferry 不提供这些系统。" +
+        "数据要存在本应用的 PostgreSQL 里(app.yaml 写 database: postgres);确实要连公司已有的别的系统,按下面的办法把连接串配成密钥。",
     );
   }
   if (hasOther || hasOtherSystem) {
     parts.push(
-      "第三方 API key、群机器人 webhook、令牌、私钥、别的系统的连接串等:Ferry 目前还不能给应用配置这类密钥。" +
-        "删掉代码里的密钥,改为从环境变量读取(如 process.env.DINGTALK_WEBHOOK),读不到时只关闭这个功能、应用照常运行,不要报错退出;" +
-        "然后重新发布,并告诉用户这个功能要等平台支持配置密钥后才能用。",
+      "第三方 API key、群机器人 webhook、令牌、别的系统的连接串等:删掉代码里的密钥,给每个密钥起一个环境变量名" +
+        "(大写字母、数字和下划线,如 LLM_API_KEY、DINGTALK_WEBHOOK,不能用 DATABASE_URL、PORT),改为从 process.env.<名称> 读取;" +
+        "读不到时只关闭这个功能、应用照常运行,不要报错退出。然后重新发布," +
+        `并告诉用户:到 Ferry 控制台(Ferry 地址加 /console/apps/${manifest.name}#secrets)的“密钥”里填写这些名称和对应的值,` +
+        "填好后让你再发布一次才生效。不要向用户索要密钥的值,也不要把值写进代码、app.yaml 或任何文件。" +
+        "多行的私钥文件目前不能配置,用到它的功能先关闭。",
     );
   }
   parts.push(

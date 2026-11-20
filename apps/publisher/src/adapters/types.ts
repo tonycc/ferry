@@ -37,8 +37,12 @@ export interface DeployPlatform {
   attachDomain(input: { appId: string; host: string; port: number }): Promise<void>;
   /** 写入登录网关的配置(Traefik 中间件),服务启动时调用。authAddress 是 Traefik 能访问到的 /authz 地址 */
   ensureGateway(input: { authAddress: string }): Promise<void>;
-  /** 合并写入:只更新传入的变量,保留已有的其他变量 */
-  setEnv(appId: string, env: Record<string, string>): Promise<void>;
+  /**
+   * 写入环境变量。不传 keep 时合并写入:只更新传入的变量,保留已有的其他变量。
+   * 传了 keep 时整体替换:结果只有 env 里的变量,外加已有变量中名称在 keep 里的
+   * (发布时用它移除控制台上删掉的密钥:Ferry 是应用环境变量唯一的写入方)
+   */
+  setEnv(appId: string, env: Record<string, string>, keep?: readonly string[]): Promise<void>;
   /** 上传代码包并构建部署,结束后才返回 */
   /**
    * 部署一个代码包。databaseId 是应用的数据库:网络隔离时数据库要和应用一起挪进应用自己的网络,

@@ -10,6 +10,7 @@ import { pruneArchives } from "./workflow/retention";
 import { checkArchiveLayout, zipEntryNames } from "./zip";
 import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
+import { MAX_SECRETS_PER_APP, validateSecretName, validateSecretValue, type SecretBox } from "./secrets";
 
 export interface ServiceConfig {
   /** 应用地址的协议,默认 https */
@@ -23,7 +24,15 @@ export interface ServiceConfig {
   archiveGraceMs?: number;
   /** 应用模板。设置后发布时检查 app.yaml 的 template 是否存在 */
   templates?: TemplateLibrary;
+  /** 加密应用密钥用;不传时不能保存密钥 */
+  secretBox?: SecretBox;
   now?: () => Date;
+}
+
+/** 控制台上显示的密钥:只有名称和更新时间,值保存后不再返回 */
+export interface SecretView {
+  name: string;
+  updatedAt: string;
 }
 
 export interface PreparedUpload {
@@ -373,6 +382,40 @@ export class PublisherService {
       from: { version: current.version, publishedAt: current.createdAt.toISOString() },
       to: { version: target.version, publishedAt: target.createdAt.toISOString() },
     };
+  }
+
+  /** 应用的密钥名称和更新时间,不含值 */
+  async listSecrets(user: User, appName: string): Promise<SecretView[]> {
+    const app = await this.ownApp(user, appName);
+    const secrets = await this.store.listSecrets(app.name);
+    return secrets.map((s) => ({ name: s.name, updatedAt: s.updatedAt.toISOString() }));
+  }
+
+  /** 新增或替换一个密钥。下次发布或回滚时注入应用的环境变量 */
+  async setSecret(user: User, appName: string, name: string, value: string): Promise<SecretView[]> {
+    const app = await this.ownApp(user, appName);
+    validateSecretName(name);
+    validateSecretValue(value);
+    if (!this.config.secretBox) throw new UserError("conflict", "平台没有配置 SECRETS_KEY,暂时不能保存密钥。请联系平台管理员");
+    const saved = await this.store.saveSecret(
+      {
+        appName: app.name,
+        name,
+        ciphertext: this.config.secretBox.encrypt(app.name, name, value),
+        updatedAt: (this.config.now ?? (() => new Date()))(),
+        updatedBy: user.id,
+      },
+      MAX_SECRETS_PER_APP,
+    );
+    if (!saved) throw new UserError("quota_exceeded", `每个应用最多 ${MAX_SECRETS_PER_APP} 个密钥`);
+    return this.listSecrets(user, appName);
+  }
+
+  /** 删除一个密钥。下次发布或回滚时从应用的环境变量里移除 */
+  async deleteSecret(user: User, appName: string, name: string): Promise<SecretView[]> {
+    const app = await this.ownApp(user, appName);
+    if (!(await this.store.deleteSecret(app.name, name))) throw new UserError("not_found", `密钥 ${name} 不存在`);
+    return this.listSecrets(user, appName);
   }
 
   /**
