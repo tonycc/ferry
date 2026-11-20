@@ -51,6 +51,13 @@ const envSchema = z.object({
   DB_MEMORY_LIMIT_MB: z.coerce.number().int().min(0).default(512),
   /** 同一应用连续可修复失败达到这个次数后,不再让 agent 重试 */
   MAX_FIX_ATTEMPTS: z.coerce.number().int().default(3),
+  /**
+   * 发布前的密钥扫描(任务 3.1)。gitleaks:用 gitleaks 扫描代码包,启动时找不到 gitleaks 会直接退出;
+   * off:不扫描,只用于没装 gitleaks 的临时试用
+   */
+  SECRET_SCAN: z.enum(["gitleaks", "off"]).default("gitleaks"),
+  /** gitleaks 可执行文件,默认在 PATH 里找(macOS 上 brew install gitleaks) */
+  GITLEAKS_PATH: z.string().default("gitleaks"),
   /** fake:全部用内存假实现,本地开发用;dokploy:对接真实 Dokploy */
   FERRY_PLATFORM: z.enum(["fake", "dokploy"]).default("fake"),
   DOKPLOY_URL: z.string().optional(),

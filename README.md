@@ -19,7 +19,8 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 代码包上传(一次性上传地址、本地目录存储、用旧包回滚) | 已实现,有测试,本地用真实 zip 验证过 |
 | REST 接口、MCP 工具(10 个) | 已实现,本地验证过 |
 | Dokploy 对接(`adapters/dokploy.ts`)、真实健康检查 | 已实现,对本机 Dokploy 的集成测试通过;经 MCP 完整发布模板应用已验证(M1 验收) |
-| 密钥扫描、通知 | 只有假实现 |
+| 密钥扫描(gitleaks,外加钉钉、企业微信、飞书机器人 webhook,sk- 开头的大模型 key,带密码的连接串) | 已实现,有测试;发现密钥时按种类给出修复提示,用 Claude Code 盲测过。本机要装 gitleaks |
+| 通知 | 只有打印到日志的实现 |
 | 持久化(PostgreSQL) | 已实现,有测试;设置 `DATABASE_URL` 后启用,启动时自动执行数据库迁移。不设置时用内存存储 |
 | 服务重启后继续执行未完成的发布 | 已实现,有测试(需要 PostgreSQL 存储;假定同一时间只运行一个 Ferry 实例) |
 | 验证码登录、agent 个人令牌 | 已实现,有测试。验证码目前只能打印在日志里(`NOTIFY_VIA=log`,本地开发用),钉钉工作通知待 P5。开发用的 `x-ferry-user` 请求头身份默认关闭 |
@@ -73,7 +74,8 @@ curl -T app.zip "<uploadUrl>"
 
 ## 本地运行
 
-需要 Node.js 22 以上和 pnpm。
+需要 Node.js 22 以上、pnpm 和 gitleaks(发布前的密钥扫描用;macOS 上 `brew install gitleaks`)。
+启动时找不到 gitleaks 会直接退出;`GITLEAKS_PATH` 指定可执行文件,临时试用可以设 `SECRET_SCAN=off` 跳过扫描。
 
 ```bash
 pnpm install

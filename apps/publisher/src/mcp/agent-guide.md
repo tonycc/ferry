@@ -9,6 +9,10 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
    访问者身份在请求头里:X-Ferry-User-Id、X-Ferry-User-Name(UTF-8 百分号编码,要解码)、X-Ferry-User-Departments(逗号分隔)。
    用法见模板 src/server.ts 里的 visitor();static 模板的页面用 fetch("/whoami") 读取。`/__ferry/` 开头的路径留给 Ferry,应用不要用。
 3. 数据库连接串只从 DATABASE_URL 读取,端口从 PORT 读取,不要在代码里写任何密码或密钥。
+   Ferry 发布前会扫描代码包,发现密钥(包括写在 .env 或配置文件里的)就拒绝发布,没有办法豁免。
+   Ferry 目前不能给应用配置第三方密钥(API key、群机器人 webhook 等):用到这类密钥的功能,
+   改为从环境变量读取(如 process.env.DINGTALK_WEBHOOK),读不到时只关闭这个功能、应用照常运行;
+   这样改完就可以直接发布,不用为此停下来问用户,发布后告诉用户这个功能要等平台支持配置密钥后才能用。
 4. 改表结构时在 migrations/ 下新增文件,不要改已经发布过的迁移文件。
    发布顺序是:构建 → 启动新代码 → 执行迁移 → 健康检查。所以应用启动时不能依赖这次迁移才建的表或字段:
    启动阶段不要查询业务表,用到时再查;新代码也要能在迁移执行前的几秒里不崩溃。
@@ -40,6 +44,7 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 - state 为 FAILED_FIXABLE 或 ROLLED_BACK:读 error 里的 type、message、logs 和 hint,找到原因,修改代码,
   再从 prepare_app 开始走一遍。每次修改都要有明确的依据,不要盲目重试同样的代码。
   ROLLED_BACK 表示线上已恢复为上一个版本,同事不受影响,可以从容修复。各类型的含义:
+  - scan_failed:代码包里有密钥,logs 列出了文件和行号。按 hint 删掉密钥,不要用编码、拆分等写法绕过扫描。
   - build_failed:构建镜像时出错,看 logs 末尾。常见:TypeScript 类型错误(logs 里有 文件(行,列): error TS…)、
     依赖名或版本号不存在、Dockerfile 里的文件路径不对。
   - start_failed:构建成功,但应用一启动就退出。logs 是应用最后一次启动的输出,找退出前的报错。

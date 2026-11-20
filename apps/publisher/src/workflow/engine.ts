@@ -1,5 +1,5 @@
 import type { Adapters, Archive } from "../adapters/types";
-import { deployFailure, healthFailure, migrationFailure } from "./failures";
+import { deployFailure, healthFailure, migrationFailure, scanFailure } from "./failures";
 import { isTerminal, stepOrder, type ReleaseState, type StepState } from "./states";
 import type { AppRecord, ReleaseRecord, Store } from "./store";
 
@@ -104,16 +104,7 @@ export class Engine {
     VALIDATING: async (release) => {
       const archive = await this.archive(release.appName, release.version);
       const findings = await this.adapters.scanner.scan(archive.zip);
-      if (findings.length > 0) {
-        return {
-          kind: "fail",
-          fixable: true,
-          type: "scan_failed",
-          message: "代码里发现了硬编码的密钥",
-          logs: findings.map((f) => `${f.file ?? ""} ${f.detail}`.trim()).join("\n"),
-          hint: "删除硬编码的密钥,改为从环境变量读取,然后重新发布",
-        };
-      }
+      if (findings.length > 0) return { kind: "fail", ...scanFailure(findings, release.manifest) };
       return { kind: "next" };
     },
 

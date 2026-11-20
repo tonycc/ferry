@@ -84,12 +84,18 @@ export interface ArchiveStore {
   removeAll(appName: string): Promise<void>;
 }
 
+/** 密钥扫描发现的一处问题。不含密钥原文:扫描结果会存进发布记录、显示在控制台上 */
 export interface Finding {
+  /** 代码包里的路径 */
   file?: string;
+  line?: number;
+  /** 规则 ID(如 openai-api-key),决定给 agent 什么修复提示 */
+  rule?: string;
+  /** 是哪种密钥 */
   detail: string;
 }
 
-/** 发布前密钥扫描(gitleaks) */
+/** 发布前密钥扫描(gitleaks)。扫描本身出错时抛出异常,不能返回空结果 */
 export interface Scanner {
   scan(zip: Buffer): Promise<Finding[]>;
 }

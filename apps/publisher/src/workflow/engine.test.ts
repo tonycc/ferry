@@ -231,13 +231,46 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
 
     it("代码里有密钥:发布被拦截,不会建任何资源", async () => {
       const { adapters, publish } = setup();
-      adapters.scanner.findings = [{ file: "config.js", detail: "疑似 API 密钥" }];
+      adapters.scanner.findings = [
+        { file: "src/db.ts", line: 3, rule: "connection-string-password", detail: "连接串里写了密码" },
+      ];
 
       const view = await publish("v1");
 
       expect(view.state).toBe("FAILED_FIXABLE");
       expect(view.error?.type).toBe("scan_failed");
-      expect(view.error?.logs).toContain("config.js");
+      expect(view.error?.logs).toContain("src/db.ts:3");
+      // 应用用了数据库:让 agent 改用 Ferry 注入的 DATABASE_URL
+      expect(view.error?.hint).toContain("process.env.DATABASE_URL");
+      expect(view.error?.hint).not.toContain("第三方 API key");
+      expect(adapters.platform.calls).toHaveLength(0);
+    });
+
+    it("代码里有第三方密钥:提示改为读环境变量、读不到时关闭功能,并告诉用户", async () => {
+      const { adapters, publish } = setup();
+      adapters.scanner.findings = [
+        { file: "src/notify.ts", line: 2, rule: "dingtalk-robot-webhook", detail: "钉钉群机器人 webhook" },
+      ];
+
+      const view = await publish("v1");
+
+      expect(view.error?.type).toBe("scan_failed");
+      expect(view.error?.hint).toContain("读不到时只关闭这个功能");
+      expect(view.error?.hint).toContain("告诉用户");
+      expect(view.error?.hint).not.toContain("DATABASE_URL");
+    });
+
+    it("扫描本身出错:按平台问题失败,不放行,也不让 agent 改代码", async () => {
+      const { adapters, publish } = setup();
+      adapters.scanner.scan = async () => {
+        throw new Error("找不到 gitleaks");
+      };
+
+      const view = await publish("v1");
+
+      expect(view.state).toBe("FAILED");
+      expect(view.error?.type).toBe("internal_error");
+      expect(view.error?.hint).toContain("不要修改代码");
       expect(adapters.platform.calls).toHaveLength(0);
     });
 
