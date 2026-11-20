@@ -35,6 +35,19 @@ case("c08", "health: listens on 127.0.0.1 only", lambda d: sub(d / "src" / "serv
 case("c09", "health: app.yaml healthcheck path does not exist (404)", lambda d: sub(d / "app.yaml", "healthcheck: /healthz", "healthcheck: /health"))
 case("c10", "health: healthz queries a missing table (500)", lambda d: sub(d / "src" / "server.ts", 'await pool.query("select 1");', 'await pool.query("select 1 from app_settings");'))
 case("c12", "build: TypeScript type error (misspelt property)", lambda d: sub(d / "src" / "server.ts", "escapeHtml(who.name)", "escapeHtml(who.nmae)"))
+# c13/c14: hard-coded secrets (task 3.1). Built from pieces so this script itself does not contain a full secret.
+DB_FALLBACK = "postgres://ledger:" + "Ledger" + "Pass2026" + "@localhost:5432/ledger"
+case("c13", "scan: database URL with password hard-coded as a fallback", lambda d: sub(d / "src" / "server.ts",
+    "connectionString: process.env.DATABASE_URL }", f'connectionString: process.env.DATABASE_URL ?? "{DB_FALLBACK}" }}'))
+WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=" + "3f9a1c2b4d5e6f70" * 4
+case("c14", "scan: DingTalk robot webhook hard-coded (notify the group on each new item)", lambda d: sub(d / "src" / "server.ts",
+    "      return json(res, 201, rows[0]);",
+    f'''      await fetch("{WEBHOOK}", {{
+        method: "POST",
+        headers: {{ "content-type": "application/json" }},
+        body: JSON.stringify({{ msgtype: "text", text: {{ content: `新记录:${{title}}` }} }}),
+      }}).catch((err) => console.error("通知失败", err));
+      return json(res, 201, rows[0]);'''))
 # c11: update crash. v1 = template as-is, v2 = c03-style crash
 case("c11", "update: v1 good; v2 crashes on start (startup query on missing table)", lambda d: None)
 shutil.copytree(OUT / "c03" / "app", OUT / "c11" / "app-v2")

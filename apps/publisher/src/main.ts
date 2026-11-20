@@ -3,6 +3,7 @@ import { DokployPlatform, type ResourceLimits } from "./adapters/dokploy";
 import { DokployClient } from "./adapters/dokploy-client";
 import { FsArchiveStore } from "./adapters/archive-store";
 import { HttpHealthChecker } from "./adapters/health";
+import { GitleaksScanner } from "./adapters/gitleaks";
 import { Gateway, HEALTH_HEADER, healthToken } from "./gateway/gateway";
 import { setupGateway } from "./gateway/setup";
 import { MemoryDirectory } from "./adapters/directory";
@@ -31,7 +32,7 @@ if (config.DEV_AUTH === "true") {
   console.warn("DEV_AUTH=true:没带凭据的请求可以用 x-ferry-user 请求头冒充任何人,只能用于本地开发");
 }
 
-// 代码包保存在本地目录;FERRY_PLATFORM=dokploy 时部署平台和健康检查是真实的,密钥扫描还是假实现
+// 代码包保存在本地目录;FERRY_PLATFORM=dokploy 时部署平台和健康检查是真实的
 // 登录网关的密钥:签网关 cookie、算健康检查口令
 if (!config.GATEWAY_SECRET) {
   console.warn("未设置 GATEWAY_SECRET:本次随机生成,服务重启后访问应用要重新跳转登录一次");
@@ -46,6 +47,17 @@ const adapters: Adapters = {
   directory,
   notifier: config.NOTIFY_VIA === "log" ? new LogNotifier() : new UnconfiguredNotifier(),
 };
+if (config.SECRET_SCAN === "gitleaks") {
+  // 找不到 gitleaks 时直接退出,而不是带着不扫描的发布流程跑起来
+  const scanner = new GitleaksScanner({ binary: config.GITLEAKS_PATH });
+  const version = await scanner.version().catch((err: Error) => {
+    throw new Error(`${err.message}。请安装 gitleaks(macOS:brew install gitleaks)或设置 GITLEAKS_PATH;临时试用可以设 SECRET_SCAN=off`);
+  });
+  console.log(`密钥扫描:gitleaks ${version}`);
+  adapters.scanner = scanner;
+} else {
+  console.warn("SECRET_SCAN=off:发布前不扫描密钥,只能用于临时试用");
+}
 if (config.NOTIFY_VIA === "log") {
   console.warn("NOTIFY_VIA=log:通知和登录验证码会打印在日志里,能看到日志的人就能登录任何账号,只能用于本地开发");
 } else {

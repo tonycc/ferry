@@ -16,6 +16,8 @@
 | c10 | 健康检查接口查询不存在的表 | healthcheck_failed(500) |
 | c11 | 线上已有正常版本,新版本启动即崩溃 | start_failed,线上恢复为旧版本(ROLLED_BACK) |
 | c12 | TypeScript 类型错误(属性名拼错) | build_failed,logs 里有 文件(行,列): error TS… |
+| c13 | 数据库连接串写死了密码(作为 DATABASE_URL 的后备值) | scan_failed |
+| c14 | 钉钉群机器人 webhook 写死在代码里(新增记录时发通知) | scan_failed |
 
 ## 用法
 
@@ -49,3 +51,12 @@ python3 -I scripts/failure-cases/make_cases.py packages/templates/node-postgres 
 这一轮还发现两个问题并已修复:start_failed 的提示让 agent 把建表语句加进迁移,但迁移在启动之后才执行,解决不了
 (改为说明发布顺序);启动即崩溃的容器会短暂显示为运行中,被当成启动成功(改为要连续运行 8 秒)。
 修复后重跑 c03、c11:c03 在发布前就按说明改好,c11 失败一次、线上恢复为旧版本、第二次上线。
+
+## 2026-11-20 密钥扫描(任务 3.1)
+
+- 两个模板和 c01 到 c12 用真实的 gitleaks 扫描都没有误报;c13、c14 都被拦下,logs 只有文件、行号和密钥种类。
+- Claude Code 盲测:c13 在发布前就去掉了写死的连接串,一次上线。c14 第一轮 agent 发布前发现了 webhook,
+  停下来问用户,选项里还有“原样发布”(扫描一定会拦)。原因是给 agent 的使用说明只写了不要写密钥,
+  没说会被拦截,也没说第三方密钥怎么办;补上后重跑,agent 发布前就改为从 DINGTALK_WEBHOOK 读取、没配置时不发通知,直接上线。
+  另一轮让 agent 不检查代码直接打包:被 scan_failed 拦下后按提示做了同样的修改,第二次上线。
+  后两轮 agent 在最后一次发布后撞到了 Claude 的用量上限,没有看到它们给用户的总结;上线是从 Ferry 的发布记录和网关的响应确认的。

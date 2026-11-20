@@ -50,6 +50,14 @@ jobs:
 
       - run: pnpm typecheck
 
+      # 密钥扫描(任务 3.1)的测试要用真实的 gitleaks;版本和本机 brew 装的一致,校验下载文件
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+          gitleaks version
+
       # 控制台(Vue + Element Plus)能构建出来;Ferry 在 /console/ 下提供构建结果
       - run: pnpm --filter @ferry/console build
 
@@ -58,3 +66,5 @@ jobs:
         run: pnpm test
         env:
           TEST_DATABASE_URL: postgres://ferry:ferry-ci@localhost:5432/ferry
+          # 找不到 gitleaks 时让密钥扫描的测试失败,而不是跳过
+          GITLEAKS_REQUIRED: "1"

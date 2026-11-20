@@ -231,13 +231,61 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
 
     it("代码里有密钥:发布被拦截,不会建任何资源", async () => {
       const { adapters, publish } = setup();
-      adapters.scanner.findings = [{ file: "config.js", detail: "疑似 API 密钥" }];
+      adapters.scanner.findings = [
+        { file: "src/db.ts", line: 3, rule: "postgres-connection-string-password", detail: "连接串里写了密码" },
+      ];
 
       const view = await publish("v1");
 
       expect(view.state).toBe("FAILED_FIXABLE");
       expect(view.error?.type).toBe("scan_failed");
-      expect(view.error?.logs).toContain("config.js");
+      expect(view.error?.logs).toContain("src/db.ts:3");
+      // 应用用了数据库:让 agent 改用 Ferry 注入的 DATABASE_URL
+      expect(view.error?.hint).toContain("process.env.DATABASE_URL");
+      expect(view.error?.hint).not.toContain("第三方 API key");
+      expect(adapters.platform.calls).toHaveLength(0);
+      // 带密钥的代码包不再保留
+      expect(await adapters.archives.read("ledger", view.version)).toBeUndefined();
+    });
+
+    it("Redis 等别的系统的连接串:不让 agent 换成 DATABASE_URL", async () => {
+      const { adapters, publish } = setup();
+      adapters.scanner.findings = [
+        { file: "src/cache.ts", line: 1, rule: "connection-string-password", detail: "连接串里写了密码" },
+      ];
+
+      const view = await publish("v1");
+
+      expect(view.error?.type).toBe("scan_failed");
+      expect(view.error?.hint).toContain("不要换成 DATABASE_URL");
+      expect(view.error?.hint).toContain("读不到时只关闭这个功能");
+    });
+
+    it("代码里有第三方密钥:提示改为读环境变量、读不到时关闭功能,并告诉用户", async () => {
+      const { adapters, publish } = setup();
+      adapters.scanner.findings = [
+        { file: "src/notify.ts", line: 2, rule: "dingtalk-robot-webhook", detail: "钉钉群机器人 webhook" },
+      ];
+
+      const view = await publish("v1");
+
+      expect(view.error?.type).toBe("scan_failed");
+      expect(view.error?.hint).toContain("读不到时只关闭这个功能");
+      expect(view.error?.hint).toContain("告诉用户");
+      expect(view.error?.hint).not.toContain("DATABASE_URL");
+    });
+
+    it("扫描本身出错:按平台问题失败,不放行,也不让 agent 改代码", async () => {
+      const { adapters, publish } = setup();
+      adapters.scanner.scan = async () => {
+        throw new Error("找不到 gitleaks");
+      };
+
+      const view = await publish("v1");
+
+      expect(view.state).toBe("FAILED");
+      expect(view.error?.type).toBe("internal_error");
+      expect(view.error?.hint).toContain("不要修改代码");
       expect(adapters.platform.calls).toHaveLength(0);
     });
 
@@ -395,6 +443,23 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
   });
 
   describe("回滚", () => {
+    it("要回滚到的版本里有密钥(有扫描之前上线的):回滚失败,线上不变", async () => {
+      const { adapters, service, publish } = setup();
+      const v1 = await publish("v1");
+      const v2 = await publish("v2");
+      adapters.scanner.findings = [{ file: "src/a.ts", line: 1, rule: "sk-api-key", detail: "API key" }];
+
+      const started = await service.rollback(alice, "ledger");
+      await service.settle(started.releaseId);
+
+      const view = await service.status(alice, started.releaseId);
+      expect(view.state).toBe("FAILED");
+      expect(view.error?.type).toBe("scan_failed");
+      expect(view.error?.message).toContain("回滚没有成功");
+      expect(adapters.platform.deployedVersion.get("app_2")).toBe(v2.version);
+      expect(await adapters.archives.read("ledger", v1.version)).toBeUndefined();
+    });
+
     it("回到上一个上线过的版本:只部署代码和检查,不迁移、不备份、不改可见范围", async () => {
       const { adapters, service, store, publish } = setup();
       const v1 = await publish("v1");
@@ -413,7 +478,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       expect(view.state).toBe("LIVE");
       expect(view.nextAction).toContain("数据库没有回滚");
       const release = await store.getRelease(started.releaseId);
-      expect(release?.history.map((h) => h.state)).toEqual(["PENDING", "BUILDING", "VERIFYING", "LIVE"]);
+      expect(release?.history.map((h) => h.state)).toEqual(["PENDING", "VALIDATING", "BUILDING", "VERIFYING", "LIVE"]);
       expect(adapters.platform.deployedVersion.get("app_2")).toBe(v1.version);
       expect(adapters.platform.calls.filter((c) => c.startsWith("runCommand"))).toHaveLength(migrationsBefore);
       expect(adapters.platform.calls.filter((c) => c.startsWith("backupDatabase"))).toHaveLength(backupsBefore);

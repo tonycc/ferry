@@ -24,8 +24,11 @@ export const STEP_ORDER = [
 
 export type StepState = (typeof STEP_ORDER)[number];
 
-/** 回滚只把之前上线过的代码重新部署并检查,不建资源、不迁移数据库 */
-export const ROLLBACK_STEP_ORDER = ["BUILDING", "VERIFYING"] as const satisfies readonly StepState[];
+/**
+ * 回滚只把之前上线过的代码重新部署并检查,不建资源、不迁移数据库。
+ * 也要先扫描密钥:要回滚到的版本可能是在有密钥扫描之前上线的
+ */
+export const ROLLBACK_STEP_ORDER = ["VALIDATING", "BUILDING", "VERIFYING"] as const satisfies readonly StepState[];
 
 export function stepOrder(kind: "publish" | "rollback"): readonly StepState[] {
   return kind === "rollback" ? ROLLBACK_STEP_ORDER : STEP_ORDER;
