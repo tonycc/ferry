@@ -16,9 +16,11 @@ export interface User {
  * 请求从哪个入口进来。每个入口只认一种凭据:
  * - mcp:只认个人令牌(agent 用)。
  * - api:个人令牌,或浏览器的登录 cookie;用 cookie 做修改操作时,还要求请求来自 Ferry 自己的页面。
+ * - console:只认浏览器的登录 cookie,不认个人令牌。用于应用密钥:密钥的值只能由员工本人在网页上填写,
+ *   不能经过 agent(agent 拿着个人令牌)。
  * 访问员工应用(登录网关)不走这里,见 gateway/gateway.ts。
  */
-export type Channel = "api" | "mcp";
+export type Channel = "api" | "mcp" | "console";
 
 export interface RequestLike {
   method: string;
@@ -59,6 +61,9 @@ export function createIdentity(options: IdentityOptions): IdentityResolver {
 
   return async (req, channel) => {
     const authorization = single(req.headers.authorization);
+    if (authorization && channel === "console") {
+      throw new UserError("forbidden", "这个操作只能由本人在 Ferry 控制台网页上完成,不能用个人令牌(agent)调用");
+    }
     if (authorization) {
       const token = authorization.match(/^Bearer\s+(\S+)$/i)?.[1];
       const userId = token && auth ? await auth.tokenUser(token) : undefined;
@@ -66,7 +71,7 @@ export function createIdentity(options: IdentityOptions): IdentityResolver {
       return user(userId);
     }
 
-    if (channel === "api") {
+    if (channel === "api" || channel === "console") {
       if (readCookies(req.headers, SESSION_COOKIE).length > 0) {
         const userId = auth ? await sessionUserFrom(req.headers, auth) : undefined;
         if (!userId) throw unauthenticated("登录已过期,请重新登录");

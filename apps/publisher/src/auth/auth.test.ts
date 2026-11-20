@@ -7,6 +7,7 @@ import type { OrgSnapshot } from "../org/snapshot";
 import { PublisherService } from "../service";
 import { storeCases, type StoreCase } from "../test/stores";
 import { Engine } from "../workflow/engine";
+import { SecretBox } from "../secrets";
 import { MemoryStore } from "../workflow/store";
 import { AuthService, TOKEN_PREFIX } from "./service";
 import { MemoryAuthStore, type AuthStore } from "./store";
@@ -170,6 +171,7 @@ function server(options: { devAuth?: boolean; adminIds?: string[] } = {}) {
     maxAppsPerUser: 5,
     publicUrl: "http://ferry.test",
     uploadTtlMs: 60_000,
+    secretBox: SecretBox.random(),
   });
   const auth = new AuthService(new MemoryAuthStore(), directory, adapters.notifier);
   const allowedOrigins = new Set(["http://ferry.test"]);
@@ -255,6 +257,47 @@ describe("HTTP 入口的身份", () => {
     const { token } = (await app.inject({ method: "POST", url: "/api/tokens", headers: { cookie, ...ORIGIN }, payload: {} })).json();
     const viaToken = await app.inject({ method: "POST", url: "/api/tokens", headers: { authorization: `Bearer ${token}` }, payload: {} });
     expect(viaToken.statusCode).toBe(403);
+  });
+
+  it("应用密钥只能用网页登录管理:个人令牌(agent)查、设、删都被拒绝;返回里没有值", async () => {
+    const { app, login, ORIGIN } = server();
+    const cookie = await login();
+    await app.inject({ method: "POST", url: "/api/apps/prepare", headers: { cookie, ...ORIGIN }, payload: { name: "ledger" } });
+    const base = "/api/apps/ledger/secrets";
+
+    const set = await app.inject({ method: "POST", url: base, headers: { cookie, ...ORIGIN }, payload: { name: "LLM_API_KEY", value: "sk-hidden-value" } });
+    expect(set.statusCode).toBe(200);
+    expect(set.json()).toEqual([{ name: "LLM_API_KEY", updatedAt: expect.any(String) }]);
+    expect(set.body).not.toContain("sk-hidden");
+    const list = await app.inject({ method: "GET", url: base, headers: { cookie } });
+    expect(list.json()).toEqual(set.json());
+    expect(list.body).not.toContain("sk-hidden");
+
+    // 员工应用里伪造的请求被拒绝
+    const forged = await app.inject({ method: "POST", url: base, headers: { cookie, origin: "http://evil.apps.test" }, payload: { name: "X", value: "y" } });
+    expect(forged.statusCode).toBe(403);
+
+    const { token } = (await app.inject({ method: "POST", url: "/api/tokens", headers: { cookie, ...ORIGIN }, payload: { label: "agent" } })).json();
+    const authorization = `Bearer ${token}`;
+    // 令牌本身可以用普通接口,但不能碰密钥
+    expect((await app.inject({ method: "GET", url: "/api/apps", headers: { authorization } })).statusCode).toBe(200);
+    const viaToken = [
+      await app.inject({ method: "GET", url: base, headers: { authorization } }),
+      await app.inject({ method: "POST", url: base, headers: { authorization }, payload: { name: "LLM_API_KEY", value: "from-agent" } }),
+      await app.inject({ method: "POST", url: `${base}/LLM_API_KEY/delete`, headers: { authorization } }),
+      // 同时带了 cookie 也不行
+      await app.inject({ method: "POST", url: base, headers: { authorization, cookie, ...ORIGIN }, payload: { name: "LLM_API_KEY", value: "from-agent" } }),
+    ];
+    for (const res of viaToken) {
+      expect(res.statusCode).toBe(403);
+      expect(res.json().message).toContain("控制台网页");
+    }
+
+    const bad = await app.inject({ method: "POST", url: base, headers: { cookie, ...ORIGIN }, payload: { name: "PORT", value: "1" } });
+    expect(bad.statusCode).toBe(400);
+    const deleted = await app.inject({ method: "POST", url: `${base}/LLM_API_KEY/delete`, headers: { cookie, ...ORIGIN } });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual([]);
   });
 
   it("关闭开发身份时,只带 x-ferry-user 请求头会被拒绝", async () => {

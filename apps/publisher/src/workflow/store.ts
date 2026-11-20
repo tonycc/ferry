@@ -13,7 +13,14 @@ export interface AppRecord {
   /** 访问域名,如 expense-tracker.apps.corp.example */
   host: string;
   /** 已在部署平台上创建的资源 ID;有值就不再重复创建(幂等) */
-  platform: { projectId?: string; appId?: string; databaseId?: string; domainAttached?: boolean };
+  platform: {
+    projectId?: string;
+    appId?: string;
+    databaseId?: string;
+    domainAttached?: boolean;
+    /** 上次注入应用环境变量的密钥名称;控制台删掉的密钥,下次发布时据此从环境变量里移除 */
+    secretNames?: string[];
+  };
   /** 当前线上运行的代码包版本 */
   liveVersion?: string;
   /** 有值表示已被管理员停用:服务已停止,不能访问,也不能发布 */
@@ -63,6 +70,16 @@ export interface UploadTicket {
   receivedAt?: Date;
 }
 
+/** 应用密钥(见 secrets.ts)。存储里只有密文 */
+export interface SecretRecord {
+  appName: string;
+  /** 环境变量名,如 LLM_API_KEY */
+  name: string;
+  ciphertext: string;
+  updatedAt: Date;
+  updatedBy: string;
+}
+
 export interface Store {
   getApp(name: string): Promise<AppRecord | undefined>;
   getAppByHost(host: string): Promise<AppRecord | undefined>;
@@ -77,7 +94,7 @@ export interface Store {
   saveApp(app: AppRecord): Promise<void>;
   /** 设置或清除停用状态 */
   setAppDisabled(name: string, disabled: AppRecord["disabled"]): Promise<void>;
-  /** 删除应用和它的全部发布记录、上传凭据(管理员删除应用时);之后应用名可以被重新使用 */
+  /** 删除应用和它的全部发布记录、上传凭据、密钥(管理员删除应用时);之后应用名可以被重新使用 */
   deleteApp(name: string): Promise<void>;
 
   getRelease(id: string): Promise<ReleaseRecord | undefined>;
@@ -90,6 +107,13 @@ export interface Store {
   saveUpload(ticket: UploadTicket): Promise<void>;
   getUploadByTokenHash(tokenHash: string): Promise<UploadTicket | undefined>;
   getUpload(appName: string, version: string): Promise<UploadTicket | undefined>;
+
+  /** 按名称排序 */
+  listSecrets(appName: string): Promise<SecretRecord[]>;
+  /** 新增或替换同名密钥 */
+  saveSecret(secret: SecretRecord): Promise<void>;
+  /** 返回是否删掉了 */
+  deleteSecret(appName: string, name: string): Promise<boolean>;
 }
 
 /**
@@ -100,6 +124,7 @@ export class MemoryStore implements Store {
   private apps = new Map<string, AppRecord>();
   private releases = new Map<string, ReleaseRecord>();
   private uploads = new Map<string, UploadTicket>();
+  private secrets = new Map<string, SecretRecord>();
 
   async getApp(name: string) {
     return copy(this.apps.get(name));
@@ -133,6 +158,7 @@ export class MemoryStore implements Store {
     this.apps.delete(name);
     for (const [id, release] of this.releases) if (release.appName === name) this.releases.delete(id);
     for (const [key, upload] of this.uploads) if (upload.appName === name) this.uploads.delete(key);
+    for (const [key, secret] of this.secrets) if (secret.appName === name) this.secrets.delete(key);
   }
 
   async setAppDisabled(name: string, disabled: AppRecord["disabled"]) {
@@ -169,6 +195,26 @@ export class MemoryStore implements Store {
   async getUpload(appName: string, version: string) {
     return copy([...this.uploads.values()].find((t) => t.appName === appName && t.version === version));
   }
+
+  async listSecrets(appName: string) {
+    return [...this.secrets.values()]
+      .filter((s) => s.appName === appName)
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map(copy);
+  }
+
+  async saveSecret(secret: SecretRecord) {
+    if (!this.apps.has(secret.appName)) throw new Error(`应用 ${secret.appName} 不存在`);
+    this.secrets.set(secretKey(secret.appName, secret.name), copy(secret));
+  }
+
+  async deleteSecret(appName: string, name: string) {
+    return this.secrets.delete(secretKey(appName, name));
+  }
+}
+
+function secretKey(appName: string, name: string): string {
+  return `${appName}\u0000${name}`;
 }
 
 function copy<T>(value: T): T {

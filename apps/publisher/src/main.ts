@@ -25,6 +25,7 @@ import { FileOrgSource } from "./adapters/org-file-source";
 import { MemoryOrgStore, type OrgStore } from "./org/store";
 import { OrgSync } from "./org/sync";
 import { MemoryStore, type Store } from "./workflow/store";
+import { SecretBox } from "./secrets";
 
 const config = loadConfig();
 
@@ -84,6 +85,12 @@ if (config.FERRY_PLATFORM === "dokploy") {
   });
 }
 
+// 应用密钥的加密密钥。用数据库时必须固定,否则重启后已保存的密钥都解不开
+if (config.DATABASE_URL && !config.SECRETS_KEY) {
+  throw new Error("设置了 DATABASE_URL 时必须设置 SECRETS_KEY(加密应用密钥用,生成:openssl rand -hex 32)");
+}
+const secretBox = config.SECRETS_KEY ? new SecretBox(config.SECRETS_KEY) : SecretBox.random();
+
 let store: Store;
 let orgStore: OrgStore = new MemoryOrgStore();
 let authStore: AuthStore = new MemoryAuthStore();
@@ -108,6 +115,7 @@ setInterval(() => void orgSync.run(), config.ORG_SYNC_MINUTES * 60_000).unref();
 const engine = new Engine(store, adapters, {
   maxFixAttempts: config.MAX_FIX_ATTEMPTS,
   appsUrlScheme: config.APPS_URL_SCHEME,
+  secretBox,
 });
 const service = new PublisherService(store, engine, adapters, {
   appsDomain: config.APPS_DOMAIN,
@@ -117,6 +125,7 @@ const service = new PublisherService(store, engine, adapters, {
   uploadTtlMs: config.UPLOAD_TTL_MINUTES * 60_000,
   archiveGraceMs: config.ARCHIVE_GRACE_HOURS * 3600_000,
   templates: new TemplateLibrary(),
+  secretBox,
 });
 
 const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));

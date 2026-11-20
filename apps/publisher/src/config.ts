@@ -58,6 +58,12 @@ const envSchema = z.object({
   SECRET_SCAN: z.enum(["gitleaks", "off"]).default("gitleaks"),
   /** gitleaks 可执行文件,默认在 PATH 里找(macOS 上 brew install gitleaks) */
   GITLEAKS_PATH: z.string().default("gitleaks"),
+  /**
+   * 加密应用密钥(控制台上给应用配置的第三方 API key 等,任务 3.8)用的密钥,至少 32 个字符,
+   * 生成:openssl rand -hex 32。设置了 DATABASE_URL 时必须设置,改了之后已保存的密钥都无法解密(要重新填写)。
+   * 只用内存存储时可以不设置,每次启动随机生成
+   */
+  SECRETS_KEY: z.string().min(32).optional(),
   /** fake:全部用内存假实现,本地开发用;dokploy:对接真实 Dokploy */
   FERRY_PLATFORM: z.enum(["fake", "dokploy"]).default("fake"),
   DOKPLOY_URL: z.string().optional(),

@@ -1,12 +1,15 @@
 import type { Adapters, Archive } from "../adapters/types";
 import { deployFailure, healthFailure, migrationFailure, scanFailure } from "./failures";
 import { isTerminal, stepOrder, type ReleaseState, type StepState } from "./states";
+import { RESERVED_ENV_NAMES, type SecretBox } from "../secrets";
 import type { AppRecord, ReleaseRecord, Store } from "./store";
 
 export interface EngineConfig {
   maxFixAttempts: number;
   /** 应用地址的协议,默认 https */
   appsUrlScheme?: "http" | "https";
+  /** 解密应用密钥用;不传时有密钥的应用发布会失败(只有不涉及密钥的测试可以不传) */
+  secretBox?: SecretBox;
 }
 
 type StepResult =
@@ -142,6 +145,7 @@ export class Engine {
         }
       }
       await platform.setEnv(app.platform.appId, { PORT: String(manifest.port) });
+      await this.injectSecrets(app);
 
       // 每次发布都确认域名指向清单里的端口、挂着登录网关(端口改了也能跟上;没有变化时平台什么都不做)
       await platform.attachDomain({ appId: app.platform.appId, host: app.host, port: manifest.port });
@@ -159,6 +163,8 @@ export class Engine {
 
     BUILDING: async (release) => {
       const app = await this.app(release);
+      // 回滚不经过 PROVISIONING,在部署前注入控制台上现在的密钥
+      if (release.kind === "rollback") await this.injectSecrets(app);
       const archive = await this.archive(release.appName, release.version);
       const result = await this.adapters.platform.deploy(this.appId(app), archive, { databaseId: app.platform.databaseId });
       if (!result.ok) {
@@ -202,6 +208,28 @@ export class Engine {
       return this.restoreLive(app, failure);
     },
   };
+
+  /**
+   * 把控制台上配置的密钥注入应用的环境变量,并移除上次注入、之后在控制台上删掉的。
+   * 可以重复执行。解密失败时抛出的错误不含密钥的值;密钥只进应用环境变量,不写进发布单
+   */
+  private async injectSecrets(app: AppRecord): Promise<void> {
+    const appId = this.appId(app);
+    const env: Record<string, string> = {};
+    for (const secret of await this.store.listSecrets(app.name)) {
+      if (!this.config.secretBox) throw new Error("没有配置 SECRETS_KEY,无法解密应用密钥");
+      env[secret.name] = this.config.secretBox.decrypt(app.name, secret.name, secret.ciphertext);
+    }
+    const names = Object.keys(env);
+    const previous = app.platform.secretNames ?? [];
+    const unset = previous.filter((name) => !(name in env) && !RESERVED_ENV_NAMES.has(name));
+    if (names.length > 0 || unset.length > 0) await this.adapters.platform.setEnv(appId, env, unset);
+    // 先写环境变量再记名称:两步之间进程重启,恢复后重跑一遍即可
+    if (names.length !== previous.length || names.some((name, i) => name !== previous[i])) {
+      app.platform.secretNames = names;
+      await this.store.saveApp(app);
+    }
+  }
 
   /** 新版本不可用时:有上一个可用版本就用保存的代码包把它重新部署回去(只回滚代码,不动数据库) */
   private async restoreLive(app: AppRecord, failure: Failure): Promise<Failure> {

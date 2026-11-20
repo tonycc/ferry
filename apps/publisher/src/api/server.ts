@@ -16,6 +16,7 @@ const prepareBody = z.object({ name: z.string() });
 const publishBody = z.object({ manifestYaml: z.string(), version: z.string().min(1) });
 const disableBody = z.object({ reason: z.string().max(500).optional() });
 const visibilityBody = z.object({ visibility: visibilitySchema });
+const secretBody = z.object({ name: z.string(), value: z.string() });
 const logsQuery = z.object({ lines: z.coerce.number().int().min(1).max(1000).optional() });
 
 export interface ServerOptions {
@@ -88,6 +89,22 @@ export function buildServer(
 
   app.post<{ Params: { name: string } }>("/api/apps/:name/unpublish", async (req) =>
     service.unpublish(await identity(req, "api"), req.params.name),
+  );
+
+  // ---- 应用密钥:只认浏览器登录(console 入口),个人令牌(agent)调不了,值只在网页上填写 ----
+
+  app.get<{ Params: { name: string } }>("/api/apps/:name/secrets", async (req) =>
+    service.listSecrets(await identity(req, "console"), req.params.name),
+  );
+
+  app.post<{ Params: { name: string } }>("/api/apps/:name/secrets", async (req) => {
+    const user = await identity(req, "console");
+    const { name, value } = secretBody.parse(req.body);
+    return service.setSecret(user, req.params.name, name, value);
+  });
+
+  app.post<{ Params: { name: string; secret: string } }>("/api/apps/:name/secrets/:secret/delete", async (req) =>
+    service.deleteSecret(await identity(req, "console"), req.params.name, req.params.secret),
   );
 
   app.post("/api/releases", async (req, reply) => {

@@ -71,7 +71,7 @@ function postgresCase(adminUrl: string, dbName: string): StoreCase {
       database = await openDatabase(testUrl.toString());
     },
     async reset() {
-      await requireDb().db.execute(sql`TRUNCATE uploads, releases, apps, org_users, org_departments, login_challenges, sessions, personal_tokens RESTART IDENTITY CASCADE`);
+      await requireDb().db.execute(sql`TRUNCATE app_secrets, uploads, releases, apps, org_users, org_departments, login_challenges, sessions, personal_tokens RESTART IDENTITY CASCADE`);
     },
     create: () => new PostgresStore(requireDb().db),
     createOrg: () => new PostgresOrgStore(requireDb().db),

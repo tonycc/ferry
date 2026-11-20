@@ -1,11 +1,11 @@
 import { fileURLToPath } from "node:url";
-import { asc, eq, notInArray } from "drizzle-orm";
+import { and, asc, eq, notInArray } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import type { Manifest, Visibility } from "@ferry/manifest";
 import { TERMINAL_STATES, type ReleaseState } from "../workflow/states";
-import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "../workflow/store";
+import type { AppRecord, ReleaseError, ReleaseRecord, SecretRecord, Store, UploadTicket } from "../workflow/store";
 import * as schema from "./schema";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../../drizzle", import.meta.url));
@@ -90,8 +90,9 @@ export class PostgresStore implements Store {
   }
 
   async deleteApp(name: string) {
-    // 发布记录和上传凭据引用了应用,先删它们;放在一个事务里,不会只删一半
+    // 发布记录、上传凭据和密钥引用了应用,先删它们;放在一个事务里,不会只删一半
     await this.db.transaction(async (tx) => {
+      await tx.delete(schema.appSecrets).where(eq(schema.appSecrets.appName, name));
       await tx.delete(schema.uploads).where(eq(schema.uploads.appName, name));
       await tx.delete(schema.releases).where(eq(schema.releases.appName, name));
       await tx.delete(schema.apps).where(eq(schema.apps.name, name));
@@ -173,6 +174,31 @@ export class PostgresStore implements Store {
       where: (t, { and, eq }) => and(eq(t.appName, appName), eq(t.version, version)),
     });
     return row && toUpload(row);
+  }
+
+  async listSecrets(appName: string): Promise<SecretRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.appSecrets)
+      .where(eq(schema.appSecrets.appName, appName))
+      .orderBy(asc(schema.appSecrets.name));
+    return rows.map((row) => ({ ...row }));
+  }
+
+  async saveSecret(secret: SecretRecord) {
+    const changes = { ciphertext: secret.ciphertext, updatedAt: secret.updatedAt, updatedBy: secret.updatedBy };
+    await this.db
+      .insert(schema.appSecrets)
+      .values({ appName: secret.appName, name: secret.name, ...changes })
+      .onConflictDoUpdate({ target: [schema.appSecrets.appName, schema.appSecrets.name], set: changes });
+  }
+
+  async deleteSecret(appName: string, name: string) {
+    const deleted = await this.db
+      .delete(schema.appSecrets)
+      .where(and(eq(schema.appSecrets.appName, appName), eq(schema.appSecrets.name, name)))
+      .returning({ name: schema.appSecrets.name });
+    return deleted.length > 0;
   }
 }
 

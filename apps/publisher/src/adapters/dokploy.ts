@@ -398,9 +398,11 @@ export class DokployPlatform implements DeployPlatform {
    * Dokploy 的 saveEnvironment 会整体覆盖全部变量,所以先读出原有的再合并。
    * 读出的内容里有数据库连接串等密钥,只在这里使用,不写日志、不放进报错。
    */
-  async setEnv(appId: string, env: Record<string, string>): Promise<void> {
+  async setEnv(appId: string, env: Record<string, string>, unset: string[] = []): Promise<void> {
     const app = await this.client.query<DokployApplication>("application.one", { applicationId: appId });
-    const merged = { ...parseEnv(app.env ?? ""), ...env };
+    const current = parseEnv(app.env ?? "");
+    for (const name of unset) delete current[name];
+    const merged = { ...current, ...env };
     await this.client.mutate("application.saveEnvironment", {
       applicationId: appId,
       env: formatEnv(merged),
