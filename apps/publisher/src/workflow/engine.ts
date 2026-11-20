@@ -1,4 +1,5 @@
 import type { Adapters, Archive } from "../adapters/types";
+import { memoryAuditLog, type AuditLog } from "../audit/log";
 import { deployFailure, healthFailure, migrationFailure, scanFailure } from "./failures";
 import { isTerminal, stepOrder, type ReleaseState, type StepState } from "./states";
 import { RESERVED_ENV_NAMES, type SecretBox } from "../secrets";
@@ -10,6 +11,8 @@ export interface EngineConfig {
   appsUrlScheme?: "http" | "https";
   /** 解密应用密钥用;不传时有密钥的应用发布会失败(只有不涉及密钥的测试可以不传) */
   secretBox?: SecretBox;
+  /** 审计日志,记录每次发布的结果;不传时记在内存里(只有测试可以不传) */
+  audit?: AuditLog;
 }
 
 type StepResult =
@@ -38,7 +41,11 @@ export class Engine {
     private readonly store: Store,
     private readonly adapters: Adapters,
     private readonly config: EngineConfig,
-  ) {}
+  ) {
+    this.audit = config.audit ?? memoryAuditLog();
+  }
+
+  private readonly audit: AuditLog;
 
   async run(releaseId: string): Promise<ReleaseRecord> {
     const release = await this.store.getRelease(releaseId);
@@ -248,6 +255,7 @@ export class Engine {
     await this.store.saveApp(app);
     release.url = `${this.config.appsUrlScheme ?? "https"}://${app.host}`;
     await this.transition(release, "LIVE");
+    await this.recordFinish(release);
     await this.adapters.notifier.notify(release.ownerId, `应用 ${app.name} 已发布: ${release.url}`);
   }
 
@@ -276,12 +284,24 @@ export class Engine {
     }
 
     await this.transition(release, next);
+    await this.recordFinish(release);
     // 发现了密钥的代码包不再保留:发布单已经结束,这个版本不会再被部署(回滚目标也一样,扫描不会通过)
     if (failure.type === "scan_failed") await this.adapters.archives.remove(release.appName, release.version);
     if (next === "FAILED") {
       const action = release.kind === "rollback" ? "回滚" : "发布";
       await this.adapters.notifier.notify(release.ownerId, `应用 ${release.appName} ${action}失败: ${failure.message}`);
     }
+  }
+
+  /** 审计日志:发布或回滚结束,由 Ferry 记录(发布单在应用被删除时会一起删掉,审计记录不会) */
+  private async recordFinish(release: ReleaseRecord): Promise<void> {
+    await this.audit.record(undefined, "release.finish", { name: release.appName, ownerId: release.ownerId }, {
+      releaseId: release.id,
+      kind: release.kind,
+      version: release.version,
+      state: release.state,
+      ...(release.error ? { errorType: release.error.type } : {}),
+    });
   }
 
   /** 这次发布之前,同一应用连续多少次以“可修复的失败”结束 */

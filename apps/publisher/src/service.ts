@@ -11,6 +11,8 @@ import { checkArchiveLayout, zipEntryNames } from "./zip";
 import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
 import { MAX_SECRETS_PER_APP, validateSecretName, validateSecretValue, type SecretBox } from "./secrets";
+import { memoryAuditLog, type AuditLog } from "./audit/log";
+import type { AuditAction } from "./audit/store";
 
 export interface ServiceConfig {
   /** 应用地址的协议,默认 https */
@@ -26,6 +28,8 @@ export interface ServiceConfig {
   templates?: TemplateLibrary;
   /** 加密应用密钥用;不传时不能保存密钥 */
   secretBox?: SecretBox;
+  /** 审计日志;不传时记在内存里(只有测试可以不传) */
+  audit?: AuditLog;
   now?: () => Date;
 }
 
@@ -107,6 +111,29 @@ export interface RollbackView extends ReleaseView {
   to: { version: string; publishedAt: string };
 }
 
+/** 管理员查看的一条审计记录 */
+export interface AuditEventView {
+  id: number;
+  at: string;
+  /** 为空表示 Ferry 自己(如发布结束) */
+  actorId?: string;
+  /** 操作当时的姓名 */
+  actorName?: string;
+  action: AuditAction;
+  appName?: string;
+  /** 应用当时的负责人 */
+  appOwnerId?: string;
+  /** 负责人现在的姓名;已不在组织架构里时没有 */
+  appOwnerName?: string;
+  detail: Record<string, unknown>;
+}
+
+export interface AuditPage {
+  events: AuditEventView[];
+  /** 还有更早的记录时,用它作为下一页的 before */
+  nextBefore?: number;
+}
+
 export interface AdminAppView extends AppView {
   ownerId: string;
   /** 负责人姓名;已不在组织架构里时为 ownerId */
@@ -124,13 +151,16 @@ export interface AdminAppView extends AppView {
 /** REST 和 MCP 共用的业务入口 */
 export class PublisherService {
   private readonly running = new Map<string, Promise<unknown>>();
+  private readonly audit: AuditLog;
 
   constructor(
     private readonly store: Store,
     private readonly engine: Engine,
     private readonly adapters: Adapters,
     private readonly config: ServiceConfig,
-  ) {}
+  ) {
+    this.audit = config.audit ?? memoryAuditLog();
+  }
 
   /**
    * 占用应用名(已是自己的应用则复用),并签发一个一次性的代码包上传地址。
@@ -171,6 +201,7 @@ export class PublisherService {
       if (!(await this.store.createApp(app))) {
         throw new UserError("conflict", `应用名 ${name} 已被其他人使用,请换一个名字`);
       }
+      await this.audit.record(user.id, "app.create", app);
     }
 
     // 令牌只在这里返回一次,库里只存它的哈希
@@ -259,6 +290,7 @@ export class PublisherService {
     if (releases.some((r) => !isTerminal(r.state))) {
       throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束`);
     }
+    const revived = app.unpublishedAt !== undefined;
     if (app.unpublishedAt) {
       // 重新发布已下线的应用:恢复它,数据库会重新启动,原来的数据还在
       app.unpublishedAt = undefined;
@@ -277,6 +309,11 @@ export class PublisherService {
       createdAt: new Date(),
     };
     await this.store.saveRelease(release);
+    await this.audit.record(user.id, "app.publish", app, {
+      releaseId: release.id,
+      version: release.version,
+      ...(revived ? { revived: true } : {}),
+    });
     this.schedule(release.id);
     const view = toView(release);
     if (app.visibilityPinned && manifest.visibility !== app.visibility) {
@@ -325,9 +362,11 @@ export class PublisherService {
   /** 负责人修改可见范围,立即生效(网关每个请求都按它判断);之后发布时不再用 app.yaml 里的值 */
   async setVisibility(user: User, appName: string, visibility: Visibility): Promise<AppView> {
     const app = await this.ownApp(user, appName);
+    const from = app.visibility;
     app.visibility = visibility;
     app.visibilityPinned = true;
     await this.store.saveApp(app);
+    if (from !== visibility) await this.audit.record(user.id, "app.visibility", app, { from, to: visibility });
     return toAppView(app, this.appUrl(app.host));
   }
 
@@ -376,6 +415,11 @@ export class PublisherService {
       createdAt: new Date(),
     };
     await this.store.saveRelease(release);
+    await this.audit.record(user.id, "app.rollback", app, {
+      releaseId: release.id,
+      fromVersion: current.version,
+      toVersion: target.version,
+    });
     this.schedule(release.id);
     return {
       ...toView(release),
@@ -408,6 +452,8 @@ export class PublisherService {
       MAX_SECRETS_PER_APP,
     );
     if (!saved) throw new UserError("quota_exceeded", `每个应用最多 ${MAX_SECRETS_PER_APP} 个密钥`);
+    // 只记名称,不记值
+    await this.audit.record(user.id, "secret.set", app, { name });
     return this.listSecrets(user, appName);
   }
 
@@ -415,6 +461,7 @@ export class PublisherService {
   async deleteSecret(user: User, appName: string, name: string): Promise<SecretView[]> {
     const app = await this.ownApp(user, appName);
     if (!(await this.store.deleteSecret(app.name, name))) throw new UserError("not_found", `密钥 ${name} 不存在`);
+    await this.audit.record(user.id, "secret.delete", app, { name });
     return this.listSecrets(user, appName);
   }
 
@@ -431,9 +478,12 @@ export class PublisherService {
       throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再下线`);
     }
 
-    // 先标记下线,访问立即被拒绝;再删部署平台上的资源
+    // 先标记下线,访问立即被拒绝;再删部署平台上的资源。
+    // 中途出错后再调用一次会把剩下的做完,那次不再记录(第一次已经记了)
+    const firstAttempt = !app.unpublishedAt;
     app.unpublishedAt = new Date();
     await this.store.saveApp(app);
+    if (firstAttempt) await this.audit.record(user.id, "app.unpublish", app);
     if (app.platform.appId) await this.adapters.platform.removeApp(app.platform.appId);
     if (app.platform.databaseId) await this.adapters.platform.stopDatabase(app.platform.databaseId);
     app.platform = { ...app.platform, appId: undefined, domainAttached: false };
@@ -477,6 +527,7 @@ export class PublisherService {
     if (app.disabled) return;
 
     await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason });
+    await this.audit.record(admin.id, "app.disable", app, reason ? { reason } : {});
     if (app.platform.appId) await this.adapters.platform.stopApp(app.platform.appId);
     await this.adapters.notifier.notify(
       app.ownerId,
@@ -501,6 +552,8 @@ export class PublisherService {
     if (await running()) {
       throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
     }
+    // 在开始改动之前记录:删除要十几秒,中途失败时应用已经被停用、部分资源已经删掉
+    await this.audit.record(admin.id, "app.delete", app);
     // 先标记为停用:删除要十几秒,这期间负责人不能再发布(已下线的应用本来可以随时重新发布)。
     // 标记前刚好开始的发布,会在下一步检查到停用后自行终止;这里再查一次,有就先不删
     if (!app.disabled) {
@@ -537,6 +590,41 @@ export class PublisherService {
       .catch((err: unknown) => console.error(`应用 ${app.name} 已删除,但通知负责人失败:`, err));
   }
 
+  /** 审计日志,从新到旧分页。可以按应用名、操作人、操作类型筛选 */
+  async listAudit(
+    admin: User,
+    query: { app?: string; actor?: string; action?: AuditAction; before?: number; limit?: number } = {},
+  ): Promise<AuditPage> {
+    requireAdmin(admin);
+    const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
+    const rows = await this.audit.list({
+      appName: query.app,
+      actorId: query.actor,
+      action: query.action,
+      beforeId: query.before,
+      limit: limit + 1,
+    });
+    const page = rows.slice(0, limit);
+    const names = new Map<string, string | undefined>();
+    for (const ownerId of new Set(page.map((e) => e.appOwnerId).filter((id): id is string => !!id))) {
+      names.set(ownerId, await this.adapters.directory.nameOf(ownerId));
+    }
+    return {
+      events: page.map((e) => ({
+        id: e.id,
+        at: e.at.toISOString(),
+        actorId: e.actorId,
+        actorName: e.actorName,
+        action: e.action,
+        appName: e.appName,
+        appOwnerId: e.appOwnerId,
+        appOwnerName: e.appOwnerId ? names.get(e.appOwnerId) : undefined,
+        detail: e.detail,
+      })),
+      nextBefore: rows.length > limit ? page.at(-1)?.id : undefined,
+    };
+  }
+
   async enableApp(admin: User, appName: string): Promise<void> {
     requireAdmin(admin);
     const app = await this.store.getApp(appName);
@@ -544,6 +632,7 @@ export class PublisherService {
     if (!app.disabled) return;
 
     await this.store.setAppDisabled(app.name, undefined);
+    await this.audit.record(admin.id, "app.enable", app);
     if (app.platform.appId && app.liveVersion) await this.adapters.platform.startApp(app.platform.appId);
     await this.adapters.notifier.notify(app.ownerId, `应用 ${app.name} 已恢复`);
   }

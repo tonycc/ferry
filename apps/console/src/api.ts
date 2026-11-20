@@ -94,6 +94,42 @@ export interface AdminAppView extends AppView {
   unpublishedAt?: string;
 }
 
+export type AuditAction =
+  | "app.create"
+  | "app.publish"
+  | "app.rollback"
+  | "release.finish"
+  | "app.unpublish"
+  | "app.visibility"
+  | "secret.set"
+  | "secret.delete"
+  | "app.disable"
+  | "app.enable"
+  | "app.delete"
+  | "token.create"
+  | "token.revoke";
+
+/** 一条审计记录 */
+export interface AuditEvent {
+  id: number;
+  at: string;
+  /** 为空表示 Ferry 自己 */
+  actorId?: string;
+  /** 操作当时的姓名 */
+  actorName?: string;
+  action: AuditAction;
+  appName?: string;
+  /** 应用当时的负责人 */
+  appOwnerId?: string;
+  appOwnerName?: string;
+  detail: Record<string, unknown>;
+}
+
+export interface AuditPage {
+  events: AuditEvent[];
+  nextBefore?: number;
+}
+
 /** 应用密钥:只有名称和更新时间,值保存后不再返回 */
 export interface SecretView {
   name: string;

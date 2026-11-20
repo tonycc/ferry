@@ -43,6 +43,13 @@
       "when": 1795181735434,
       "tag": "0005_app_secrets",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795184798847,
+      "tag": "0006_audit_log",
+      "breakpoints": true
     }
   ]
 }

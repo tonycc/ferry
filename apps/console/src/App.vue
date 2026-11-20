@@ -24,6 +24,7 @@ async function logout() {
         <el-menu-item index="/apps">我的应用</el-menu-item>
         <el-menu-item index="/tokens">个人令牌</el-menu-item>
         <el-menu-item v-if="me?.isAdmin" index="/admin">管理全部应用</el-menu-item>
+        <el-menu-item v-if="me?.isAdmin" index="/audit">审计日志</el-menu-item>
       </el-menu>
       <div class="user" v-if="me">
         <span>{{ me.name }}</span>
