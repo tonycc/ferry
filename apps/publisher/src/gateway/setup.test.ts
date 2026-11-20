@@ -79,4 +79,21 @@ describe("setupGateway", () => {
     await service.ensureDomains();
     expect(ports).toEqual([8080]);
   });
+
+  it("把网关接入应用网络失败时重试;Traefik 管理接口开着时记一条错误日志提醒", async () => {
+    const { adapters, service, log, logs } = await setup();
+    let calls = 0;
+    adapters.platform.ensureGatewayNetworks = async () => {
+      if (++calls === 1) throw new Error("schedule failed");
+      return { networks: 3, warnings: ["Traefik 的管理接口开着"] };
+    };
+    const retries: (() => void)[] = [];
+    expect(await setupGateway(adapters.platform, service, "http://ferry/authz", log, { schedule: (retry) => retries.push(retry) })).toBe(false);
+    expect(retries).toHaveLength(1);
+
+    expect(await setupGateway(adapters.platform, service, "http://ferry/authz", log, { schedule: () => {} })).toBe(true);
+    expect(logs.some((l) => l.level === "info" && l.message.includes("接入了 3 个应用网络"))).toBe(true);
+    expect(logs.at(-1)).toEqual({ level: "error", message: "Traefik 的管理接口开着" });
+  });
 });
+

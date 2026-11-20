@@ -46,6 +46,13 @@ export interface DokployPlatformOptions {
    * null 表示不限制。超出内存上限的容器会被系统杀掉并重启;CPU 只会被限速
    */
   appLimits?: ResourceLimits | null;
+  /**
+   * 网络隔离(任务 3.2):每个应用和它的数据库放在自己的网络 ferry-<应用名> 里,不接入 dokploy-network,
+   * 连不到 Dokploy、别的应用和别的应用的数据库。Traefik 接入每个应用的网络来转发请求。默认开启
+   */
+  isolateApps?: boolean;
+  /** Dokploy 的 Traefik 容器名 */
+  traefikContainer?: string;
   databaseLimits?: ResourceLimits | null;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
@@ -96,6 +103,8 @@ interface DokployEnvironment {
 interface DokployPostgres {
   postgresId: string;
   appName: string;
+  networkIds?: string[] | null;
+  detachDokployNetwork?: boolean;
   databaseName: string;
   databaseUser: string;
   databasePassword: string;
@@ -119,6 +128,13 @@ interface DokployServiceTask {
 
 function isActuallyRunning(task: DokployServiceTask): boolean {
   return task.currentState.startsWith("Running");
+}
+
+const NETWORK_PREFIX = "ferry-";
+
+/** 应用自己的网络名 */
+function appNetworkName(name: string): string {
+  return `${NETWORK_PREFIX}${name}`;
 }
 
 /** 部署平台上已经没有这个资源(删除时可以当作已经删掉) */
@@ -160,8 +176,16 @@ interface ScheduleRun {
 
 interface DokployApplication {
   applicationId: string;
+  /** Ferry 创建时传的名字(就是 Ferry 的应用名);appName 是 Dokploy 加了后缀的 */
+  name: string;
   appName: string;
   env: string | null;
+  networkIds?: string[] | null;
+}
+
+interface DokployNetwork {
+  networkId: string;
+  name: string;
 }
 
 interface DokployDomain {
@@ -196,6 +220,8 @@ export class DokployPlatform implements DeployPlatform {
   private readonly backupKeep: number;
   private readonly gatewayMiddleware: string | null;
   private readonly appLimits: ResourceLimits | null;
+  private readonly isolateApps: boolean;
+  private readonly traefikContainer: string;
   private readonly databaseLimits: ResourceLimits | null;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => Date;
@@ -217,6 +243,9 @@ export class DokployPlatform implements DeployPlatform {
     this.backupKeep = Math.max(1, Math.floor(options.backupKeep ?? 5));
     this.gatewayMiddleware = options.gatewayMiddleware === undefined ? GATEWAY_MIDDLEWARE : options.gatewayMiddleware;
     this.appLimits = options.appLimits ?? null;
+    this.isolateApps = options.isolateApps ?? true;
+    this.traefikContainer = options.traefikContainer ?? "dokploy-traefik";
+    if (!SAFE_NAME.test(this.traefikContainer)) throw new Error(`Traefik 容器名不合法: ${this.traefikContainer}`);
     this.databaseLimits = options.databaseLimits ?? null;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? (() => new Date());
@@ -280,18 +309,17 @@ export class DokployPlatform implements DeployPlatform {
         })
       ).postgresId;
 
-    // 每次都设一遍资源上限;已经在运行的数据库要等下次重新启动(下线后重新发布)才生效
-    await this.client.mutate("postgres.update", { postgresId, ...limitFields(this.databaseLimits) });
+    // 每次都设一遍资源上限;已经在运行的数据库要等下次重新启动才生效。
+    // 网络:新建的数据库直接放进应用自己的网络;已有的(隔离功能上线前建的)不在这里挪,
+    // 由 deploy 和应用一起挪,免得线上的旧版本连不上数据库
+    const network = this.isolateApps && !existing ? await this.appNetworkId(input.name) : undefined;
+    await this.client.mutate("postgres.update", {
+      postgresId,
+      ...limitFields(this.databaseLimits),
+      ...(network === undefined ? {} : { networkIds: [network], detachDokployNetwork: true }),
+    });
     let db = await this.postgres(postgresId);
-    if (db.applicationStatus !== "done") {
-      try {
-        await this.client.mutate("postgres.deploy", { postgresId });
-      } catch (err) {
-        // Dokploy 只等 45 秒;机器忙的时候新数据库启动得慢,接口报错但容器随后会起来(实测)。再等一会儿
-        if (!(await this.waitUntilRunning(db.appName))) throw err;
-      }
-      db = await this.postgres(postgresId);
-    }
+    if (db.applicationStatus !== "done") db = await this.startDatabase(db);
     const user = encodeURIComponent(db.databaseUser);
     const password = encodeURIComponent(db.databasePassword);
     return {
@@ -392,9 +420,33 @@ export class DokployPlatform implements DeployPlatform {
    *    这时执行迁移、健康检查,可能落在旧容器上,把旧版本误判为新版本可用。
    *    所以要等到:一个上传前没有的容器实际在运行,并且上传前的容器都已不再运行。
    */
-  async deploy(appId: string, archive: Archive): Promise<CommandResult> {
+  async deploy(appId: string, archive: Archive, options: { databaseId?: string } = {}): Promise<CommandResult> {
     const deadline = Date.now() + this.deployTimeoutMs;
-    const { appName } = await this.client.query<DokployApplication>("application.one", { applicationId: appId });
+    const app = await this.client.query<DokployApplication>("application.one", { applicationId: appId });
+    const { appName, name } = app;
+
+    // 网络隔离分几步,任何一步失败时线上的旧版本都还能用:
+    // 1. 建好应用的网络,先把 Traefik 接进去(network.create 当场就建出 Docker 网络,实测),接不上就到此为止;
+    // 2. 数据库还没在这个网络里的,先让它同时在新旧两个网络里(旧版本还在旧网络上,照样连得上);
+    // 3. 部署新版本到应用的网络;4. 新版本跑起来以后,数据库才离开 dokploy-network
+    let network: string | undefined;
+    if (this.isolateApps) {
+      network = await this.appNetworkId(name);
+      const problem = await this.ensureTraefikOn([appNetworkName(name)]);
+      if (problem) return { ok: false, reason: "platform", logs: problem };
+      if (options.databaseId) {
+        const db = await this.postgres(options.databaseId);
+        if (!(db.networkIds ?? []).includes(network)) {
+          await this.client.mutate("postgres.update", {
+            postgresId: db.postgresId,
+            networkIds: [...(db.networkIds ?? []), network],
+            detachDokployNetwork: false,
+          });
+          await this.startDatabase(db);
+        }
+      }
+    }
+
     let before = await this.deployments(appId);
     while (before.some((d) => d.status === "running")) {
       if (Date.now() > deadline) return timeout("之前的部署一直没有结束");
@@ -405,8 +457,15 @@ export class DokployPlatform implements DeployPlatform {
     // 上传前已有的容器(不论状态),之后出现的才算这次部署的新容器
     const oldTasks = new Set((await this.tasks(appName)).map((t) => t.containerId));
 
-    // 每次部署前都设一遍资源上限:已有的应用和调整过的配置,在下次发布或回滚时生效
-    await this.client.mutate("application.update", { applicationId: appId, ...limitFields(this.appLimits) });
+    // 每次部署前都设一遍资源上限和网络:已有的应用和调整过的配置,在下次发布或回滚时生效。
+    // 管理员另外加的网络保留
+    await this.client.mutate("application.update", {
+      applicationId: appId,
+      ...limitFields(this.appLimits),
+      ...(network === undefined
+        ? {}
+        : { networkIds: [...new Set([...(app.networkIds ?? []), network])], detachDokployNetwork: true }),
+    });
 
     const form = new FormData();
     form.set("applicationId", appId);
@@ -415,7 +474,16 @@ export class DokployPlatform implements DeployPlatform {
 
     for (;;) {
       const current = (await this.deployments(appId)).find((d) => !seen.has(d.deploymentId));
-      if (current?.status === "done") return this.waitForNewTask(appId, appName, oldTasks, deadline);
+      if (current?.status === "done") {
+        const result = await this.waitForNewTask(appId, appName, oldTasks, deadline);
+        // 新版本跑起来了,数据库可以离开 dokploy-network 了。失败只记日志:应用已经可用,下次部署再试
+        if (result.ok && network !== undefined && options.databaseId) {
+          await this.detachDatabase(options.databaseId).catch((err: Error) =>
+            console.error(`数据库 ${options.databaseId} 离开 dokploy-network 失败,下次部署再试: ${err.message}`),
+          );
+        }
+        return result;
+      }
       if (current?.status === "error") {
         const logs = await this.client.query<string>("deployment.readLogs", {
           deploymentId: current.deploymentId,
@@ -616,6 +684,149 @@ export class DokployPlatform implements DeployPlatform {
     await this.client.mutate("project.remove", { projectId }).catch((err: unknown) => {
       if (!isNotFound(err)) throw err;
     });
+  }
+
+  /**
+   * 把 Traefik 接入所有应用网络(Ferry 启动时和之后定时调用)。直接 docker network connect 的接入
+   * 不记录在 Dokploy 里:Traefik 容器被重建(升级 Dokploy、改 Traefik 设置)后会丢,应用就全成了 502。
+   * 重启容器不会丢(实测)。返回需要提醒管理员的问题
+   */
+  async ensureGatewayNetworks(appNames: string[]): Promise<{ networks: number; warnings: string[] }> {
+    const warnings: string[] = [];
+    // Traefik 接入了每个应用的网络,它的管理接口(8080)对所有应用都可见;应在 traefik.yml 里关掉 api.insecure
+    const config = await this.client.query<string>("settings.readTraefikConfig", {}).catch(() => "");
+    if (/^\s*insecure:\s*true/m.test(config)) {
+      warnings.push("Traefik 的管理接口开着(traefik.yml 里 api.insecure: true),所有应用都能读到它的路由配置。请关掉,见 docs/dokploy-findings.md");
+    }
+    if (!this.isolateApps) return { networks: 0, warnings };
+    // 只接 Ferry 自己的应用的网络(按应用记录算名字),不按名字前缀去接别人建的网络
+    const wanted = new Set(appNames.map(appNetworkName));
+    const names = (await this.client.query<DokployNetwork[]>("network.all", {})).map((n) => n.name).filter((n) => wanted.has(n));
+    const problem = await this.ensureTraefikOn(names);
+    if (problem) throw new Error(problem);
+    return { networks: names.length, warnings };
+  }
+
+  /** 删除应用的网络(管理员删除应用时,在删掉应用和数据库之后):先把 Traefik 断开,再删。已经删掉的不报错 */
+  async deleteAppNetwork(name: string): Promise<void> {
+    const network = (await this.client.query<DokployNetwork[]>("network.all", {})).find((n) => n.name === appNetworkName(name));
+    if (!network) return;
+    const net = appNetworkName(name);
+    if (!SAFE_NAME.test(net)) throw new Error(`网络名不合法: ${net}`);
+    const script = [
+      "set -eu",
+      `if docker network inspect ${net} >/dev/null 2>&1; then`,
+      `  if docker inspect ${this.traefikContainer} --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | tr ' ' '\n' | grep -qx ${net}; then`,
+      `    docker network disconnect ${net} ${this.traefikContainer}`,
+      "  fi",
+      "fi",
+      `echo "已断开 ${net}"`,
+    ].join("\n");
+    const run = await this.runOnce({
+      name: `${BACKUP_SCHEDULE_PREFIX}net-${this.now().getTime()}`,
+      cronExpression: NEVER,
+      command: "ferry-network",
+      script,
+      shellType: "bash",
+      scheduleType: "dokploy-server",
+      enabled: false,
+    });
+    if (run.status !== "done") {
+      console.error(`断开 Traefik 和网络 ${net} 失败:\n${run.logs}`);
+      throw new Error("删除应用的网络失败,请查看 Ferry 的日志后重试");
+    }
+    await this.client.mutate("network.remove", { networkId: network.networkId }).catch((err: unknown) => {
+      if (!isNotFound(err)) throw err;
+    });
+  }
+
+  /** 应用网络的 ID:按名称找,没有就新建(Dokploy 只建记录,部署时才真正建出 Docker 网络) */
+  private async appNetworkId(name: string): Promise<string> {
+    const netName = appNetworkName(name);
+    const existing = (await this.client.query<DokployNetwork[]>("network.all", {})).find((n) => n.name === netName);
+    if (existing) return existing.networkId;
+    try {
+      const created = await this.client.mutate<DokployNetwork>("network.create", {
+        name: netName,
+        driver: "overlay",
+        attachable: true,
+        internal: false,
+      });
+      return created.networkId;
+    } catch (err) {
+      // Docker 里已经有同名网络(比如上次删到一半留下的):Dokploy 建不了(400),把它导入成记录
+      if (!(err instanceof DokployError) || err.status !== 400) throw err;
+      await this.client.mutate("network.import", { names: [netName] });
+      const imported = (await this.client.query<DokployNetwork[]>("network.all", {})).find((n) => n.name === netName);
+      if (!imported) throw err;
+      return imported.networkId;
+    }
+  }
+
+  /**
+   * 确认 Traefik 接入了这些网络,缺的才去服务器上接(先用接口查一下 Traefik 的网络,不用每次都跑脚本)。
+   * 有问题时返回说明
+   */
+  private async ensureTraefikOn(networks: string[]): Promise<string | undefined> {
+    if (networks.length === 0) return undefined;
+    const config = await this.client.query<{ NetworkSettings?: { Networks?: Record<string, unknown> } }>("docker.getConfig", {
+      containerId: this.traefikContainer,
+    });
+    const joined = new Set(Object.keys(config.NetworkSettings?.Networks ?? {}));
+    const missing = networks.filter((n) => !joined.has(n));
+    if (missing.length === 0) return undefined;
+    return this.connectTraefik(missing);
+  }
+
+  /** 启动(或为了换网络重新部署)数据库,等它运行起来,返回最新的记录 */
+  private async startDatabase(db: DokployPostgres): Promise<DokployPostgres> {
+    try {
+      await this.client.mutate("postgres.deploy", { postgresId: db.postgresId });
+    } catch (err) {
+      // Dokploy 只等 45 秒;机器忙的时候数据库启动得慢,接口报错但容器随后会起来(实测)。再等一会儿
+      if (!(await this.waitUntilRunning(db.appName))) throw err;
+    }
+    return this.postgres(db.postgresId);
+  }
+
+  /** 应用的新版本跑起来以后:数据库离开 dokploy-network(保留它的其他网络) */
+  private async detachDatabase(databaseId: string): Promise<void> {
+    const db = await this.postgres(databaseId);
+    if (db.detachDokployNetwork === true) return;
+    await this.client.mutate("postgres.update", {
+      postgresId: databaseId,
+      networkIds: db.networkIds ?? [],
+      detachDokployNetwork: true,
+    });
+    await this.startDatabase(db);
+  }
+
+  /** 在服务器上把 Traefik 接入这些网络(已经接入的跳过)。有问题时返回说明,没问题返回 undefined */
+  private async connectTraefik(networks: string[]): Promise<string | undefined> {
+    for (const net of networks) if (!SAFE_NAME.test(net)) return `网络名不合法: ${net}`;
+    const missing = `echo "网络 $n 不存在"; exit 1`;
+    const script = [
+      "set -eu",
+      `T=${this.traefikContainer}`,
+      `for n in ${networks.join(" ")}; do`,
+      `  docker network inspect "$n" >/dev/null 2>&1 || { ${missing}; }`,
+      `  if docker inspect "$T" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | tr ' ' '\n' | grep -qx "$n"; then continue; fi`,
+      '  docker network connect "$n" "$T"',
+      '  echo "已把 $T 接入 $n"',
+      "done",
+    ].join("\n");
+    const run = await this.runOnce({
+      name: `${BACKUP_SCHEDULE_PREFIX}net-${this.now().getTime()}`,
+      cronExpression: NEVER,
+      command: "ferry-network",
+      script,
+      shellType: "bash",
+      scheduleType: "dokploy-server",
+      enabled: false,
+    });
+    if (run.status === "done") return undefined;
+    console.error(`把 Traefik 接入应用网络失败:\n${run.logs}`);
+    return "部署平台:把网关接入应用的网络失败,请联系平台管理员";
   }
 
   private async defaultEnvironment(projectId: string): Promise<DokployEnvironment> {

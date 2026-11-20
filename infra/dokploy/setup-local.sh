@@ -101,13 +101,19 @@ if ! in_vm 'test -f /etc/dokploy/traefik/traefik.yml'; then
   exit 1
 fi
 
+# 关掉 Traefik 的管理接口(Dokploy 默认 api.insecure: true,在容器的 8080 端口)。网络隔离后 Traefik 接入了
+# 每个应用的网络,不关的话所有应用都能读到全部路由配置。Dokploy 自己不依赖它(实测)
+echo "== 关闭 Traefik 管理接口"
+in_vm "sed -i 's/^\\([[:space:]]*\\)insecure: true/\\1insecure: false/' /etc/dokploy/traefik/traefik.yml"
+
 # 和官方脚本不同:先接默认的 bridge 网络,再接入 dokploy-network。
 # Docker Desktop 不会把端口转发给主网络是 Swarm overlay 的容器,直接接 dokploy-network 的话
 # 从 macOS 访问 80、443 会一直没有响应。
 # 注意:如果在 Dokploy 管理页面里重建了 Traefik,它会回到官方的网络设置,需要重新运行本脚本。
 echo "== 启动 dokploy-traefik"
 if docker ps -a --format '{{.Names}}' | grep -qx dokploy-traefik; then
-  docker start dokploy-traefik >/dev/null
+  # 已经接着 overlay 网络,直接启动的话端口转发会失效,见 restart-traefik-local.sh
+  "$(dirname "$0")/restart-traefik-local.sh"
 else
   docker run -d \
     --name dokploy-traefik \

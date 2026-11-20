@@ -95,8 +95,12 @@ export class FakePlatform implements DeployPlatform {
     this.env.set(appId, { ...this.env.get(appId), ...env });
   }
 
-  async deploy(appId: string, archive: Archive): Promise<CommandResult> {
+  /** 每次部署带的数据库 ID(网络隔离时数据库要和应用一起挪,回滚也要带) */
+  readonly deployedWithDatabase: (string | undefined)[] = [];
+
+  async deploy(appId: string, archive: Archive, options: { databaseId?: string } = {}): Promise<CommandResult> {
     this.calls.push(`deploy:${archive.version}`);
+    this.deployedWithDatabase.push(options.databaseId);
     const content = archive.zip.toString("latin1");
     if ([...this.failDeployMarkers].some((marker) => content.includes(marker))) {
       return { ok: false, reason: this.failDeployReason, logs: "error: build failed\nnpm ERR! missing script: build" };
@@ -144,6 +148,14 @@ export class FakePlatform implements DeployPlatform {
   async deleteDatabase(databaseId: string): Promise<void> {
     this.calls.push(`deleteDatabase:${databaseId}`);
     for (const [name, db] of this.databases) if (db.id === databaseId) this.databases.delete(name);
+  }
+
+  async ensureGatewayNetworks(appNames: string[]): Promise<{ networks: number; warnings: string[] }> {
+    return { networks: appNames.length, warnings: [] };
+  }
+
+  async deleteAppNetwork(name: string): Promise<void> {
+    this.calls.push(`deleteAppNetwork:${name}`);
   }
 
   async deleteProject(projectId: string): Promise<void> {

@@ -479,6 +479,8 @@ export class PublisherService {
       app.platform = { ...app.platform, databaseId: undefined };
       await this.store.saveApp(app);
     }
+    // 应用和数据库都删掉后才能删它们的网络;网络按应用名找,重试时已经删掉的不报错
+    await platform.deleteAppNetwork(app.name);
     if (app.platform.projectId) {
       await platform.deleteProject(app.platform.projectId);
       app.platform = { ...app.platform, projectId: undefined };
@@ -539,6 +541,11 @@ export class PublisherService {
     const app = await this.store.getAppByHost(host);
     if (!app || app.unpublishedAt) return undefined;
     return app;
+  }
+
+  /** 全部应用的名字(网关要接入它们的网络;下线的应用网络还在,数据库在里面) */
+  async allAppNames(): Promise<string[]> {
+    return (await this.store.listApps()).map((app) => app.name);
   }
 
   /** 网关用:应用当前的健康检查路径(最近一次发布的清单里的) */

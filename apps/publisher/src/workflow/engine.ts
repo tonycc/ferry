@@ -169,7 +169,7 @@ export class Engine {
     BUILDING: async (release) => {
       const app = await this.app(release);
       const archive = await this.archive(release.appName, release.version);
-      const result = await this.adapters.platform.deploy(this.appId(app), archive);
+      const result = await this.adapters.platform.deploy(this.appId(app), archive, { databaseId: app.platform.databaseId });
       if (!result.ok) {
         const failure: Failure = { kind: "fail", ...deployFailure(result.reason, release.manifest), logs: result.logs };
         // 启动即崩溃时新镜像已经替换了线上版本(Swarm 自己的回滚用的是同一个镜像标签,救不回来),
@@ -216,7 +216,7 @@ export class Engine {
   private async restoreLive(app: AppRecord, failure: Failure): Promise<Failure> {
     if (!app.liveVersion) return failure;
     const previous = await this.archive(app.name, app.liveVersion);
-    const rollback = await this.adapters.platform.deploy(this.appId(app), previous);
+    const rollback = await this.adapters.platform.deploy(this.appId(app), previous, { databaseId: app.platform.databaseId });
     if (!rollback.ok) {
       return {
         ...failure,

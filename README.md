@@ -27,6 +27,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 组织架构与“本部门可见”判定(同部门或上级部门) | 已实现,有测试。组织架构定时从数据源同步(本地用 `ORG_FILE` 指向的文件,示例 `infra/dev-org.json`),存进 PostgreSQL,重启后直接恢复;有问题的快照整份拒绝。钉钉数据源待 P5 |
 | 手动回滚和下线(`rollback_app`、`unpublish_app`) | 已实现,有测试,在本机 Dokploy 上端到端验证过。数据不自动删除,管理员在管理页上手动彻底删除(任务 2.12) |
 | 控制台(`/console/`,Vue 3 + Element Plus) | 已实现,在本机 Dokploy 上用浏览器验证过:我的应用、应用详情(发布历史和失败日志、运行日志、修改可见范围、回滚、下线)、个人令牌、管理全部应用。登录页仍是 Ferry 直接提供的普通网页 |
+| 网络隔离(每个应用和数据库在自己的网络里,连不到 Dokploy 和别的应用) | 已实现,在本机 Dokploy 上按协议实测;`pnpm test:dokploy` 里有检查。已有应用在下次发布时自动隔离 |
 | 生产部署配置 | 未写 |
 
 ## 目录结构
@@ -120,6 +121,13 @@ Ferry 的 `ALLOWED_ORIGINS` 要加上 `http://localhost:5173`,否则修改类操
 
 ```bash
 pnpm dev:console
+```
+
+本机 Docker Desktop 的一个限制:Traefik 接着应用网络重启后,从 macOS 访问 80、443 会没有响应
+(包括在 Dokploy 管理页面里重新加载 Traefik)。这时运行下面这条,它会断开网络、重启、再接回去:
+
+```bash
+infra/dokploy/restart-traefik-local.sh
 ```
 
 ```bash

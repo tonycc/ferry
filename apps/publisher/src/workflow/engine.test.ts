@@ -422,6 +422,15 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       expect(app?.visibility).toBe("department");
     });
 
+    it("发布和回滚部署时都带上应用的数据库(网络隔离时数据库要和应用一起挪,回滚不经过建库那一步)", async () => {
+      const { adapters, service, publish } = setup();
+      await publish("v1");
+      await publish("v2");
+      const started = await service.rollback(alice, "ledger");
+      await service.settle(started.releaseId);
+      expect(adapters.platform.deployedWithDatabase).toEqual(["db_3", "db_3", "db_3"]);
+    });
+
     it("回滚一次后再回滚,回到回滚前的版本", async () => {
       const { adapters, service, publish } = setup();
       await publish("v1");

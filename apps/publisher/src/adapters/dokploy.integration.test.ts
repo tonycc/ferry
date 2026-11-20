@@ -34,6 +34,20 @@ const CHECK_DB_REACHABLE =
   "node -e \"const u=new URL(process.env.DATABASE_URL);require('net').connect(Number(u.port),u.hostname)" +
   ".on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))\"";
 
+/**
+ * 网络隔离:在应用容器里检查连不上 Dokploy 的接口和数据库。按协议判断,不只看 TCP 能不能连上
+ * (有的电脑装了代理,连任何地址都能建立 TCP 连接):Dokploy 回了 HTTP 响应、Postgres 回了 SSL 协商的 N/S,才算连上
+ */
+const CHECK_ISOLATED = `node -e "
+const net=require('net');
+const pgAnswers=(h)=>new Promise(r=>{const s=net.connect(5432,h,()=>s.write(Buffer.from([0,0,0,8,4,210,22,47])));s.setTimeout(4000,()=>{s.destroy();r(false)});s.on('data',d=>{s.destroy();r(d[0]===78||d[0]===83)});s.on('error',()=>r(false));s.on('close',()=>r(false))});
+(async()=>{
+ const api=await fetch('http://dokploy:3000/api/settings.health',{signal:AbortSignal.timeout(4000)}).then(()=>true,()=>false);
+ const db=await pgAnswers('dokploy-postgres');
+ console.log('dokploy api reachable='+api+' dokploy-postgres reachable='+db);
+ process.exit(api||db?1:0);
+})()"`;
+
 function docker(...args: string[]): string {
   return execFileSync("docker", args).toString();
 }
@@ -107,6 +121,7 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
       dbAppName = (await client.query<{ appName: string }>("postgres.one", { postgresId: databaseId }).catch(() => undefined))?.appName;
       await client.mutate("postgres.remove", { postgresId: databaseId }).catch(() => {});
     }
+    await platform.deleteAppNetwork(NAME).catch(() => {});
     if (projectId) {
       await new Promise((r) => setTimeout(r, 5000));
       await client.mutate("project.remove", { projectId }).catch(() => {});
@@ -123,6 +138,11 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
     }
     expect(docker("service", "ls", "--format", "{{.Name}}")).not.toContain(NAME);
     expect(docker("volume", "ls", "--format", "{{.Name}}")).not.toContain(NAME);
+    // Docker 网络在 network.remove 之后过几秒才消失
+    for (let i = 0; i < 10 && docker("network", "ls", "--format", "{{.Name}}").includes(NAME); i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    expect(docker("network", "ls", "--format", "{{.Name}}")).not.toContain(NAME);
   }, 120_000);
 
   it("建项目、应用、域名:重复调用时复用,不会建出第二个", async () => {
@@ -173,6 +193,14 @@ describe.skipIf(!enabled)("Dokploy 适配器(真实实例)", () => {
     expect(result.ok === false && result.logs).toContain("FERRY_BUILD_MARKER");
     expect((await get(HOST)).status).toBe(200);
   }, 11 * 60_000);
+
+  it("网络隔离:应用只在自己的网络里,连不上 Dokploy 的接口和数据库,Traefik 接入了这个网络", async () => {
+    const appName = (await client.query<{ appName: string }>("application.one", { applicationId: appId! })).appName;
+    const container = docker("ps", "-q", "-f", `name=^${appName}\\.`).trim().split("\n")[0]!;
+    expect(docker("inspect", container, "--format", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}").trim()).toBe(`ferry-${NAME}`);
+    expect(docker("inspect", "dokploy-traefik", "--format", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}")).toContain(`ferry-${NAME}`);
+    expect(await platform.runCommand(appId!, CHECK_ISOLATED)).toEqual({ ok: true });
+  }, 3 * 60_000);
 
   it("在应用容器里执行命令:能连上数据库;失败时返回这次执行的日志", async () => {
     expect(await platform.runCommand(appId!, CHECK_DB_REACHABLE)).toEqual({ ok: true });
