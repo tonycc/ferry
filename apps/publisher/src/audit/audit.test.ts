@@ -174,6 +174,50 @@ describe.each(storeCases("ferry_test_audit"))("审计日志:$name", (storeCase) 
     expect(JSON.stringify(events)).not.toContain("super-secret-value-123");
   });
 
+  it("审计记录写不进去时不影响操作本身:发布照常完成", async () => {
+    const { auditStore, publish } = setup();
+    auditStore.append = async () => {
+      throw new Error("审计库写入失败");
+    };
+    const view = await publish(alice, "ledger");
+    expect(view.state).toBe("LIVE");
+  });
+
+  it("第一次上线前按 app.yaml 设置的可见范围也有记录,操作人是发布的人", async () => {
+    const { service, all } = setup();
+    const prepared = await service.prepareApp(alice, "ledger");
+    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip("ok"));
+    const { releaseId } = await service.publish(alice, {
+      manifestYaml: MANIFEST("ledger") + "visibility: company\n",
+      version: prepared.version,
+    });
+    await service.settle(releaseId);
+
+    const visibility = (await all()).filter((e) => e.action === "app.visibility");
+    expect(visibility).toHaveLength(1);
+    expect(visibility[0]).toMatchObject({
+      actorId: alice.id,
+      detail: { from: "self", to: "company", source: "app.yaml", releaseId },
+    });
+  });
+
+  it("删除时刚好有发布开始、删除中止:不留删除记录", async () => {
+    const { store, service, publish, all } = setup();
+    await publish(alice, "ledger");
+    await service.unpublish(alice, "ledger");
+    // 模拟:管理员把应用标记为停用的同时,负责人发起的一次发布刚好写进来
+    const setAppDisabled = store.setAppDisabled.bind(store);
+    store.setAppDisabled = async (name, disabled) => {
+      await setAppDisabled(name, disabled);
+      if (disabled) {
+        const [last] = (await store.listReleases(name)).slice(-1);
+        await store.saveRelease({ ...last!, id: crypto.randomUUID(), state: "PENDING", history: [] });
+      }
+    };
+    await expect(service.deleteApp(admin, "ledger")).rejects.toThrow("刚刚开始");
+    expect((await all()).map((e) => e.action)).not.toContain("app.delete");
+  });
+
   it("操作人的姓名按记录当时保存,之后改名不影响", async () => {
     const { adapters, publish, all } = setup();
     await publish(alice, "ledger");

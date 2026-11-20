@@ -70,7 +70,10 @@ export function auditDetail(e: AuditEvent): string {
       return `${what}${state}${d.errorType ? `(${String(d.errorType)})` : ""},版本 ${shortVersion(d.version)}`;
     }
     case "app.visibility":
-      return `${VISIBILITY[d.from as Visibility] ?? d.from} → ${VISIBILITY[d.to as Visibility] ?? d.to}`;
+      return (
+        `${VISIBILITY[d.from as Visibility] ?? d.from} → ${VISIBILITY[d.to as Visibility] ?? d.to}` +
+        (d.source === "app.yaml" ? "(发布时按 app.yaml 设置)" : "")
+      );
     case "secret.set":
     case "secret.delete":
       return String(d.name ?? "");

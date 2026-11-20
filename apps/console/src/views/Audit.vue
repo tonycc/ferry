@@ -16,6 +16,8 @@ const events = ref<AuditEvent[]>([]);
 const nextBefore = ref<number>();
 const loading = ref(false);
 const forbidden = ref(false);
+/** 每次请求加一;返回时已经不是最新的请求就丢掉,免得慢的旧请求覆盖新筛选条件的结果 */
+let requestSeq = 0;
 
 const appInput = ref("");
 const filters = computed(() => ({
@@ -36,16 +38,24 @@ function query(before?: number): string {
 }
 
 async function load(more = false) {
+  const seq = ++requestSeq;
+  if (!more) {
+    // 换了筛选条件:上一个条件的翻页位置不能再用
+    events.value = [];
+    nextBefore.value = undefined;
+  }
   loading.value = true;
   try {
     const page = await api.get<AuditPage>(`/api/admin/audit?${query(more ? nextBefore.value : undefined)}`);
+    if (seq !== requestSeq) return;
     events.value = more ? [...events.value, ...page.events] : page.events;
     nextBefore.value = page.nextBefore;
   } catch (err) {
+    if (seq !== requestSeq) return;
     if (err instanceof ApiError && err.status === 403) forbidden.value = true;
     else ElMessage.error((err as Error).message);
   } finally {
-    loading.value = false;
+    if (seq === requestSeq) loading.value = false;
   }
 }
 

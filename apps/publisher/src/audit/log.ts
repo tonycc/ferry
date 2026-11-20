@@ -4,6 +4,9 @@ import { MemoryAuditStore, type AuditAction, type AuditEvent, type AuditQuery, t
 /**
  * 写审计记录。在让操作生效的那次写入之后立即调用,早于调用部署平台:
  * 后面的步骤失败时(如停用后停服务出错),操作已经生效,也要有记录。
+ *
+ * 写入失败不抛出:操作已经生效,这时中断会让后面的步骤不做(发布单不调度、停用后不停服务)。
+ * 失败时把整条记录打印到错误日志,需要时可以从日志补回
  */
 export class AuditLog {
   constructor(
@@ -22,16 +25,13 @@ export class AuditLog {
     app?: { name: string; ownerId: string },
     detail: Record<string, unknown> = {},
   ): Promise<void> {
-    const actorName = actorId ? ((await this.directory?.nameOf(actorId)) ?? undefined) : undefined;
-    await this.store.append({
-      at: this.now(),
-      actorId,
-      actorName,
-      action,
-      appName: app?.name,
-      appOwnerId: app?.ownerId,
-      detail,
-    });
+    const event = { at: this.now(), actorId, action, appName: app?.name, appOwnerId: app?.ownerId, detail };
+    try {
+      const actorName = actorId ? await this.directory?.nameOf(actorId) : undefined;
+      await this.store.append({ ...event, actorName });
+    } catch (err) {
+      console.error(`审计记录写入失败:${JSON.stringify(event)}`, err);
+    }
   }
 
   /** 按写入顺序从新到旧 */

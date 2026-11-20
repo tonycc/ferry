@@ -164,9 +164,17 @@ export class Engine {
         await this.store.saveApp(app);
       }
       // 应用上线之前,可见范围按 app.yaml;上线之后以控制台为准(见 AppRecord.visibilityPinned)
-      if (!app.visibilityPinned) {
+      if (!app.visibilityPinned && app.visibility !== manifest.visibility) {
+        const from = app.visibility;
         app.visibility = manifest.visibility;
         await this.store.saveApp(app);
+        // 第一次上线前按 app.yaml 改的可见范围也要留记录(比如一上线就对全公司开放),操作人是发布的人
+        await this.audit.record(release.ownerId, "app.visibility", app, {
+          from,
+          to: manifest.visibility,
+          source: "app.yaml",
+          releaseId: release.id,
+        });
       }
       return { kind: "next" };
     },

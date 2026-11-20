@@ -552,8 +552,6 @@ export class PublisherService {
     if (await running()) {
       throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
     }
-    // 在开始改动之前记录:删除要十几秒,中途失败时应用已经被停用、部分资源已经删掉
-    await this.audit.record(admin.id, "app.delete", app);
     // 先标记为停用:删除要十几秒,这期间负责人不能再发布(已下线的应用本来可以随时重新发布)。
     // 标记前刚好开始的发布,会在下一步检查到停用后自行终止;这里再查一次,有就先不删
     if (!app.disabled) {
@@ -563,6 +561,8 @@ export class PublisherService {
         throw new UserError("conflict", `应用 ${app.name} 有一次发布刚刚开始,请等它结束后再删除`);
       }
     }
+    // 确定要删之后、删除任何资源之前记录:删除要十几秒,中途失败时应用已经被停用、部分资源已经删掉
+    await this.audit.record(admin.id, "app.delete", app);
 
     const { platform } = this.adapters;
     if (app.platform.appId) {
@@ -605,10 +605,10 @@ export class PublisherService {
       limit: limit + 1,
     });
     const page = rows.slice(0, limit);
-    const names = new Map<string, string | undefined>();
-    for (const ownerId of new Set(page.map((e) => e.appOwnerId).filter((id): id is string => !!id))) {
-      names.set(ownerId, await this.adapters.directory.nameOf(ownerId));
-    }
+    const ownerIds = [...new Set(page.map((e) => e.appOwnerId).filter((id): id is string => !!id))];
+    const names = new Map(
+      await Promise.all(ownerIds.map(async (id) => [id, await this.adapters.directory.nameOf(id)] as const)),
+    );
     return {
       events: page.map((e) => ({
         id: e.id,
