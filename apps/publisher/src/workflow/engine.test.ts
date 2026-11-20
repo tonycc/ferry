@@ -491,13 +491,25 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       expect(env).not.toHaveProperty("DINGTALK_WEBHOOK");
       expect(env.DATABASE_URL).toBeDefined();
       expect(env.PORT).toBe("3000");
-      expect((await s.store.getApp("ledger"))?.platform.secretNames).toEqual(["LLM_API_KEY"]);
 
       // 全部删掉后再发布,环境变量里也一个不剩
       await s.service.deleteSecret(alice, "ledger", "LLM_API_KEY");
       await s.publish("v3");
-      expect(await envOf(s)).not.toHaveProperty("LLM_API_KEY");
-      expect((await s.store.getApp("ledger"))?.platform.secretNames).toEqual([]);
+      expect(await envOf(s)).toEqual({ DATABASE_URL: expect.any(String), PORT: "3000" });
+    });
+
+    it("发布时每个应用只写一次环境变量;只保留 Ferry 自己的变量,不靠记录上次写了哪些", async () => {
+      const s = setup();
+      await s.service.prepareApp(alice, "ledger");
+      await s.service.setSecret(alice, "ledger", "LLM_API_KEY", "v1");
+      await s.publish("v1");
+      expect(s.adapters.platform.calls.filter((c) => c.startsWith("setEnv"))).toHaveLength(1);
+      // 并发保存应用时就算丢了别的字段,删掉的密钥照样会被移除
+      const appId = (await s.store.getApp("ledger"))!.platform.appId!;
+      s.adapters.platform.env.set(appId, { ...s.adapters.platform.env.get(appId), LEFTOVER: "x" });
+      await s.service.deleteSecret(alice, "ledger", "LLM_API_KEY");
+      await s.publish("v2");
+      expect(await envOf(s)).toEqual({ DATABASE_URL: expect.any(String), PORT: "3000" });
     });
 
     it("回滚时也注入控制台上现在的密钥", async () => {
@@ -510,7 +522,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       await s.service.settle(started.releaseId);
 
       expect((await s.service.status(alice, started.releaseId)).state).toBe("LIVE");
-      expect((await envOf(s)).LLM_API_KEY).toBe("added-after-v2");
+      expect(await envOf(s)).toEqual({ DATABASE_URL: expect.any(String), PORT: "3000", LLM_API_KEY: "added-after-v2" });
     });
 
     it("名称不能和 Ferry 注入的变量重名,格式和值要合法;只有负责人能管理", async () => {
@@ -559,6 +571,25 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       expect(view.error?.message).toContain("LLM_API_KEY 解密失败");
       expect(JSON.stringify(view)).not.toContain(ciphertext.split(".")[3]!);
       expect(JSON.stringify(view)).not.toContain("sk-secret");
+    });
+
+    it("没有配置 SECRETS_KEY 时,有密钥的应用发布按平台问题失败", async () => {
+      const s = setup();
+      await s.service.prepareApp(alice, "ledger");
+      await s.service.setSecret(alice, "ledger", "KEY", "v");
+      const other = new PublisherService(s.store, new Engine(s.store, s.adapters, { maxFixAttempts: 3 }), s.adapters, {
+        appsDomain: "apps.test",
+        maxAppsPerUser: 2,
+        publicUrl: "http://ferry.test",
+        uploadTtlMs: 60_000,
+      });
+      const prepared = await other.prepareApp(alice, "ledger");
+      await other.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v1"));
+      const { releaseId } = await other.publish(alice, { manifestYaml: MANIFEST, version: prepared.version });
+      await other.settle(releaseId);
+      const view = await other.status(alice, releaseId);
+      expect(view.state).toBe("FAILED");
+      expect(view.error?.message).toContain("SECRETS_KEY");
     });
 
     it("没有配置 SECRETS_KEY 时不能保存密钥", async () => {

@@ -398,10 +398,10 @@ export class DokployPlatform implements DeployPlatform {
    * Dokploy 的 saveEnvironment 会整体覆盖全部变量,所以先读出原有的再合并。
    * 读出的内容里有数据库连接串等密钥,只在这里使用,不写日志、不放进报错。
    */
-  async setEnv(appId: string, env: Record<string, string>, unset: string[] = []): Promise<void> {
+  async setEnv(appId: string, env: Record<string, string>, keep?: readonly string[]): Promise<void> {
     const app = await this.client.query<DokployApplication>("application.one", { applicationId: appId });
     const current = parseEnv(app.env ?? "");
-    for (const name of unset) delete current[name];
+    if (keep) for (const name of Object.keys(current)) if (!keep.includes(name)) delete current[name];
     const merged = { ...current, ...env };
     await this.client.mutate("application.saveEnvironment", {
       applicationId: appId,
@@ -972,13 +972,30 @@ export function parseEnv(text: string): Record<string, string> {
   for (const line of text.split("\n")) {
     const index = line.indexOf("=");
     if (index <= 0 || line.trimStart().startsWith("#")) continue;
-    env[line.slice(0, index).trim()] = line.slice(index + 1);
+    env[line.slice(0, index).trim()] = unquote(line.slice(index + 1));
   }
   return env;
 }
 
+/**
+ * 拼成 Dokploy 保存的环境变量文本。Dokploy 部署时按 dotenv 解析:没加引号的值从 # 起算注释、首尾空格被去掉、
+ * 首尾的引号被去掉。这样的值加上单引号(值里有单引号时用反引号,dotenv 对这两种引号里的内容不做转义处理)。
+ * 两种引号都有的值没法原样表示,应用密钥在保存时就拒绝了(secrets.ts)
+ */
 export function formatEnv(env: Record<string, string>): string {
   return Object.entries(env)
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${quote(value)}`)
     .join("\n");
+}
+
+function quote(value: string): string {
+  if (!/#|^\s|\s$|^['"`]/.test(value)) return value;
+  if (!value.includes("'")) return `'${value}'`;
+  if (!value.includes("`")) return `\`${value}\``;
+  throw new Error("环境变量的值里同时有单引号和反引号,无法原样写入");
+}
+
+function unquote(value: string): string {
+  const q = value[0];
+  return value.length >= 2 && (q === "'" || q === "`") && value.endsWith(q) ? value.slice(1, -1) : value;
 }

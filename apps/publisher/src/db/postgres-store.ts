@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { and, asc, eq, notInArray } from "drizzle-orm";
+import { and, asc, count, eq, notInArray } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -185,12 +185,26 @@ export class PostgresStore implements Store {
     return rows.map((row) => ({ ...row }));
   }
 
-  async saveSecret(secret: SecretRecord) {
+  async saveSecret(secret: SecretRecord, limit: number) {
     const changes = { ciphertext: secret.ciphertext, updatedAt: secret.updatedAt, updatedBy: secret.updatedBy };
-    await this.db
-      .insert(schema.appSecrets)
-      .values({ appName: secret.appName, name: secret.name, ...changes })
-      .onConflictDoUpdate({ target: [schema.appSecrets.appName, schema.appSecrets.name], set: changes });
+    const key = and(eq(schema.appSecrets.appName, secret.appName), eq(schema.appSecrets.name, secret.name));
+    return this.db.transaction(async (tx) => {
+      // 锁住应用这一行,同一应用的密钥写入排队进行,数量检查不会被并发的新增绕过
+      const [app] = await tx.select({ name: schema.apps.name }).from(schema.apps).where(eq(schema.apps.name, secret.appName)).for("update");
+      if (!app) throw new Error(`应用 ${secret.appName} 不存在`);
+      const [existing] = await tx.select({ name: schema.appSecrets.name }).from(schema.appSecrets).where(key);
+      if (existing) {
+        await tx.update(schema.appSecrets).set(changes).where(key);
+        return true;
+      }
+      const [{ total } = { total: 0 }] = await tx
+        .select({ total: count() })
+        .from(schema.appSecrets)
+        .where(eq(schema.appSecrets.appName, secret.appName));
+      if (total >= limit) return false;
+      await tx.insert(schema.appSecrets).values({ appName: secret.appName, name: secret.name, ...changes });
+      return true;
+    });
   }
 
   async deleteSecret(appName: string, name: string) {

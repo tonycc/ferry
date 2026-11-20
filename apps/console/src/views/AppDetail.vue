@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, type AppDetail, type ReleaseSummary, type ReleaseView, type SecretView, type Visibility } from "../api";
 import { appStatus, STATE, time, VISIBILITY, VISIBILITY_HINT } from "../labels";
+import { secretNameProblem } from "@ferry/manifest/secrets";
 
 const props = defineProps<{ name: string }>();
 
@@ -23,7 +24,6 @@ const secretForm = ref<{ name: string; value: string }>({ name: "", value: "" })
 const replacing = ref(false);
 const savingSecret = ref(false);
 const secretDialog = ref(false);
-const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** 正在进行的操作;下线要等容器停止,可能要十几秒 */
 const acting = ref<"rollback" | "unpublish">();
 /** 窄屏(手机)时信息改成一列 */
@@ -65,13 +65,8 @@ function openSecret(name?: string) {
   secretDialog.value = true;
 }
 
-const secretNameError = computed(() => {
-  const name = secretForm.value.name;
-  if (!name) return "";
-  if (!SECRET_NAME.test(name)) return "只能用大写字母、数字和下划线,以字母开头";
-  if (name === "DATABASE_URL" || name === "PORT" || name.startsWith("FERRY_")) return "由 Ferry 自己设置,不能用";
-  return "";
-});
+/** 名称规则和发布服务共用 */
+const secretNameError = computed(() => (secretForm.value.name ? secretNameProblem(secretForm.value.name) ?? "" : ""));
 
 async function saveSecret() {
   const { name, value } = secretForm.value;
@@ -359,7 +354,7 @@ onBeforeUnmount(() => {
       </el-card>
     </template>
 
-    <el-dialog v-model="secretDialog" :title="replacing ? `替换 ${secretForm.name}` : '添加密钥'" width="min(480px, 92vw)" @closed="secretForm.value = ''">
+    <el-dialog v-model="secretDialog" :title="replacing ? `替换 ${secretForm.name}` : '添加密钥'" width="min(480px, 92vw)" @closed="secretForm = { name: '', value: '' }">
       <el-form label-position="top" @submit.prevent="saveSecret">
         <el-form-item label="名称" :error="secretNameError">
           <el-input v-model.trim="secretForm.name" :disabled="replacing" placeholder="如 LLM_API_KEY" autocomplete="off" spellcheck="false" />

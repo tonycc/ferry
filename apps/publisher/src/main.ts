@@ -85,11 +85,16 @@ if (config.FERRY_PLATFORM === "dokploy") {
   });
 }
 
-// 应用密钥的加密密钥。用数据库时必须固定,否则重启后已保存的密钥都解不开
-if (config.DATABASE_URL && !config.SECRETS_KEY) {
-  throw new Error("设置了 DATABASE_URL 时必须设置 SECRETS_KEY(加密应用密钥用,生成:openssl rand -hex 32)");
+// 应用密钥的加密密钥。用数据库时必须固定,否则重启后已保存的密钥都解不开:
+// 没设置时照常启动,只是不能保存密钥,已有密钥的应用发布会失败(按平台问题)。只用内存存储时随机生成
+let secretBox: SecretBox | undefined;
+if (config.SECRETS_KEY) {
+  secretBox = new SecretBox(config.SECRETS_KEY);
+} else if (config.DATABASE_URL) {
+  console.warn("未设置 SECRETS_KEY:控制台上不能保存应用密钥,已有密钥的应用发布会失败。生成:openssl rand -hex 32");
+} else {
+  secretBox = SecretBox.random();
 }
-const secretBox = config.SECRETS_KEY ? new SecretBox(config.SECRETS_KEY) : SecretBox.random();
 
 let store: Store;
 let orgStore: OrgStore = new MemoryOrgStore();

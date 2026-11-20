@@ -397,17 +397,17 @@ export class PublisherService {
     validateSecretName(name);
     validateSecretValue(value);
     if (!this.config.secretBox) throw new UserError("conflict", "平台没有配置 SECRETS_KEY,暂时不能保存密钥。请联系平台管理员");
-    const existing = await this.store.listSecrets(app.name);
-    if (existing.length >= MAX_SECRETS_PER_APP && !existing.some((s) => s.name === name)) {
-      throw new UserError("quota_exceeded", `每个应用最多 ${MAX_SECRETS_PER_APP} 个密钥`);
-    }
-    await this.store.saveSecret({
-      appName: app.name,
-      name,
-      ciphertext: this.config.secretBox.encrypt(app.name, name, value),
-      updatedAt: (this.config.now ?? (() => new Date()))(),
-      updatedBy: user.id,
-    });
+    const saved = await this.store.saveSecret(
+      {
+        appName: app.name,
+        name,
+        ciphertext: this.config.secretBox.encrypt(app.name, name, value),
+        updatedAt: (this.config.now ?? (() => new Date()))(),
+        updatedBy: user.id,
+      },
+      MAX_SECRETS_PER_APP,
+    );
+    if (!saved) throw new UserError("quota_exceeded", `每个应用最多 ${MAX_SECRETS_PER_APP} 个密钥`);
     return this.listSecrets(user, appName);
   }
 

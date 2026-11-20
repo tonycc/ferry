@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { RESERVED_ENV_NAMES as RESERVED, secretNameProblem } from "@ferry/manifest/secrets";
 import { UserError } from "./errors";
 
 /**
@@ -7,20 +8,14 @@ import { UserError } from "./errors";
  * 保存后不再显示,也不经过 agent 和 MCP。
  */
 
-/** Ferry 自己注入的环境变量,不能被应用密钥覆盖 */
-export const RESERVED_ENV_NAMES: ReadonlySet<string> = new Set(["DATABASE_URL", "PORT"]);
+/** Ferry 自己注入的环境变量,不能被应用密钥覆盖(名称规则和控制台共用,见 @ferry/manifest/secrets) */
+export const RESERVED_ENV_NAMES: readonly string[] = RESERVED;
 export const MAX_SECRETS_PER_APP = 50;
 export const MAX_SECRET_VALUE_BYTES = 8 * 1024;
 
-const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
-
 export function validateSecretName(name: string): void {
-  if (!NAME_PATTERN.test(name)) {
-    throw new UserError("invalid_input", "名称只能用大写字母、数字和下划线,以字母开头,最长 64 个字符,如 LLM_API_KEY");
-  }
-  if (RESERVED_ENV_NAMES.has(name) || name.startsWith("FERRY_")) {
-    throw new UserError("invalid_input", `${name} 由 Ferry 自己设置,不能用作密钥名称(FERRY_ 开头的名称也留给 Ferry)`);
-  }
+  const problem = secretNameProblem(name);
+  if (problem) throw new UserError("invalid_input", problem);
 }
 
 export function validateSecretValue(value: string): void {
@@ -32,6 +27,13 @@ export function validateSecretValue(value: string): void {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(value)) {
     throw new UserError("invalid_input", "值只能是一行,不能有换行等控制字符(多行的私钥文件目前不支持)");
+  }
+  // 部署平台(Dokploy)会把 ${{名称}} 当成引用别的变量去替换,找不到就部署失败
+  if (value.includes("${{")) throw new UserError("invalid_input", "值里不能有 ${{");
+  // 带 #、首尾空格、引号开头的值要加引号才能原样传给应用(见 adapters/dokploy.ts 的 formatEnv),
+  // 单引号和反引号都有时没有能用的引号
+  if (value.includes("'") && value.includes("`")) {
+    throw new UserError("invalid_input", "值里不能同时有单引号 ' 和反引号 `");
   }
 }
 

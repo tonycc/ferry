@@ -132,20 +132,23 @@ export class Engine {
         await this.store.saveApp(app);
       }
 
-      // 每次发布都确认数据库存在、已启动,并把连接串注入应用:
-      // 下线后重新发布时,应用是新建的(环境变量为空),数据库是停着的。createDatabase 会复用同名数据库。
-      // 先注入连接串再记下数据库 ID:反过来的话,两步之间进程重启,恢复后连接串可能注入不进去。
-      // 连接串只注入应用环境变量,不写进发布单,也不返回给 agent
+      // 每次发布都把环境变量整体写一遍:控制台上的密钥、PORT,以及数据库连接串。
+      // 每次都确认数据库存在、已启动:下线后重新发布时,应用是新建的(环境变量为空),数据库是停着的。
+      // createDatabase 会复用同名数据库。先写环境变量再记下数据库 ID:反过来的话,两步之间进程重启,
+      // 恢复后连接串可能注入不进去。连接串和密钥只进应用环境变量,不写进发布单,也不返回给 agent
+      const env: Record<string, string> = { ...(await this.secretEnv(app)), PORT: String(manifest.port) };
+      let databaseId: string | undefined;
       if (manifest.database === "postgres") {
         const db = await platform.createDatabase({ projectId, name: app.name });
-        await platform.setEnv(app.platform.appId, { DATABASE_URL: db.connectionUrl });
-        if (app.platform.databaseId !== db.databaseId) {
-          app.platform.databaseId = db.databaseId;
-          await this.store.saveApp(app);
-        }
+        env.DATABASE_URL = db.connectionUrl;
+        databaseId = db.databaseId;
       }
-      await platform.setEnv(app.platform.appId, { PORT: String(manifest.port) });
-      await this.injectSecrets(app);
+      // 只保留 Ferry 自己的变量(这次没有数据库时保留原来的连接串),控制台上删掉的密钥随之移除
+      await platform.setEnv(app.platform.appId, env, RESERVED_ENV_NAMES);
+      if (databaseId && app.platform.databaseId !== databaseId) {
+        app.platform.databaseId = databaseId;
+        await this.store.saveApp(app);
+      }
 
       // 每次发布都确认域名指向清单里的端口、挂着登录网关(端口改了也能跟上;没有变化时平台什么都不做)
       await platform.attachDomain({ appId: app.platform.appId, host: app.host, port: manifest.port });
@@ -163,8 +166,10 @@ export class Engine {
 
     BUILDING: async (release) => {
       const app = await this.app(release);
-      // 回滚不经过 PROVISIONING,在部署前注入控制台上现在的密钥
-      if (release.kind === "rollback") await this.injectSecrets(app);
+      // 回滚不经过 PROVISIONING,在部署前写入控制台上现在的密钥(DATABASE_URL、PORT 保持原样)
+      if (release.kind === "rollback") {
+        await this.adapters.platform.setEnv(this.appId(app), await this.secretEnv(app), RESERVED_ENV_NAMES);
+      }
       const archive = await this.archive(release.appName, release.version);
       const result = await this.adapters.platform.deploy(this.appId(app), archive, { databaseId: app.platform.databaseId });
       if (!result.ok) {
@@ -209,26 +214,14 @@ export class Engine {
     },
   };
 
-  /**
-   * 把控制台上配置的密钥注入应用的环境变量,并移除上次注入、之后在控制台上删掉的。
-   * 可以重复执行。解密失败时抛出的错误不含密钥的值;密钥只进应用环境变量,不写进发布单
-   */
-  private async injectSecrets(app: AppRecord): Promise<void> {
-    const appId = this.appId(app);
+  /** 控制台上配置的密钥,解密成环境变量。解密失败时抛出的错误不含密钥的值 */
+  private async secretEnv(app: AppRecord): Promise<Record<string, string>> {
     const env: Record<string, string> = {};
     for (const secret of await this.store.listSecrets(app.name)) {
       if (!this.config.secretBox) throw new Error("没有配置 SECRETS_KEY,无法解密应用密钥");
       env[secret.name] = this.config.secretBox.decrypt(app.name, secret.name, secret.ciphertext);
     }
-    const names = Object.keys(env);
-    const previous = app.platform.secretNames ?? [];
-    const unset = previous.filter((name) => !(name in env) && !RESERVED_ENV_NAMES.has(name));
-    if (names.length > 0 || unset.length > 0) await this.adapters.platform.setEnv(appId, env, unset);
-    // 先写环境变量再记名称:两步之间进程重启,恢复后重跑一遍即可
-    if (names.length !== previous.length || names.some((name, i) => name !== previous[i])) {
-      app.platform.secretNames = names;
-      await this.store.saveApp(app);
-    }
+    return env;
   }
 
   /** 新版本不可用时:有上一个可用版本就用保存的代码包把它重新部署回去(只回滚代码,不动数据库) */

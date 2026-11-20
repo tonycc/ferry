@@ -91,9 +91,10 @@ export class FakePlatform implements DeployPlatform {
     this.gatewayAddress = input.authAddress;
   }
 
-  async setEnv(appId: string, env: Record<string, string>, unset: string[] = []): Promise<void> {
+  async setEnv(appId: string, env: Record<string, string>, keep?: readonly string[]): Promise<void> {
+    this.calls.push(`setEnv:${appId}`);
     const current = { ...this.env.get(appId) };
-    for (const name of unset) delete current[name];
+    if (keep) for (const name of Object.keys(current)) if (!keep.includes(name)) delete current[name];
     this.env.set(appId, { ...current, ...env });
   }
 

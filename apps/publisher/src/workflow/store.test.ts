@@ -167,13 +167,13 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       const store = storeCase.create();
       await store.createApp(newApp());
       await store.createApp(newApp({ name: "other", host: "other.apps.test" }));
-      await store.saveSecret(secret("ZETA", "c1"));
-      await store.saveSecret(secret("ALPHA", "c2"));
-      await store.saveSecret({ ...secret("ALPHA", "c3"), appName: "other" });
+      await store.saveSecret(secret("ZETA", "c1"), 50);
+      await store.saveSecret(secret("ALPHA", "c2"), 50);
+      await store.saveSecret({ ...secret("ALPHA", "c3"), appName: "other" }, 50);
       expect((await store.listSecrets("ledger")).map((s) => s.name)).toEqual(["ALPHA", "ZETA"]);
       expect(await store.listSecrets("ledger")).toEqual([secret("ALPHA", "c2"), secret("ZETA", "c1")]);
 
-      await store.saveSecret(secret("ALPHA", "c4", at("2026-11-20T09:00:00.000Z")));
+      await store.saveSecret(secret("ALPHA", "c4", at("2026-11-20T09:00:00.000Z")), 50);
       expect((await store.listSecrets("ledger"))[0]).toEqual(secret("ALPHA", "c4", at("2026-11-20T09:00:00.000Z")));
 
       expect(await store.deleteSecret("ledger", "ALPHA")).toBe(true);
@@ -183,11 +183,28 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       expect((await store.listSecrets("other")).map((s) => s.ciphertext)).toEqual(["c3"]);
     });
 
+    it("数量上限:超出时不写入;替换已有的不算新增;并发新增也不会超出", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      expect(await store.saveSecret(secret("A", "c"), 2)).toBe(true);
+      expect(await store.saveSecret(secret("B", "c"), 2)).toBe(true);
+      expect(await store.saveSecret(secret("C", "c"), 2)).toBe(false);
+      expect(await store.saveSecret(secret("A", "c2"), 2)).toBe(true);
+      expect((await store.listSecrets("ledger")).map((s) => s.ciphertext)).toEqual(["c2", "c"]);
+
+      await store.createApp(newApp({ name: "race", host: "race.apps.test" }));
+      const results = await Promise.all(
+        Array.from({ length: 8 }, (_, i) => store.saveSecret({ ...secret(`K${i}`, "c"), appName: "race" }, 3)),
+      );
+      expect(results.filter(Boolean)).toHaveLength(3);
+      expect(await store.listSecrets("race")).toHaveLength(3);
+    });
+
     it("应用不存在时不能保存;删除应用时一起删掉", async () => {
       const store = storeCase.create();
-      await expect(store.saveSecret(secret("KEY", "c"))).rejects.toThrow();
+      await expect(store.saveSecret(secret("KEY", "c"), 50)).rejects.toThrow();
       await store.createApp(newApp());
-      await store.saveSecret(secret("KEY", "c"));
+      await store.saveSecret(secret("KEY", "c"), 50);
       await store.deleteApp("ledger");
       expect(await store.listSecrets("ledger")).toEqual([]);
     });

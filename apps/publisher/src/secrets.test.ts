@@ -49,5 +49,9 @@ describe("名称和值的检查", () => {
     expect(() => validateSecretValue("a\u0000b")).toThrow("一行");
     expect(() => validateSecretValue("x".repeat(8192))).not.toThrow();
     expect(() => validateSecretValue("x".repeat(8193))).toThrow("不能超过");
+    // 部署平台会替换 ${{…}};两种引号都有的值没法原样写进环境变量文本
+    expect(() => validateSecretValue("a${{PORT}}")).toThrow("${{");
+    expect(() => validateSecretValue("it's `x`")).toThrow("单引号");
+    expect(() => validateSecretValue("hook#frag 'q'")).not.toThrow();
   });
 });

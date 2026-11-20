@@ -60,7 +60,7 @@ const envSchema = z.object({
   GITLEAKS_PATH: z.string().default("gitleaks"),
   /**
    * 加密应用密钥(控制台上给应用配置的第三方 API key 等,任务 3.8)用的密钥,至少 32 个字符,
-   * 生成:openssl rand -hex 32。设置了 DATABASE_URL 时必须设置,改了之后已保存的密钥都无法解密(要重新填写)。
+   * 生成:openssl rand -hex 32。用数据库时不设置就不能保存密钥;改了之后已保存的密钥都无法解密(要重新填写)。
    * 只用内存存储时可以不设置,每次启动随机生成
    */
   SECRETS_KEY: z.string().min(32).optional(),

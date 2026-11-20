@@ -18,8 +18,6 @@ export interface AppRecord {
     appId?: string;
     databaseId?: string;
     domainAttached?: boolean;
-    /** 上次注入应用环境变量的密钥名称;控制台删掉的密钥,下次发布时据此从环境变量里移除 */
-    secretNames?: string[];
   };
   /** 当前线上运行的代码包版本 */
   liveVersion?: string;
@@ -110,8 +108,11 @@ export interface Store {
 
   /** 按名称排序 */
   listSecrets(appName: string): Promise<SecretRecord[]>;
-  /** 新增或替换同名密钥 */
-  saveSecret(secret: SecretRecord): Promise<void>;
+  /**
+   * 新增或替换同名密钥。新增后这个应用的密钥会超过 limit 个时不写入,返回 false。
+   * 数量检查和写入是原子的,并发新增也不会超出
+   */
+  saveSecret(secret: SecretRecord, limit: number): Promise<boolean>;
   /** 返回是否删掉了 */
   deleteSecret(appName: string, name: string): Promise<boolean>;
 }
@@ -203,9 +204,13 @@ export class MemoryStore implements Store {
       .map(copy);
   }
 
-  async saveSecret(secret: SecretRecord) {
+  async saveSecret(secret: SecretRecord, limit: number) {
     if (!this.apps.has(secret.appName)) throw new Error(`应用 ${secret.appName} 不存在`);
-    this.secrets.set(secretKey(secret.appName, secret.name), copy(secret));
+    const key = secretKey(secret.appName, secret.name);
+    const count = [...this.secrets.values()].filter((s) => s.appName === secret.appName).length;
+    if (!this.secrets.has(key) && count >= limit) return false;
+    this.secrets.set(key, copy(secret));
+    return true;
   }
 
   async deleteSecret(appName: string, name: string) {

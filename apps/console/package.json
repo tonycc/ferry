@@ -15,6 +15,7 @@
     "vue-tsc": "^3.3.14"
   },
   "dependencies": {
+    "@ferry/manifest": "workspace:*",
     "element-plus": "^2.14.8",
     "vue": "^3.5.45",
     "vue-router": "^5.5.1"
