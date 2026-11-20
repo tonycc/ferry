@@ -114,7 +114,10 @@ onMounted(load);
     </div>
     <el-table v-loading="loading" :data="shown">
       <el-table-column label="应用" min-width="150">
-        <template #default="{ row }"><a :href="row.url" target="_blank" rel="noopener">{{ row.name }}</a></template>
+        <template #default="{ row }">
+          <a :href="row.url" target="_blank" rel="noopener">{{ row.name }}</a>
+          <div><router-link class="muted" :to="{ path: '/audit', query: { app: row.name } }">操作记录</router-link></div>
+        </template>
       </el-table-column>
       <el-table-column prop="ownerName" label="负责人" width="110" />
       <el-table-column label="负责人部门" min-width="140">

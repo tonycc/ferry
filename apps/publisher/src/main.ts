@@ -4,6 +4,9 @@ import { DokployClient } from "./adapters/dokploy-client";
 import { FsArchiveStore } from "./adapters/archive-store";
 import { HttpHealthChecker } from "./adapters/health";
 import { GitleaksScanner } from "./adapters/gitleaks";
+import { AuditLog } from "./audit/log";
+import { MemoryAuditStore, type AuditStore } from "./audit/store";
+import { PostgresAuditStore } from "./db/postgres-audit-store";
 import { Gateway, HEALTH_HEADER, healthToken } from "./gateway/gateway";
 import { setupGateway } from "./gateway/setup";
 import { MemoryDirectory } from "./adapters/directory";
@@ -99,12 +102,14 @@ if (config.SECRETS_KEY) {
 let store: Store;
 let orgStore: OrgStore = new MemoryOrgStore();
 let authStore: AuthStore = new MemoryAuthStore();
+let auditStore: AuditStore = new MemoryAuditStore();
 if (config.DATABASE_URL) {
   // 启动时自动执行尚未执行的数据库迁移
   const database = await openDatabase(config.DATABASE_URL);
   store = new PostgresStore(database.db);
   orgStore = new PostgresOrgStore(database.db);
   authStore = new PostgresAuthStore(database.db);
+  auditStore = new PostgresAuditStore(database.db);
 } else {
   console.warn("未设置 DATABASE_URL,使用内存存储:服务重启后应用和发布记录都会丢失");
   store = new MemoryStore();
@@ -117,10 +122,13 @@ if (!config.ORG_FILE) console.warn("未设置 ORG_FILE:不同步组织架构,按
 await orgSync.run();
 setInterval(() => void orgSync.run(), config.ORG_SYNC_MINUTES * 60_000).unref();
 
+// 审计日志(任务 3.3):操作人的姓名在记录时从组织架构查好存下来
+const audit = new AuditLog(auditStore, directory);
 const engine = new Engine(store, adapters, {
   maxFixAttempts: config.MAX_FIX_ATTEMPTS,
   appsUrlScheme: config.APPS_URL_SCHEME,
   secretBox,
+  audit,
 });
 const service = new PublisherService(store, engine, adapters, {
   appsDomain: config.APPS_DOMAIN,
@@ -131,6 +139,7 @@ const service = new PublisherService(store, engine, adapters, {
   archiveGraceMs: config.ARCHIVE_GRACE_HOURS * 3600_000,
   templates: new TemplateLibrary(),
   secretBox,
+  audit,
 });
 
 const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));
@@ -141,9 +150,13 @@ const allowedOrigins = new Set([
 ]);
 // 本机地址 127.0.0.1 和 localhost 都能打开登录页
 if (publicUrl.hostname === "127.0.0.1") allowedOrigins.add(publicUrl.origin.replace("127.0.0.1", "localhost"));
-const auth = new AuthService(authStore, directory, adapters.notifier, {
-  sessionTtlMs: config.SESSION_DAYS * 24 * 3600_000,
-});
+const auth = new AuthService(
+  authStore,
+  directory,
+  adapters.notifier,
+  { sessionTtlMs: config.SESSION_DAYS * 24 * 3600_000 },
+  audit,
+);
 const gateway = new Gateway(service, directory, {
   secret: gatewaySecret,
   ferryUrl: publicUrl.origin,

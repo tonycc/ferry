@@ -2,6 +2,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import Fastify, { type FastifyInstance } from "fastify";
 import { visibilitySchema } from "@ferry/manifest";
 import { z } from "zod";
+import { AUDIT_ACTIONS } from "../audit/store";
 import { HTTP_STATUS, UserError } from "../errors";
 import type { IdentityResolver } from "../identity";
 import { createMcpServer } from "../mcp/server";
@@ -17,6 +18,13 @@ const publishBody = z.object({ manifestYaml: z.string(), version: z.string().min
 const disableBody = z.object({ reason: z.string().max(500).optional() });
 const visibilityBody = z.object({ visibility: visibilitySchema });
 const secretBody = z.object({ name: z.string(), value: z.string() });
+const auditQuery = z.object({
+  app: z.string().min(1).optional(),
+  actor: z.string().min(1).optional(),
+  action: z.enum(AUDIT_ACTIONS).optional(),
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
 const logsQuery = z.object({ lines: z.coerce.number().int().min(1).max(1000).optional() });
 
 export interface ServerOptions {
@@ -134,6 +142,8 @@ export function buildServer(
   // ---- 管理员接口:查看全部应用,随时停用或恢复任意应用 ----
 
   app.get("/api/admin/apps", async (req) => service.listAllApps(await identity(req, "api")));
+
+  app.get("/api/admin/audit", async (req) => service.listAudit(await identity(req, "api"), auditQuery.parse(req.query)));
 
   app.post<{ Params: { name: string } }>("/api/admin/apps/:name/disable", async (req) => {
     const { reason } = disableBody.parse(req.body ?? {});

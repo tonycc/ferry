@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Directory, Notifier } from "../adapters/types";
+import { memoryAuditLog, type AuditLog } from "../audit/log";
 import { UserError } from "../errors";
 import type { AuthStore, PersonalToken } from "./store";
 
@@ -53,6 +54,8 @@ export class AuthService {
     private readonly directory: Directory,
     private readonly notifier: Notifier,
     config: Partial<AuthConfig> = {},
+    /** 审计日志,记录令牌的生成和作废;不传时记在内存里(只有测试可以不传) */
+    private readonly audit: AuditLog = memoryAuditLog(),
   ) {
     this.config = { ...DEFAULT_AUTH_CONFIG, ...config };
   }
@@ -133,6 +136,7 @@ export class AuthService {
       createdAt: this.config.now(),
     };
     await this.store.saveToken(record);
+    await this.audit.record(userId, "token.create", undefined, { tokenId: record.id, label: name });
     return { ...toView(record), token };
   }
 
@@ -146,6 +150,7 @@ export class AuthService {
     if (token.revokedAt) return;
     token.revokedAt = this.config.now();
     await this.store.saveToken(token);
+    await this.audit.record(userId, "token.revoke", undefined, { tokenId: token.id, label: token.label });
   }
 
   /** 个人令牌对应的人;令牌无效、已作废或本人已离职时返回 undefined */

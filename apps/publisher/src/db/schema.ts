@@ -139,3 +139,24 @@ export const personalTokens = pgTable(
   },
   (t) => [index("personal_tokens_user_idx").on(t.userId)],
 );
+
+/**
+ * 审计日志(任务 3.3),只追加。不引用 apps 表:应用被彻底删除后记录还要保留。
+ * 应用名会被重新使用,所以同时记下当时的负责人
+ */
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    at: timestamp("at", { withTimezone: true }).notNull(),
+    /** 为空表示 Ferry 自己 */
+    actorId: text("actor_id"),
+    /** 操作当时的姓名 */
+    actorName: text("actor_name"),
+    action: text("action").notNull(),
+    appName: text("app_name"),
+    appOwnerId: text("app_owner_id"),
+    detail: jsonb("detail").notNull().default({}),
+  },
+  (t) => [index("audit_events_app_idx").on(t.appName, t.id), index("audit_events_actor_idx").on(t.actorId, t.id)],
+);
