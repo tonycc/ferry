@@ -1,13 +1,13 @@
 import { crc32 } from "node:zlib";
 
 /** 测试用:生成不压缩的 zip(内容原样出现在字节里,假平台靠它识别标记) */
-export function makeZip(files: Record<string, string>): Buffer {
+export function makeZip(files: Record<string, string | Buffer>): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let offset = 0;
   for (const [name, text] of Object.entries(files)) {
     const nameBuf = Buffer.from(name, "utf8");
-    const data = Buffer.from(text, "utf8");
+    const data = typeof text === "string" ? Buffer.from(text, "utf8") : text;
     const crc = crc32(data);
 
     const local = Buffer.alloc(30);

@@ -255,6 +255,8 @@ export class Engine {
     }
 
     await this.transition(release, next);
+    // 发现了密钥的代码包不再保留:发布单已经结束,这个版本不会再被部署(回滚目标也一样,扫描不会通过)
+    if (failure.type === "scan_failed") await this.adapters.archives.remove(release.appName, release.version);
     if (next === "FAILED") {
       const action = release.kind === "rollback" ? "回滚" : "发布";
       await this.adapters.notifier.notify(release.ownerId, `应用 ${release.appName} ${action}失败: ${failure.message}`);

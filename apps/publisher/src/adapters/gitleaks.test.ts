@@ -53,7 +53,7 @@ describe.skipIf(!installed)("GitleaksScanner(真实 gitleaks)", () => {
     const byFile = Object.fromEntries(findings.map((f) => [f.file, f]));
     expect(byFile["src/notify.ts"]).toMatchObject({ line: 2, rule: "dingtalk-robot-webhook" });
     expect(byFile["src/ai.ts"]).toMatchObject({ line: 1 });
-    expect(byFile["src/db.ts"]).toMatchObject({ line: 3, rule: "connection-string-password" });
+    expect(byFile["src/db.ts"]).toMatchObject({ line: 3, rule: "postgres-connection-string-password" });
     expect(byFile[".env"]).toBeDefined();
     const text = JSON.stringify(findings);
     expect(text).not.toContain(hex(64, 1));
@@ -70,6 +70,28 @@ describe.skipIf(!installed)("GitleaksScanner(真实 gitleaks)", () => {
     });
     const findings = await scanner.scan(zip);
     expect(findings.map((f) => f.file)).toContain("src/notify.ts");
+  });
+
+  it("Redis 等别的系统的连接串用单独的规则(修复提示不同)", async () => {
+    const redis = ["redis://", ":Hunter2Pass", "@cache:6379"].join("");
+    const findings = await scanner.scan(makeZip({ ...base, "src/cache.ts": `const r = "${redis}";\n` }));
+    expect(findings).toMatchObject([{ file: "src/cache.ts", rule: "connection-string-password" }]);
+  });
+
+  it("默认配置里会放过员工代码的路径也要扫描:bootstrap-*.js、gitleaks.toml", async () => {
+    const zip = makeZip({
+      ...base,
+      "public/js/bootstrap-setup.js": `const url = "${dingtalk}";\n`,
+      "gitleaks.toml": `url = "${dingtalk}"\n`,
+    });
+    const files = (await scanner.scan(zip)).map((f) => f.file).sort();
+    expect(files).toEqual(["gitleaks.toml", "public/js/bootstrap-setup.js"]);
+  });
+
+  it("代码包里嵌套的压缩包也会打开扫描", async () => {
+    const inner = makeZip({ ".env": `DINGTALK_WEBHOOK=${dingtalk}\n` });
+    const findings = await scanner.scan(makeZip({ ...base, "assets/config.zip": inner }));
+    expect(findings.map((f) => f.file)).toEqual(["assets/config.zip!.env"]);
   });
 
   it("node_modules 里的不算(依赖由构建时安装,不是员工写的代码)", async () => {

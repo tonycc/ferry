@@ -2,58 +2,18 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { zipEntryNames } from "../zip";
 import type { Finding, Scanner } from "./types";
 
 /**
- * Ferry 自己的 gitleaks 配置:gitleaks 自带的几百条规则,加上国内常见、自带规则里没有的几种。
- * 每次扫描都用 --config 指定它,代码包里自带的 .gitleaks.toml 不起作用。
+ * Ferry 的 gitleaks 配置文件:gitleaks 默认规则(去掉了几条会放过员工代码的全局豁免),加上 Ferry 自己的规则。
+ * 每次扫描都用 --config 指定它,代码包里自带的 .gitleaks.toml 不起作用。说明见文件开头
  */
-export const GITLEAKS_CONFIG = `
-title = "ferry"
+export const GITLEAKS_CONFIG_PATH = fileURLToPath(new URL("./gitleaks.toml", import.meta.url));
 
-[extend]
-useDefault = true
-
-[[rules]]
-id = "connection-string-password"
-description = "数据库或消息队列的连接串里写了密码"
-regex = '''(?i)\\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\\+srv)?|rediss?|amqps?|mssql|sqlserver)://[^\\s:@/'"\`]*:([^\\s@/'"\`]{3,})@[^\\s/'"\`]+'''
-secretGroup = 1
-keywords = ["postgres", "mysql", "mariadb", "mongodb", "redis", "amqp", "mssql", "sqlserver"]
-[[rules.allowlists]]
-# 模板字符串里的变量、明显的占位符
-regexes = ['''^\\$\\{?[A-Za-z_]''', '''(?i)^(?:x+|\\*+|<[^>]*>|\\{[^}]*\\}|\\[[^\\]]*\\]|password|passwd|pass|pwd|secret|changeme|example|your[_-]?password)$''']
-
-[[rules]]
-id = "dingtalk-robot-webhook"
-description = "钉钉群机器人 webhook(含 access_token)"
-regex = '''oapi\\.dingtalk\\.com/robot/send\\?access_token=([a-f0-9]{64})'''
-secretGroup = 1
-keywords = ["oapi.dingtalk.com"]
-
-[[rules]]
-id = "wecom-robot-webhook"
-description = "企业微信群机器人 webhook(含 key)"
-regex = '''qyapi\\.weixin\\.qq\\.com/cgi-bin/webhook/send\\?key=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'''
-secretGroup = 1
-keywords = ["qyapi.weixin.qq.com"]
-
-[[rules]]
-id = "feishu-robot-webhook"
-description = "飞书群机器人 webhook"
-regex = '''open\\.(?:feishu\\.cn|larksuite\\.com)/open-apis/bot/v2/hook/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'''
-secretGroup = 1
-keywords = ["open.feishu.cn", "open.larksuite.com"]
-
-[[rules]]
-id = "sk-api-key"
-description = "sk- 开头的大模型 API key(DeepSeek、通义千问、Kimi、OpenAI 等)"
-regex = '''\\b(sk-[A-Za-z0-9_-]{32,})\\b'''
-secretGroup = 1
-entropy = 3.5
-keywords = ["sk-"]
-`;
+/** 打开嵌套压缩包的层数:代码包本身算一层,里面的 zip、tar.gz 等再往下两层 */
+const MAX_ARCHIVE_DEPTH = 3;
 
 /** gitleaks 发现密钥时的退出码;用一个不常见的值,和 gitleaks 自己出错(退出码 1)区分开 */
 const LEAKS_EXIT_CODE = 7;
@@ -73,7 +33,8 @@ interface GitleaksFinding {
 }
 
 /**
- * 用 gitleaks 扫描代码包(任务 3.1)。gitleaks 直接读 zip,不用解压。
+ * 用 gitleaks 扫描代码包(任务 3.1)。gitleaks 直接读 zip,不用解压,也会打开代码包里嵌套的压缩包。
+ * 代码包要先写成文件:gitleaks 从标准输入读时不会打开 zip。
  *
  * - 结果里不带密钥原文(--redact),因为发布记录会存进数据库、显示在控制台上。
  * - 忽略代码里的 gitleaks:allow 注释和代码包自带的 .gitleaks.toml、.gitleaksignore,
@@ -103,16 +64,15 @@ export class GitleaksScanner implements Scanner {
     const dir = await mkdtemp(join(tmpdir(), "ferry-scan-"));
     try {
       await writeFile(join(dir, "app.zip"), zip);
-      await writeFile(join(dir, "ferry.toml"), GITLEAKS_CONFIG);
       const { code, stderr } = await run(
         this.binary,
         [
           "dir",
           "app.zip",
           "--config",
-          "ferry.toml",
+          GITLEAKS_CONFIG_PATH,
           "--max-archive-depth",
-          "1",
+          String(MAX_ARCHIVE_DEPTH),
           "--redact",
           "--ignore-gitleaks-allow",
           "--no-banner",
@@ -155,15 +115,11 @@ function run(
   args: string[],
   options: { cwd?: string; timeoutMs: number },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  // 去掉会覆盖 --config 优先级以外配置的环境变量,确保只用 Ferry 的配置
-  const env = { ...process.env };
-  delete env.GITLEAKS_CONFIG;
-  delete env.GITLEAKS_CONFIG_TOML;
   return new Promise((resolve, reject) => {
     execFile(
       binary,
       args,
-      { cwd: options.cwd, env, timeout: options.timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+      { cwd: options.cwd, timeout: options.timeoutMs, maxBuffer: 10 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (!err) return resolve({ code: 0, stdout, stderr });
         const code = (err as NodeJS.ErrnoException & { code?: unknown }).code;
