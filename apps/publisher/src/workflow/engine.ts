@@ -34,6 +34,11 @@ type StepResult =
 
 type Failure = Extract<StepResult, { kind: "fail" }>;
 
+/** 迁移前备份失败时给 agent 的提示;和发布单的 nextAction 说法一致 */
+export const BACKUP_FAILED_HINT =
+  "不要修改代码,这不是代码的问题,也不要马上重新发布。告诉用户:迁移前备份数据库失败,平台管理员已收到告警;" +
+  "等管理员处理好、用户让你再发布时,再重新发布";
+
 /**
  * 发布状态机。每一步执行前先看资源是否已创建,所以 run 可以安全地重复调用:
  * 进程重启、agent 修复后重新发布,都是从记录的状态继续。
@@ -249,21 +254,25 @@ export class Engine {
 
   /** 迁移前备份失败:不是代码的问题,发布终止,数据库没有改动;有上一个可用版本就恢复它 */
   private async backupFailed(app: AppRecord, error: string): Promise<Failure> {
-    const restored = await this.restoreLive(app, {
-      kind: "fail",
-      fixable: false,
-      type: "backup_failed",
-      message: "",
-      logs: error,
-      hint: "不要修改代码,这不是代码的问题。把情况告诉用户,平台管理员已收到告警;问题解决后重新发布即可",
-    });
-    if (restored.type !== "backup_failed") return restored; // 恢复旧版本也失败了,按 rollback_failed 报
-    return {
-      ...restored,
-      message: restored.rolledBack
-        ? "迁移前备份数据库失败,发布已停止:数据库没有改动,线上已恢复为上一个版本"
-        : "迁移前备份数据库失败,发布已停止:数据库没有改动,应用这次没有上线",
-    };
+    const failure = { kind: "fail", fixable: false, type: "backup_failed", logs: error, hint: BACKUP_FAILED_HINT } as const;
+    if (!app.liveVersion) {
+      return { ...failure, message: "迁移前备份数据库失败,发布已停止:数据库没有改动,应用这次没有上线" };
+    }
+    let restored: Failure;
+    try {
+      restored = await this.restoreLive(app, { ...failure, message: "迁移前备份数据库失败" });
+    } catch (err) {
+      // 备份失败多半是部署平台出了问题,恢复也可能直接出错;这时新代码还在线上,按恢复失败报,每次都告警
+      return {
+        ...failure,
+        type: "rollback_failed",
+        message: `迁移前备份数据库失败,恢复上一版本时也出错了(${(err as Error).message}),应用现在可能无法正常使用`,
+        hint: "不要修改代码。马上告诉用户应用可能无法访问,并请平台管理员处理",
+      };
+    }
+    // 恢复失败时 restoreLive 已经改成 rollback_failed,message 里带着“迁移前备份数据库失败”
+    if (!restored.rolledBack) return restored;
+    return { ...restored, message: "迁移前备份数据库失败,发布已停止:数据库没有改动,线上已恢复为上一个版本" };
   }
 
   /** 新版本不可用时:有上一个可用版本就用保存的代码包把它重新部署回去(只回滚代码,不动数据库) */
@@ -338,10 +347,13 @@ export class Engine {
   private async alert(release: ReleaseRecord, failure: Failure, capped: boolean): Promise<void> {
     const { alerts } = this.config;
     if (!alerts) return;
-    const owner = (await this.adapters.directory.nameOf(release.ownerId)) ?? release.ownerId;
     const action = release.kind === "rollback" ? "回滚" : "发布";
-    const about = `应用 ${release.appName}(负责人 ${owner})`;
     const reason = `${failure.type}:${failure.message}`;
+    const alerted =
+      capped || ["backup_failed", "rollback_failed", "platform_error", "internal_error"].includes(failure.type);
+    if (!alerted) return;
+    const owner = (await this.adapters.directory.nameOf(release.ownerId)) ?? release.ownerId;
+    const about = `应用 ${release.appName}(负责人 ${owner})`;
     if (capped) {
       await alerts.send(`${about}连续 ${this.config.maxFixAttempts} 次发布失败,已不再让 agent 自动重试。最近一次:${reason}`);
     } else if (failure.type === "backup_failed") {

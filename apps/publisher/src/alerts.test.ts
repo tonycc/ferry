@@ -65,6 +65,27 @@ describe("Alerts", () => {
     expect(last).toContain("b、c");
   });
 
+  it("flush:冷却期过了还没有新的同类告警,单独补发压下的部分;没有压下的不发", async () => {
+    const notifier = new FakeNotifier();
+    const time = clock();
+    const alerts = new Alerts(notifier, ["dingtalk:admin"], { cooldownMs: 30 * 60_000, now: time.now, log: () => {} });
+    await alerts.throttled("platform_error", "应用 a 发布失败", "a");
+    await alerts.throttled("internal_error", "应用 x 发布失败", "x");
+    time.advance(60_000);
+    await alerts.throttled("platform_error", "应用 b 发布失败", "b");
+
+    await alerts.flush();
+    expect(notifier.sent).toHaveLength(2);
+
+    time.advance(30 * 60_000);
+    await alerts.flush();
+    expect(notifier.sent).toHaveLength(3);
+    expect(notifier.sent[2]?.message).toContain("还有 1 次同类问题,涉及 b");
+    expect(notifier.sent[2]?.message).toContain("应用 a 发布失败");
+    await alerts.flush();
+    expect(notifier.sent).toHaveLength(3);
+  });
+
   it("jobStatus:由好变坏时告警一次,一直失败不重复,恢复时再告诉一声", async () => {
     const notifier = new FakeNotifier();
     const alerts = new Alerts(notifier, ["dingtalk:admin"], { log: () => {} });
@@ -138,6 +159,9 @@ describe("发布流程里的告警", () => {
     expect(v2.error?.type).toBe("backup_failed");
     expect(v2.error?.message).toContain("线上已恢复为上一个版本");
     expect(v2.error?.hint).toContain("不要修改代码");
+    // 提示和下一步指引说法一致:都不让 agent 马上重新发布
+    expect(v2.error?.hint).toContain("不要马上重新发布");
+    expect(v2.nextAction).toContain("不要马上重新发布");
     expect(adapters.platform.calls.filter((c) => c.startsWith("runCommand"))).toHaveLength(1);
     // 线上部署的是 v1 的代码包
     const deployed = [...adapters.platform.deployedVersion.values()];
@@ -145,6 +169,27 @@ describe("发布流程里的告警", () => {
     expect(adminMessages()).toHaveLength(1);
     expect(adminMessages()[0]).toContain("备份数据库失败");
     expect(adminMessages()[0]).toContain("磁盘已满");
+  });
+
+  it("备份失败后恢复上一版本时直接出错:按恢复失败报,每次都告警", async () => {
+    const { adapters, publish, adminMessages } = setup();
+    await publish("v1");
+    adapters.platform.backupDatabase = async () => {
+      throw new Error("磁盘已满");
+    };
+    const deploy = adapters.platform.deploy.bind(adapters.platform);
+    let deploys = 0;
+    adapters.platform.deploy = async (...args) => {
+      // 第一次是部署新版本,第二次是恢复上一版本
+      if (++deploys === 2) throw new Error("Dokploy 连不上");
+      return deploy(...args);
+    };
+    const view = await publish("v2");
+    expect(view.error?.type).toBe("rollback_failed");
+    expect(view.error?.message).toContain("迁移前备份数据库失败");
+    expect(view.error?.message).toContain("Dokploy 连不上");
+    expect(adminMessages()).toHaveLength(1);
+    expect(adminMessages()[0]).toContain("恢复上一版本也失败");
   });
 
   it("第一次发布就备份失败:说明应用这次没有上线", async () => {

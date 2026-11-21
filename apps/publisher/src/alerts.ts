@@ -8,6 +8,14 @@ export interface AlertsOptions {
   log?: (message: string) => void;
 }
 
+interface ThrottleState {
+  sentAt: number;
+  suppressed: number;
+  subjects: Set<string>;
+  /** 上次发出的告警,补发汇总时引用 */
+  message: string;
+}
+
 /**
  * 给平台管理员的告警(任务 3.5),通过和其他通知一样的渠道发给 ADMIN_USERS 里的每个人。
  * 发送失败只记日志,不影响调用它的发布流程。
@@ -15,14 +23,15 @@ export interface AlertsOptions {
  * 三种发法:
  * - send:每次都发。发布连续失败、备份失败这类每次都是一件独立的事,不能被合并掉。
  * - throttled:同一个 key 在冷却期内只发一次,期间压下的次数和涉及的应用在下一次发出时一起报
- *   (比如部署平台出故障时,每个应用的发布都会失败)。
+ *   (比如部署平台出故障时,每个应用的发布都会失败)。冷却期过了还没有新的同类告警时,
+ *   由 flush(定时调用)把压下的部分单独补发,免得问题停了以后管理员一直不知道影响了多少。
  * - jobStatus:后台定时任务只在从正常变成失败、以及恢复时各发一次,不会每分钟重复。
  */
 export class Alerts {
   private readonly cooldownMs: number;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
-  private readonly throttle = new Map<string, { sentAt: number; suppressed: number; subjects: Set<string> }>();
+  private readonly throttle = new Map<string, ThrottleState>();
   private readonly failingJobs = new Map<string, string>();
 
   constructor(
@@ -60,14 +69,30 @@ export class Alerts {
       this.log(`[告警,冷却期内不重复发送] ${message}`);
       return;
     }
-    let text = message;
-    if (state && state.suppressed > 0) {
-      const minutes = Math.round((now - state.sentAt) / 60_000);
-      const subjects = state.subjects.size > 0 ? `,涉及 ${[...state.subjects].join("、")}` : "";
-      text += `(上次告警后的 ${minutes} 分钟里还有 ${state.suppressed} 次同类问题${subjects})`;
+    const summary = state ? this.summary(state, now) : "";
+    this.throttle.set(key, { sentAt: now, suppressed: 0, subjects: new Set(), message });
+    await this.send(summary ? `${message}(${summary})` : message);
+  }
+
+  /**
+   * 定时调用:冷却期已过、期间有被压下的同类告警、又没有新告警把它们带出去的,单独补发一条汇总。
+   * 补发后重新开始一个冷却期
+   */
+  async flush(): Promise<void> {
+    const now = this.now().getTime();
+    for (const [key, state] of this.throttle) {
+      if (state.suppressed === 0 || now - state.sentAt < this.cooldownMs) continue;
+      const summary = this.summary(state, now);
+      this.throttle.set(key, { sentAt: now, suppressed: 0, subjects: new Set(), message: state.message });
+      await this.send(`${summary}。上次告警是:${state.message}`);
     }
-    this.throttle.set(key, { sentAt: now, suppressed: 0, subjects: new Set() });
-    await this.send(text);
+  }
+
+  private summary(state: ThrottleState, now: number): string {
+    if (state.suppressed === 0) return "";
+    const minutes = Math.round((now - state.sentAt) / 60_000);
+    const subjects = state.subjects.size > 0 ? `,涉及 ${[...state.subjects].join("、")}` : "";
+    return `上次告警后的 ${minutes} 分钟里还有 ${state.suppressed} 次同类问题${subjects}`;
   }
 
   /** 后台任务每次运行后调用:error 为空表示这次成功 */

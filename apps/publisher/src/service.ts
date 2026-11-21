@@ -799,6 +799,9 @@ function nextAction(release: ReleaseRecord): string {
     case "ROLLED_BACK":
       return "新版本有问题,线上已恢复为上一个版本。根据 error 修复后重新走一遍 prepare_app、上传、publish_app";
     case "FAILED":
+      if (release.error?.type === "backup_failed") {
+        return "不要修改代码,也不要马上重新发布。告诉用户迁移前备份数据库失败、平台管理员已收到告警;等管理员处理好、用户让你再发布时再重新发布";
+      }
       return "不要再重试。用通俗的话向用户说明原因,并建议联系平台管理员";
     default:
       return "发布进行中,几秒后再查询";
