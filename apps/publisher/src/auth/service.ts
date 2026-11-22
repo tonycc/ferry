@@ -54,8 +54,11 @@ export type LoginResult =
 /** 管理员人员页上一个人的密码状态 */
 export type PasswordStatus = "none" | "initial" | "set";
 
-/** 所有登录失败都用这一句:不透露账号是否存在、是否被锁定、是否已离职 */
-const LOGIN_FAILED = "账号或密码不正确。连续输错 5 次要等 15 分钟再试;忘记密码请找平台管理员重置";
+/** 所有登录失败都用这一句:不透露账号是否存在、是否被锁定、是否已离职。次数和时长按配置写 */
+function loginFailedMessage(config: AuthConfig): string {
+  const minutes = Math.round(config.lockMs / 60_000);
+  return `账号或密码不正确。连续输错 ${config.maxFailures} 次要等 ${minutes} 分钟再试;忘记密码请找平台管理员重置`;
+}
 
 /**
  * 手机号 + 密码登录,以及个人令牌。
@@ -64,7 +67,8 @@ const LOGIN_FAILED = "账号或密码不正确。连续输错 5 次要等 15 分
  *   用初始密码登录后必须先改成自己的密码:这时只拿到一张一次性的改密码票据,不签发登录会话,
  *   控制台、访问员工应用、个人令牌在改密码之前都用不了。
  * - 账号不存在、密码错误、已锁定、已离职,返回一样的错误,账号不存在时也算一次哈希,登录页不能用来探测谁是员工。
- *   输错次数按输入的账号计,不存在的账号同样会锁定。已知的限制:知道同事手机号的人可以故意输错,让对方 15 分钟内登录不了。
+ *   输错次数按人计(手机号和工号算同一个人;已登录改密码时输错当前密码也算),不存在的账号按输入的账号计,同样会锁定。
+ *   已知的限制:知道同事手机号的人可以故意输错,让对方 15 分钟内登录不了。
  * - 密码只存 scrypt 哈希;登录会话和个人令牌只存 SHA-256 哈希。
  * - 每次用登录会话或令牌时都检查本人是否在职,离职后立即失效。
  * - 管理员重置密码时作废这个人的全部登录会话;个人令牌不受影响(忘记密码不该让 agent 停掉),
@@ -72,8 +76,12 @@ const LOGIN_FAILED = "账号或密码不正确。连续输错 5 次要等 15 分
  */
 export class AuthService {
   private readonly config: AuthConfig;
-  /** 输错次数,按规范化后的账号计。只有一个 Ferry 实例,放在内存里;重启后清零 */
-  private readonly failures = new Map<string, { count: number; lockedUntil?: number }>();
+  /**
+   * 输错次数:找得到人时按人计(user:<ID>),找不到时按规范化后的输入计。只有一个 Ferry 实例,放在内存里;重启后清零。
+   * 超过锁定时长没再输错的、锁定已经过了的,定期清掉,免得被大量随机账号撑大
+   */
+  private readonly failures = new Map<string, { count: number; lockedUntil?: number; lastAt: number }>();
+  private lastSweep = 0;
   /**
    * 改密码票据(只存哈希),短时间有效、只能用一次;重启后作废,重新登录一次即可。
    * issuedFor 是签发时的密码哈希:密码在这之后变过(被重置、已经改过),票据就不能再用
@@ -92,9 +100,10 @@ export class AuthService {
 
   /** 用手机号(或工号)和密码登录 */
   async login(account: string, password: string): Promise<LoginResult> {
-    const key = accountKey(account);
     const userId = await this.directory.findLogin(account);
-    const record = userId ? await this.store.getPassword(userId) : undefined;
+    const key = userId ? `user:${userId}` : accountKey(account);
+    // 账号不存在时也查一次库(查不到),和账号存在时的耗时一致
+    const record = await this.store.getPassword(userId ?? "");
     let ok = false;
     if (record && password.length <= MAX_PASSWORD_LENGTH) ok = await verifyPassword(password, record.hash);
     else await burnPasswordCheck(password);
@@ -103,17 +112,11 @@ export class AuthService {
     // 输错次数和锁定在校验完之后才读写,中间没有 await:同时发来的一批请求各自都会计数,
     // 校验期间账号被锁了的话,这次就算密码对了也不放行
     const now = this.config.now().getTime();
-    const failed = this.failures.get(key);
-    const locked = failed?.lockedUntil !== undefined && failed.lockedUntil > now;
+    this.sweep(now);
+    const locked = this.isLocked(key, now);
     if (!ok || locked || !userId || !record) {
-      if (!locked) {
-        const count = (failed?.lockedUntil !== undefined ? 0 : (failed?.count ?? 0)) + 1;
-        this.failures.set(key, {
-          count,
-          lockedUntil: count >= this.config.maxFailures ? now + this.config.lockMs : undefined,
-        });
-      }
-      throw new UserError("unauthenticated", LOGIN_FAILED);
+      if (!locked) this.recordFailure(key, now);
+      throw new UserError("unauthenticated", loginFailedMessage(this.config));
     }
     this.failures.delete(key);
 
@@ -163,10 +166,19 @@ export class AuthService {
     currentPassword: string,
     newPassword: string,
   ): Promise<{ sessionToken: string; expiresAt: Date }> {
+    // 输错当前密码和登录输错算在一起:拿到一个没退出的会话也不能用这里猜密码
+    const key = `user:${userId}`;
+    const lockedMessage = `输错次数太多,请 ${Math.round(this.config.lockMs / 60_000)} 分钟后再试`;
+    if (this.isLocked(key, this.config.now().getTime())) throw new UserError("invalid_input", lockedMessage);
     const record = await this.store.getPassword(userId);
-    if (!record || !(await verifyPassword(currentPassword, record.hash))) {
+    const ok = !!record && (await verifyPassword(currentPassword, record.hash));
+    const now = this.config.now().getTime();
+    if (this.isLocked(key, now)) throw new UserError("invalid_input", lockedMessage);
+    if (!ok) {
+      this.recordFailure(key, now);
       throw new UserError("invalid_input", "当前密码不正确");
     }
+    this.failures.delete(key);
     checkNewPassword(newPassword);
     if (newPassword === currentPassword) throw new UserError("invalid_input", "新密码不能和当前密码一样");
     await this.setPassword(userId, newPassword, false, userId);
@@ -203,6 +215,34 @@ export class AuthService {
     const session = await this.store.getSession(hashToken(sessionToken));
     if (!session || session.expiresAt <= this.config.now()) return undefined;
     return (await this.directory.isActive(session.userId)) ? session.userId : undefined;
+  }
+
+  private isLocked(key: string, now: number): boolean {
+    const failed = this.failures.get(key);
+    return failed?.lockedUntil !== undefined && failed.lockedUntil > now;
+  }
+
+  /** 记一次输错;锁定已过、或者上次输错已经是锁定时长之前的,从头计 */
+  private recordFailure(key: string, now: number): void {
+    const failed = this.failures.get(key);
+    const fresh = !failed || failed.lockedUntil !== undefined || now - failed.lastAt > this.config.lockMs;
+    const count = (fresh ? 0 : failed.count) + 1;
+    this.failures.set(key, {
+      count,
+      lastAt: now,
+      lockedUntil: count >= this.config.maxFailures ? now + this.config.lockMs : undefined,
+    });
+  }
+
+  /** 每分钟最多一次:清掉不再起作用的输错记录和过期的改密码票据 */
+  private sweep(now: number): void {
+    if (now - this.lastSweep < 60_000) return;
+    this.lastSweep = now;
+    for (const [key, f] of this.failures) {
+      const stale = f.lockedUntil !== undefined ? f.lockedUntil <= now : now - f.lastAt > this.config.lockMs;
+      if (stale) this.failures.delete(key);
+    }
+    for (const [hash, t] of this.changeTickets) if (t.expiresAt <= now) this.changeTickets.delete(hash);
   }
 
   private clearTickets(userId: string): void {

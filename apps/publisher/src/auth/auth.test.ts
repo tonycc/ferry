@@ -156,6 +156,44 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
     expect((await auth.login("13800000001", "alice-own-pass")).kind).toBe("session");
   });
 
+  it("输错次数按人计:手机号和工号轮流输错也一起计数", async () => {
+    const { auth, aliceWithPassword } = setup(storeCase.createAuth());
+    await aliceWithPassword();
+    for (let i = 0; i < 5; i++) {
+      await expect(auth.login(i % 2 ? "A001" : "13800000001", "wrong-pass")).rejects.toThrow();
+    }
+    await expect(auth.login("A001", "alice-own-pass")).rejects.toThrow("账号或密码不正确");
+  });
+
+  it("超过锁定时长没再输错,之前的输错不再算;过期的记录会被清掉", async () => {
+    const { auth, time, aliceWithPassword } = setup(storeCase.createAuth());
+    await aliceWithPassword();
+    for (let i = 0; i < 4; i++) await expect(auth.login("13800000001", "wrong-pass")).rejects.toThrow();
+    for (let i = 0; i < 50; i++) await expect(auth.login(`1390000${String(i).padStart(4, "0")}`, "x-wrong-pass")).rejects.toThrow();
+    time.advance(15 * 60_000 + 1);
+    await expect(auth.login("13800000001", "wrong-pass")).rejects.toThrow();
+    // 只剩刚才这一次
+    expect((auth as unknown as { failures: Map<string, unknown> }).failures.size).toBe(1);
+    expect((await auth.login("13800000001", "alice-own-pass")).kind).toBe("session");
+  });
+
+  it("已登录改密码时输错当前密码也计数,锁定后不能再试", async () => {
+    const { auth, aliceWithPassword } = setup(storeCase.createAuth());
+    await aliceWithPassword();
+    for (let i = 0; i < 5; i++) {
+      await expect(auth.changePassword("dingtalk:alice", "wrong", "new-own-pass")).rejects.toThrow("当前密码不正确");
+    }
+    await expect(auth.changePassword("dingtalk:alice", "alice-own-pass", "new-own-pass")).rejects.toThrow("输错次数太多");
+    await expect(auth.login("13800000001", "alice-own-pass")).rejects.toThrow("账号或密码不正确");
+  });
+
+  it("错误提示里的次数和时长按配置", async () => {
+    const directory = new MemoryDirectory();
+    directory.replace(org());
+    const auth = new AuthService(storeCase.createAuth(), directory, { maxFailures: 3, lockMs: 30 * 60_000 });
+    await expect(auth.login("13800000001", "x")).rejects.toThrow("连续输错 3 次要等 30 分钟");
+  });
+
   it("登录成功后输错次数清零", async () => {
     const { auth, aliceWithPassword } = setup(storeCase.createAuth());
     await aliceWithPassword();
