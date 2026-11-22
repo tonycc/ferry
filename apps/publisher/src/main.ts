@@ -142,6 +142,7 @@ const engine = new Engine(store, adapters, {
   secretBox,
   audit,
   alerts,
+  consoleUrl: `${(config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`).replace(/\/+$/, "")}/console`,
 });
 const service = new PublisherService(store, engine, adapters, {
   appsDomain: config.APPS_DOMAIN,

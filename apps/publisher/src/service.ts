@@ -162,6 +162,11 @@ export class PublisherService {
     this.audit = config.audit ?? memoryAuditLog();
   }
 
+  /** 网页控制台的地址(给 agent 的说明和修复提示里用,agent 自己不知道) */
+  consoleUrl(): string {
+    return `${this.config.publicUrl.replace(/\/+$/, "")}/console`;
+  }
+
   /**
    * 占用应用名(已是自己的应用则复用),并签发一个一次性的代码包上传地址。
    * 每次发布前都要调用一次:agent 把代码包传到返回的地址,再用返回的 version 调用 publish。

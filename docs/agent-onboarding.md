@@ -1,6 +1,6 @@
 # 让 agent 接入 Ferry
 
-员工用自己的 AI agent(Claude Code 或其他支持 MCP 的 agent)做应用,由 agent 通过 Ferry 发布到公司服务器。
+员工用自己的 AI agent(Claude Code、Antigravity 或其他支持 MCP 的 agent)做应用,由 agent 通过 Ferry 发布到公司服务器。
 接入只需要做一次:领一个个人令牌,填进 agent 的 MCP 配置。
 
 ## 前提
@@ -26,6 +26,15 @@ claude mcp add --transport http --scope user ferry <Ferry 地址>/mcp --header "
 ```
 
 运行 `claude mcp list`,看到 `ferry` 显示已连接即可。
+
+**Antigravity**(Gemini 应用里的 `agy` 命令行):在终端运行
+
+```bash
+agy mcp add --header "Authorization: Bearer <令牌>" ferry <Ferry 地址>/mcp
+```
+
+运行 `agy mcp list`,看到 `ferry` 显示 enabled 即可。这个配置对所有目录都生效。
+在 Antigravity 里第一次用 Ferry 的工具、执行打包和上传命令时,它会请你允许,允许即可。
 
 **其他 agent**:添加一个 HTTP(Streamable HTTP)类型的 MCP 服务,地址是 `<Ferry 地址>/mcp`,
 带请求头 `Authorization: Bearer <令牌>`。页面上也给出了 JSON 格式的配置:

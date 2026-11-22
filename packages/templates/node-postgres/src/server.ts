@@ -8,6 +8,8 @@ interface Visitor {
   id: string;
   name: string;
   departments: string[];
+  /** 部门名称,和 departments 一一对应 */
+  departmentNames: string[];
 }
 
 /**
@@ -19,11 +21,17 @@ function visitor(req: IncomingMessage): Visitor | undefined {
   if (typeof id !== "string" || !id) return undefined;
   const name = req.headers["x-ferry-user-name"];
   const departments = req.headers["x-ferry-user-departments"];
+  const departmentNames = req.headers["x-ferry-user-department-names"];
   return {
     id,
     // 姓名按 UTF-8 百分号编码
     name: decodeURIComponent(typeof name === "string" ? name : ""),
     departments: (typeof departments === "string" ? departments : "").split(",").filter(Boolean),
+    // 每个名称单独百分号编码,用逗号分隔
+    departmentNames: (typeof departmentNames === "string" ? departmentNames : "")
+      .split(",")
+      .filter(Boolean)
+      .map(decodeURIComponent),
   };
 }
 

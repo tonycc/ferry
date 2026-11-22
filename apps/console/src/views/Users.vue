@@ -77,7 +77,7 @@ onMounted(load);
       <el-input v-model="filter" clearable placeholder="按姓名、工号或部门筛选" style="max-width: 320px" />
       <span class="muted">员工用手机号和密码登录。初始密码在这里生成,转交给本人;忘记密码也在这里重新生成。</span>
     </div>
-    <el-table v-loading="loading" :data="shown">
+    <el-table v-loading="loading" :data="shown" :empty-text="loading ? ' ' : '组织架构里没有在职的人'">
       <el-table-column prop="name" label="姓名" width="120" />
       <el-table-column label="工号" width="100">
         <template #default="{ row }">{{ row.jobNumber ?? "—" }}</template>

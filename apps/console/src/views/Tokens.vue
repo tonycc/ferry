@@ -14,6 +14,7 @@ const mcpUrl = `${location.origin}/mcp`;
 const cli = computed(
   () => `claude mcp add --transport http --scope user ferry ${mcpUrl} --header "Authorization: Bearer ${created.value}"`,
 );
+const agy = computed(() => `agy mcp add --header "Authorization: Bearer ${created.value}" ferry ${mcpUrl}`);
 const json = computed(() =>
   JSON.stringify({ mcpServers: { ferry: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${created.value}` } } } }, null, 2),
 );
@@ -85,6 +86,8 @@ onMounted(() => load().catch((err: Error) => ElMessage.error(err.message)));
     <div class="snippet"><pre>{{ created }}</pre><el-button size="small" @click="copy(created!)">复制</el-button></div>
     <h4>Claude Code:在终端里运行(<code>--scope user</code> 表示在你电脑上的所有项目里都能用)</h4>
     <div class="snippet"><pre>{{ cli }}</pre><el-button size="small" @click="copy(cli)">复制</el-button></div>
+    <h4>Antigravity:在终端里运行(对所有目录都生效)</h4>
+    <div class="snippet"><pre>{{ agy }}</pre><el-button size="small" @click="copy(agy)">复制</el-button></div>
     <h4>其他支持 MCP 的 agent:添加一个 HTTP 类型的 MCP 服务</h4>
     <div class="snippet"><pre>{{ json }}</pre><el-button size="small" @click="copy(json)">复制</el-button></div>
     <el-button class="done" @click="created = undefined">我已配好</el-button>

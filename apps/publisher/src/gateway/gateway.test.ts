@@ -139,6 +139,8 @@ describe("登录网关", () => {
     expect(ok.headers["x-ferry-user-id"]).toBe("dingtalk:alice");
     expect(decodeURIComponent(String(ok.headers["x-ferry-user-name"]))).toBe("张三");
     expect(ok.headers["x-ferry-user-departments"]).toBe("dingtalk:finance");
+    // 部门名称和 ID 一一对应,每个名称单独百分号编码
+    expect(String(ok.headers["x-ferry-user-department-names"]).split(",").map(decodeURIComponent)).toEqual(["财务部"]);
   });
 
   it("Ferry 没登录时先去登录页,登录后回到原来的跳转", async () => {

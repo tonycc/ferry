@@ -43,6 +43,8 @@ function visitor(req: IncomingMessage) {
     // 姓名按 UTF-8 百分号编码
     name: decodeURIComponent(header("x-ferry-user-name")),
     departments: header("x-ferry-user-departments").split(",").filter(Boolean),
+    // 部门名称,和 departments 一一对应;每个名称单独百分号编码,用逗号分隔
+    departmentNames: header("x-ferry-user-department-names").split(",").filter(Boolean).map(decodeURIComponent),
   };
 }
 

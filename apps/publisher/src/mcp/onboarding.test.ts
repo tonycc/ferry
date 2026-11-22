@@ -53,6 +53,9 @@ describe("agent 接入", () => {
     });
     expect(result.instructions).toContain("发布前先向用户确认");
     expect(result.instructions).toContain("X-Ferry-User-Id");
+    // 控制台的完整地址:agent 只知道 MCP 的地址,自己猜会猜错
+    expect(result.instructions).toContain("http://ferry.test/console/apps/<应用名>#secrets");
+    expect(result.instructions).not.toContain("{{CONSOLE_URL}}");
   });
 
   it("agent 能列出模板并取到模板文件,不含依赖目录,不能越出模板目录", async () => {
