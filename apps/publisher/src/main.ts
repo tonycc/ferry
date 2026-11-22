@@ -63,10 +63,9 @@ if (config.SECRET_SCAN === "gitleaks") {
 } else {
   console.warn("SECRET_SCAN=off:发布前不扫描密钥,只能用于临时试用");
 }
-if (config.NOTIFY_VIA === "log") {
-  console.warn("NOTIFY_VIA=log:通知和登录验证码会打印在日志里,能看到日志的人就能登录任何账号,只能用于本地开发");
-} else {
-  console.warn("未设置 NOTIFY_VIA:通知和登录验证码都发不出去,无法用验证码登录");
+// 一期没有对外发通知的渠道:给负责人的通知和给管理员的告警都只写进服务日志
+if (config.NOTIFY_VIA !== "log") {
+  console.warn("未设置 NOTIFY_VIA:给负责人的通知和给管理员的告警都不会记录内容;设 NOTIFY_VIA=log 写进服务日志");
 }
 if (config.FERRY_PLATFORM === "dokploy") {
   if (!config.DOKPLOY_URL || !config.DOKPLOY_API_KEY) {
@@ -121,7 +120,7 @@ const alerts = new Alerts(adapters.notifier, [...adminIds], { cooldownMs: config
 if (adminIds.size === 0) console.warn("未设置 ADMIN_USERS:告警只写进服务日志,不会发给任何人");
 
 // 先用上次同步保存的组织架构,再同步一次,之后定时同步。同步失败只记日志,继续用现有数据
-// 组织架构目前来自文件(本地开发);接入钉钉后换成钉钉通讯录(任务 2.1)
+// 一期组织架构来自文件(ORG_FILE),由管理员维护;以后接入企业通讯录时换数据源
 const orgSync = new OrgSync(config.ORG_FILE ? new FileOrgSource(config.ORG_FILE) : undefined, orgStore, directory);
 await orgSync.init();
 if (!config.ORG_FILE) console.warn("未设置 ORG_FILE:不同步组织架构,按部门的可见范围只能用上次保存的数据");
@@ -163,13 +162,16 @@ const allowedOrigins = new Set([
 ]);
 // 本机地址 127.0.0.1 和 localhost 都能打开登录页
 if (publicUrl.hostname === "127.0.0.1") allowedOrigins.add(publicUrl.origin.replace("127.0.0.1", "localhost"));
-const auth = new AuthService(
-  authStore,
-  directory,
-  adapters.notifier,
-  { sessionTtlMs: config.SESSION_DAYS * 24 * 3600_000 },
-  audit,
-);
+const auth = new AuthService(authStore, directory, { sessionTtlMs: config.SESSION_DAYS * 24 * 3600_000 }, audit);
+// 第一个管理员怎么登录:用数据库时用命令行设置初始密码(pnpm set-password <手机号>);
+// 内存存储(本地临时试用)时命令行连不上,启动时给还没有密码的管理员各生成一个,打印在这里
+if (!config.DATABASE_URL) {
+  const statuses = await auth.passwordStatuses();
+  for (const id of adminIds) {
+    if (statuses.has(id) || !(await directory.isActive(id))) continue;
+    console.warn(`管理员 ${id} 的初始密码:${await auth.resetPassword(undefined, id)}(内存存储,只用于本地试用;第一次登录后要改)`);
+  }
+}
 const gateway = new Gateway(service, directory, {
   secret: gatewaySecret,
   ferryUrl: publicUrl.origin,
@@ -185,7 +187,7 @@ const server = buildServer(service, identity, {
   auth: {
     service: auth,
     directory,
-    routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:", codeTtlMinutes: 5 },
+    routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:" },
   },
 });
 await server.listen({ port: config.PORT, host: config.HOST });

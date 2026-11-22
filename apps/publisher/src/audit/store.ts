@@ -31,6 +31,10 @@ export const AUDIT_ACTIONS = [
   /** 个人令牌 */
   "token.create",
   "token.revoke",
+  /** 生成初始密码(管理员或命令行);detail.userId 是被重置的人 */
+  "password.reset",
+  /** 本人修改密码;detail.initial 为 true 表示首次登录时把初始密码改掉 */
+  "password.change",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

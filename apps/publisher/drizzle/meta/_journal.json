@@ -50,6 +50,20 @@
       "when": 1795184798847,
       "tag": "0006_audit_log",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795319342040,
+      "tag": "0007_drop_login_challenges",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795319342513,
+      "tag": "0008_user_passwords",
+      "breakpoints": true
     }
   ]
 }

@@ -1,12 +1,14 @@
-/** 一次验证码登录:发出的验证码(只存哈希)、过期时间、已输错次数 */
-export interface LoginChallenge {
-  id: string;
+/**
+ * 登录密码(只存 scrypt 哈希,参数和盐写在哈希字符串里)。
+ * mustChange 为 true 表示这是管理员生成的初始密码,用它登录后必须先改成自己的密码
+ */
+export interface PasswordRecord {
   userId: string;
-  codeHash: string;
-  createdAt: Date;
-  expiresAt: Date;
-  attempts: number;
-  usedAt?: Date;
+  hash: string;
+  mustChange: boolean;
+  updatedAt: Date;
+  /** 谁设置的:本人修改时是本人,管理员生成初始密码时是管理员,命令行设置时为空 */
+  updatedBy?: string;
 }
 
 /** 浏览器登录会话:cookie 里是随机令牌,这里只存它的哈希 */
@@ -29,14 +31,16 @@ export interface PersonalToken {
 }
 
 export interface AuthStore {
-  saveChallenge(challenge: LoginChallenge): Promise<void>;
-  getChallenge(id: string): Promise<LoginChallenge | undefined>;
-  /** 某人在 since 之后发过的验证码(限频用),按时间从新到旧 */
-  listChallengesSince(userId: string, since: Date): Promise<LoginChallenge[]>;
+  getPassword(userId: string): Promise<PasswordRecord | undefined>;
+  savePassword(record: PasswordRecord): Promise<void>;
+  /** 全部已设置的密码(人员页显示状态用) */
+  listPasswords(): Promise<PasswordRecord[]>;
 
   saveSession(session: Session): Promise<void>;
   getSession(tokenHash: string): Promise<Session | undefined>;
   deleteSession(tokenHash: string): Promise<void>;
+  /** 删除某人的全部登录会话(改密码、管理员重置密码时) */
+  deleteSessionsOf(userId: string): Promise<void>;
 
   saveToken(token: PersonalToken): Promise<void>;
   getTokenByHash(tokenHash: string): Promise<PersonalToken | undefined>;
@@ -46,23 +50,20 @@ export interface AuthStore {
 
 /** 内存实现,重启即丢失,只用于本地开发和测试。读写都复制一份 */
 export class MemoryAuthStore implements AuthStore {
-  private readonly challenges = new Map<string, LoginChallenge>();
+  private readonly passwords = new Map<string, PasswordRecord>();
   private readonly sessions = new Map<string, Session>();
   private readonly tokens = new Map<string, PersonalToken>();
 
-  async saveChallenge(challenge: LoginChallenge) {
-    this.challenges.set(challenge.id, structuredClone(challenge));
+  async getPassword(userId: string) {
+    return copy(this.passwords.get(userId));
   }
 
-  async getChallenge(id: string) {
-    return copy(this.challenges.get(id));
+  async savePassword(record: PasswordRecord) {
+    this.passwords.set(record.userId, structuredClone(record));
   }
 
-  async listChallengesSince(userId: string, since: Date) {
-    return [...this.challenges.values()]
-      .filter((c) => c.userId === userId && c.createdAt >= since)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .map((c) => structuredClone(c));
+  async listPasswords() {
+    return [...this.passwords.values()].map((p) => structuredClone(p));
   }
 
   async saveSession(session: Session) {
@@ -75,6 +76,10 @@ export class MemoryAuthStore implements AuthStore {
 
   async deleteSession(tokenHash: string) {
     this.sessions.delete(tokenHash);
+  }
+
+  async deleteSessionsOf(userId: string) {
+    for (const [hash, session] of this.sessions) if (session.userId === userId) this.sessions.delete(hash);
   }
 
   async saveToken(token: PersonalToken) {

@@ -119,7 +119,7 @@ export interface Notifier {
 }
 
 /**
- * 组织架构:从钉钉、企业微信等平台同步来的部门树和人员所属部门。
+ * 组织架构:从数据源(现在是组织架构文件)同步来的部门树和人员所属部门。
  * 用户 ID 和部门 ID 都带平台前缀(如 dingtalk:123),不同平台的 ID 不会冲突。
  */
 export interface Directory {
@@ -135,7 +135,19 @@ export interface Directory {
   /** 按登录时输入的账号(工号或手机号)找在职的人 */
   findLogin(account: string): Promise<string | undefined>;
   nameOf(userId: string): Promise<string | undefined>;
+  /** 组织架构里的全部人员(管理员人员页用),含已离职的 */
+  listUsers(): Promise<DirectoryUser[]>;
   departmentNameOf(departmentId: string): Promise<string | undefined>;
+}
+
+export interface DirectoryUser {
+  id: string;
+  name: string;
+  departmentIds: string[];
+  active: boolean;
+  /** 有没有登记手机号:没有的话只能用工号登录 */
+  hasMobile: boolean;
+  jobNumber?: string;
 }
 
 export interface Adapters {

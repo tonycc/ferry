@@ -1,16 +1,25 @@
-import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import type { Directory, Notifier } from "../adapters/types";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import type { Directory } from "../adapters/types";
 import { memoryAuditLog, type AuditLog } from "../audit/log";
 import { UserError } from "../errors";
+import { normalizeMobile } from "../org/snapshot";
+import {
+  burnPasswordCheck,
+  checkNewPassword,
+  generateInitialPassword,
+  hashPassword,
+  MAX_PASSWORD_LENGTH,
+  verifyPassword,
+} from "./password";
 import type { AuthStore, PersonalToken } from "./store";
 
 export interface AuthConfig {
-  codeTtlMs: number;
-  /** 一个验证码最多输错几次 */
-  maxAttempts: number;
-  /** 同一个人两次发送验证码的最短间隔 */
-  resendIntervalMs: number;
-  maxCodesPerHour: number;
+  /** 同一个账号连续输错几次后锁定 */
+  maxFailures: number;
+  /** 锁定多久;这段时间里密码对了也不能登录 */
+  lockMs: number;
+  /** 用初始密码登录后拿到的改密码票据多久内有效 */
+  changeTicketTtlMs: number;
   sessionTtlMs: number;
   /** 令牌最近使用时间多久更新一次,避免每个请求都写库 */
   tokenTouchIntervalMs: number;
@@ -18,10 +27,9 @@ export interface AuthConfig {
 }
 
 export const DEFAULT_AUTH_CONFIG: AuthConfig = {
-  codeTtlMs: 5 * 60_000,
-  maxAttempts: 5,
-  resendIntervalMs: 60_000,
-  maxCodesPerHour: 5,
+  maxFailures: 5,
+  lockMs: 15 * 60_000,
+  changeTicketTtlMs: 10 * 60_000,
   sessionTtlMs: 7 * 24 * 3600_000,
   tokenTouchIntervalMs: 5 * 60_000,
   now: () => new Date(),
@@ -38,78 +46,168 @@ export interface TokenView {
   revoked: boolean;
 }
 
+/** 登录结果:普通密码直接登录;初始密码只给一张改密码票据,改完才登录 */
+export type LoginResult =
+  | { kind: "session"; sessionToken: string; expiresAt: Date }
+  | { kind: "must_change"; ticket: string };
+
+/** 管理员人员页上一个人的密码状态 */
+export type PasswordStatus = "none" | "initial" | "set";
+
+/** 所有登录失败都用这一句:不透露账号是否存在、是否被锁定、是否已离职。次数和时长按配置写 */
+function loginFailedMessage(config: AuthConfig): string {
+  const minutes = Math.round(config.lockMs / 60_000);
+  return `账号或密码不正确。连续输错 ${config.maxFailures} 次要等 ${minutes} 分钟再试;忘记密码请找平台管理员重置`;
+}
+
 /**
- * 验证码登录和个人令牌。
+ * 手机号 + 密码登录,以及个人令牌。
  *
- * - 验证码通过钉钉、企业微信的工作通知发给本人(本地开发打印在日志里),只有本人能收到,这就证明了身份。
- * - 账号不存在、发送太频繁时,返回和正常发送一样的结果,登录页不能用来探测谁是员工。
- * - 验证码、登录会话、个人令牌都只存哈希。
+ * - 一期不接企业通讯录和消息平台,没有渠道给本人发验证码,所以用密码登录。初始密码由管理员在控制台生成并转交,
+ *   用初始密码登录后必须先改成自己的密码:这时只拿到一张一次性的改密码票据,不签发登录会话,
+ *   控制台、访问员工应用、个人令牌在改密码之前都用不了。
+ * - 账号不存在、密码错误、已锁定、已离职,返回一样的错误,账号不存在时也算一次哈希,登录页不能用来探测谁是员工。
+ *   输错次数按人计(手机号和工号算同一个人;已登录改密码时输错当前密码也算),不存在的账号按输入的账号计,同样会锁定。
+ *   已知的限制:知道同事手机号的人可以故意输错,让对方 15 分钟内登录不了。
+ * - 密码只存 scrypt 哈希;登录会话和个人令牌只存 SHA-256 哈希。
  * - 每次用登录会话或令牌时都检查本人是否在职,离职后立即失效。
+ * - 管理员重置密码时作废这个人的全部登录会话;个人令牌不受影响(忘记密码不该让 agent 停掉),
+ *   访问员工应用的网关 cookie 也要等它自己过期(最长 GATEWAY_COOKIE_HOURS)。
  */
 export class AuthService {
   private readonly config: AuthConfig;
+  /**
+   * 输错次数:找得到人时按人计(user:<ID>),找不到时按规范化后的输入计。只有一个 Ferry 实例,放在内存里;重启后清零。
+   * 超过锁定时长没再输错的、锁定已经过了的,定期清掉,免得被大量随机账号撑大
+   */
+  private readonly failures = new Map<string, { count: number; lockedUntil?: number; lastAt: number }>();
+  private lastSweep = 0;
+  /**
+   * 改密码票据(只存哈希),短时间有效、只能用一次;重启后作废,重新登录一次即可。
+   * issuedFor 是签发时的密码哈希:密码在这之后变过(被重置、已经改过),票据就不能再用
+   */
+  private readonly changeTickets = new Map<string, { userId: string; expiresAt: number; issuedFor: string }>();
 
   constructor(
     private readonly store: AuthStore,
     private readonly directory: Directory,
-    private readonly notifier: Notifier,
     config: Partial<AuthConfig> = {},
-    /** 审计日志,记录令牌的生成和作废;不传时记在内存里(只有测试可以不传) */
+    /** 审计日志,记录密码和令牌的变化;不传时记在内存里(只有测试可以不传) */
     private readonly audit: AuditLog = memoryAuditLog(),
   ) {
     this.config = { ...DEFAULT_AUTH_CONFIG, ...config };
   }
 
-  /** 第一步:按工号或手机号找到本人,发验证码。返回值不透露账号是否存在 */
-  async requestCode(account: string): Promise<{ challengeId: string }> {
-    const challengeId = randomUUID();
+  /** 用手机号(或工号)和密码登录 */
+  async login(account: string, password: string): Promise<LoginResult> {
     const userId = await this.directory.findLogin(account);
-    if (!userId) return { challengeId };
+    const key = userId ? `user:${userId}` : accountKey(account);
+    // 账号不存在时也查一次库(查不到),和账号存在时的耗时一致
+    const record = await this.store.getPassword(userId ?? "");
+    let ok = false;
+    if (record && password.length <= MAX_PASSWORD_LENGTH) ok = await verifyPassword(password, record.hash);
+    else await burnPasswordCheck(password);
+    if (ok && userId) ok = await this.directory.isActive(userId);
 
-    const now = this.config.now();
-    const recent = await this.store.listChallengesSince(userId, new Date(now.getTime() - 3600_000));
-    const tooSoon = recent[0] && now.getTime() - recent[0].createdAt.getTime() < this.config.resendIntervalMs;
-    if (tooSoon || recent.length >= this.config.maxCodesPerHour) return { challengeId };
+    // 输错次数和锁定在校验完之后才读写,中间没有 await:同时发来的一批请求各自都会计数,
+    // 校验期间账号被锁了的话,这次就算密码对了也不放行
+    const now = this.config.now().getTime();
+    this.sweep(now);
+    const locked = this.isLocked(key, now);
+    if (!ok || locked || !userId || !record) {
+      if (!locked) this.recordFailure(key, now);
+      throw new UserError("unauthenticated", loginFailedMessage(this.config));
+    }
+    this.failures.delete(key);
 
-    const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-    await this.store.saveChallenge({
-      id: challengeId,
-      userId,
-      codeHash: hashCode(challengeId, code),
-      createdAt: now,
-      expiresAt: new Date(now.getTime() + this.config.codeTtlMs),
-      attempts: 0,
-    });
-    const minutes = Math.round(this.config.codeTtlMs / 60_000);
-    await this.notifier.notify(userId, `Ferry 登录验证码:${code},${minutes} 分钟内有效。如果不是你本人操作,请忽略。`);
-    return { challengeId };
+    if (record.mustChange) {
+      const ticket = randomBytes(32).toString("base64url");
+      this.changeTickets.set(hashToken(ticket), {
+        userId,
+        expiresAt: now + this.config.changeTicketTtlMs,
+        issuedFor: record.hash,
+      });
+      return { kind: "must_change", ticket };
+    }
+    return { kind: "session", ...(await this.newSession(userId)) };
   }
 
-  /** 第二步:核对验证码,成功后签发登录会话,返回放进 cookie 的令牌 */
-  async verify(challengeId: string, code: string): Promise<{ sessionToken: string; expiresAt: Date }> {
-    const invalid = new UserError("unauthenticated", "验证码不正确或已过期,请重新获取");
-    const now = this.config.now();
-    const challenge = await this.store.getChallenge(challengeId);
-    if (!challenge || challenge.usedAt || challenge.expiresAt <= now) throw invalid;
-    if (challenge.attempts >= this.config.maxAttempts) {
-      throw new UserError("unauthenticated", "输错次数太多,请重新获取验证码");
+  /** 用初始密码登录后,凭票据改成自己的密码,改完签发登录会话 */
+  async changeInitialPassword(ticket: string, newPassword: string): Promise<{ sessionToken: string; expiresAt: Date }> {
+    const hash = hashToken(ticket);
+    const entry = this.changeTickets.get(hash);
+    const now = this.config.now().getTime();
+    const expired = new UserError("unauthenticated", "改密码的页面已过期,请用初始密码重新登录");
+    if (!entry || entry.expiresAt <= now || !(await this.directory.isActive(entry.userId))) {
+      this.changeTickets.delete(hash);
+      throw expired;
     }
-    if (!sameHash(hashCode(challengeId, code.trim()), challenge.codeHash)) {
-      challenge.attempts += 1;
-      await this.store.saveChallenge(challenge);
-      if (challenge.attempts >= this.config.maxAttempts) {
-        throw new UserError("unauthenticated", "输错次数太多,请重新获取验证码");
-      }
-      throw invalid;
+    // 签发之后密码变过(管理员重置了、或者已经用别的票据改过):这张票据作废
+    const current = await this.store.getPassword(entry.userId);
+    if (!current?.mustChange || current.hash !== entry.issuedFor) {
+      this.changeTickets.delete(hash);
+      throw expired;
     }
-    if (!(await this.directory.isActive(challenge.userId))) throw invalid;
+    checkNewPassword(newPassword);
+    if (await verifyPassword(newPassword, current.hash)) {
+      throw new UserError("invalid_input", "新密码不能和初始密码一样");
+    }
+    // 再确认一次票据还在(校验期间可能已经被同时提交的另一次用掉了)
+    if (!this.changeTickets.delete(hash)) throw expired;
+    this.clearTickets(entry.userId);
+    await this.setPassword(entry.userId, newPassword, false, entry.userId);
+    await this.audit.record(entry.userId, "password.change", undefined, { initial: true });
+    return this.newSession(entry.userId);
+  }
 
-    challenge.usedAt = now;
-    await this.store.saveChallenge(challenge);
-    const sessionToken = randomBytes(32).toString("base64url");
-    const expiresAt = new Date(now.getTime() + this.config.sessionTtlMs);
-    await this.store.saveSession({ tokenHash: hashToken(sessionToken), userId: challenge.userId, createdAt: now, expiresAt });
-    return { sessionToken, expiresAt };
+  /** 已登录时修改密码:要输入当前密码;改完作废这个人的全部登录会话,签发一个新的 */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ sessionToken: string; expiresAt: Date }> {
+    // 输错当前密码和登录输错算在一起:拿到一个没退出的会话也不能用这里猜密码
+    const key = `user:${userId}`;
+    const lockedMessage = `输错次数太多,请 ${Math.round(this.config.lockMs / 60_000)} 分钟后再试`;
+    if (this.isLocked(key, this.config.now().getTime())) throw new UserError("invalid_input", lockedMessage);
+    const record = await this.store.getPassword(userId);
+    const ok = !!record && (await verifyPassword(currentPassword, record.hash));
+    const now = this.config.now().getTime();
+    if (this.isLocked(key, now)) throw new UserError("invalid_input", lockedMessage);
+    if (!ok) {
+      this.recordFailure(key, now);
+      throw new UserError("invalid_input", "当前密码不正确");
+    }
+    this.failures.delete(key);
+    checkNewPassword(newPassword);
+    if (newPassword === currentPassword) throw new UserError("invalid_input", "新密码不能和当前密码一样");
+    await this.setPassword(userId, newPassword, false, userId);
+    this.clearTickets(userId);
+    await this.store.deleteSessionsOf(userId);
+    await this.audit.record(userId, "password.change", undefined, {});
+    return this.newSession(userId);
+  }
+
+  /**
+   * 生成初始密码(管理员在人员页上,或者第一个管理员用命令行)。返回明文,只显示这一次;
+   * 这个人原有的登录会话全部作废,下次登录后必须先改密码。actorId 为空表示命令行
+   */
+  async resetPassword(actorId: string | undefined, userId: string): Promise<string> {
+    if (!(await this.directory.isActive(userId))) throw new UserError("not_found", "组织架构里没有这个人,或者已离职");
+    const password = generateInitialPassword();
+    await this.setPassword(userId, password, true, actorId);
+    // 之前用旧的初始密码拿到的改密码票据一起作废(初始密码泄露时,重置就是补救办法)
+    this.clearTickets(userId);
+    await this.store.deleteSessionsOf(userId);
+    await this.audit.record(actorId, "password.reset", undefined, { userId, ...(actorId ? {} : { via: "cli" }) });
+    return password;
+  }
+
+  /** 人员页用:每个人的密码状态 */
+  async passwordStatuses(): Promise<Map<string, PasswordStatus>> {
+    const statuses = new Map<string, PasswordStatus>();
+    for (const p of await this.store.listPasswords()) statuses.set(p.userId, p.mustChange ? "initial" : "set");
+    return statuses;
   }
 
   /** 登录会话对应的人;会话过期、不存在或本人已离职时返回 undefined */
@@ -117,6 +215,56 @@ export class AuthService {
     const session = await this.store.getSession(hashToken(sessionToken));
     if (!session || session.expiresAt <= this.config.now()) return undefined;
     return (await this.directory.isActive(session.userId)) ? session.userId : undefined;
+  }
+
+  private isLocked(key: string, now: number): boolean {
+    const failed = this.failures.get(key);
+    return failed?.lockedUntil !== undefined && failed.lockedUntil > now;
+  }
+
+  /** 记一次输错;锁定已过、或者上次输错已经是锁定时长之前的,从头计 */
+  private recordFailure(key: string, now: number): void {
+    const failed = this.failures.get(key);
+    const fresh = !failed || failed.lockedUntil !== undefined || now - failed.lastAt > this.config.lockMs;
+    const count = (fresh ? 0 : failed.count) + 1;
+    this.failures.set(key, {
+      count,
+      lastAt: now,
+      lockedUntil: count >= this.config.maxFailures ? now + this.config.lockMs : undefined,
+    });
+  }
+
+  /** 每分钟最多一次:清掉不再起作用的输错记录和过期的改密码票据 */
+  private sweep(now: number): void {
+    if (now - this.lastSweep < 60_000) return;
+    this.lastSweep = now;
+    for (const [key, f] of this.failures) {
+      const stale = f.lockedUntil !== undefined ? f.lockedUntil <= now : now - f.lastAt > this.config.lockMs;
+      if (stale) this.failures.delete(key);
+    }
+    for (const [hash, t] of this.changeTickets) if (t.expiresAt <= now) this.changeTickets.delete(hash);
+  }
+
+  private clearTickets(userId: string): void {
+    for (const [hash, entry] of this.changeTickets) if (entry.userId === userId) this.changeTickets.delete(hash);
+  }
+
+  private async setPassword(userId: string, password: string, mustChange: boolean, by: string | undefined) {
+    await this.store.savePassword({
+      userId,
+      hash: await hashPassword(password),
+      mustChange,
+      updatedAt: this.config.now(),
+      updatedBy: by,
+    });
+  }
+
+  private async newSession(userId: string): Promise<{ sessionToken: string; expiresAt: Date }> {
+    const now = this.config.now();
+    const sessionToken = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(now.getTime() + this.config.sessionTtlMs);
+    await this.store.saveSession({ tokenHash: hashToken(sessionToken), userId, createdAt: now, expiresAt });
+    return { sessionToken, expiresAt };
   }
 
   async logout(sessionToken: string): Promise<void> {
@@ -172,12 +320,10 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function hashCode(challengeId: string, code: string): string {
-  return createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
-}
-
-function sameHash(a: string, b: string): boolean {
-  return a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+/** 计输错次数用的账号:手机号去掉格式差异,工号不分大小写 */
+function accountKey(account: string): string {
+  const value = account.trim();
+  return /^[+\d\s-]+$/.test(value) ? `mobile:${normalizeMobile(value)}` : `job:${value.toLowerCase()}`;
 }
 
 function toView(token: PersonalToken): TokenView {

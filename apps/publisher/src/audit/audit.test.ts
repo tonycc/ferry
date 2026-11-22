@@ -227,7 +227,7 @@ describe.each(storeCases("ferry_test_audit"))("审计日志:$name", (storeCase) 
 
   it("个人令牌的生成和作废", async () => {
     const { adapters, audit, all } = setup();
-    const auth = new AuthService(c.createAuth(), adapters.directory, adapters.notifier, {}, audit);
+    const auth = new AuthService(c.createAuth(), adapters.directory, {}, audit);
     const token = await auth.createToken(alice.id, "我的 agent");
     await auth.revokeToken(alice.id, token.id);
     await auth.revokeToken(alice.id, token.id);

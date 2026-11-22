@@ -1,5 +1,5 @@
 /**
- * 登录页和“我的个人令牌”页。只是能用的最小页面,完整的控制台在任务 2.7。
+ * 登录页(手机号 + 密码,初始密码登录后先改密码)。控制台之外只有这一个页面。
  * 页面不引用任何外部资源;所有请求发往同一来源,浏览器会带上 Origin 和 cookie。
  */
 
@@ -28,45 +28,53 @@ export const LOGIN_PAGE = `<!doctype html>
 <title>登录 Ferry</title><style>${STYLE}</style></head>
 <body>
 <h1>登录 Ferry</h1>
-<p class="hint">输入工号或手机号,验证码会通过工作通知发到你本人的钉钉上。</p>
-<form id="step1">
-  <label for="account">工号或手机号</label>
+<form id="login">
+  <label for="account">手机号</label>
   <input id="account" autocomplete="username" required>
-  <button type="submit">发送验证码</button>
-</form>
-<form id="step2" hidden>
-  <p id="sent" class="hint"></p>
-  <label for="code">验证码</label>
-  <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+  <label for="password">密码</label>
+  <input id="password" type="password" autocomplete="current-password" required>
   <button type="submit">登录</button>
-  <button type="button" id="again">重新获取</button>
+  <p class="hint">第一次登录用平台管理员给你的初始密码。忘记密码请找平台管理员重置。</p>
+</form>
+<form id="change" hidden>
+  <p class="hint">这是初始密码,请先设置你自己的密码(至少 8 位,不能全是数字)。</p>
+  <label for="new1">新密码</label>
+  <input id="new1" type="password" autocomplete="new-password" required>
+  <label for="new2">再输一次</label>
+  <input id="new2" type="password" autocomplete="new-password" required>
+  <button type="submit">设置并登录</button>
 </form>
 <p id="msg"></p>
 <script>
 ${POST}
-  let challengeId = "";
-  const msg = (text, cls) => { const el = document.getElementById("msg"); el.textContent = text; el.className = cls || ""; };
-  document.getElementById("step1").addEventListener("submit", async (e) => {
+  let ticket = "";
+  const $ = (id) => document.getElementById(id);
+  const msg = (text, cls) => { $("msg").textContent = text; $("msg").className = cls || ""; };
+  // 登录后回到原来要去的页面;只接受站内路径
+  const done = () => {
+    const next = new URLSearchParams(location.search).get("next") || "/console/";
+    location.href = next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\\\") ? next : "/console/";
+  };
+  $("login").addEventListener("submit", async (e) => {
     e.preventDefault(); msg("");
     try {
-      const data = await post("/auth/code", { account: document.getElementById("account").value });
-      challengeId = data.challengeId;
-      document.getElementById("sent").textContent = data.message;
-      document.getElementById("step1").hidden = true; document.getElementById("step2").hidden = false;
-      document.getElementById("code").focus();
+      const data = await post("/auth/login", { account: $("account").value, password: $("password").value });
+      if (!data.mustChange) return done();
+      ticket = data.ticket;
+      $("login").hidden = true; $("change").hidden = false; $("new1").focus();
     } catch (err) { msg(err.message, "error"); }
   });
-  document.getElementById("step2").addEventListener("submit", async (e) => {
+  $("change").addEventListener("submit", async (e) => {
     e.preventDefault(); msg("");
+    if ($("new1").value !== $("new2").value) return msg("两次输入的密码不一样", "error");
     try {
-      await post("/auth/verify", { challengeId, code: document.getElementById("code").value });
-      // 登录后回到原来要去的页面;只接受站内路径
-      const next = new URLSearchParams(location.search).get("next") || "/console/";
-      location.href = next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\\\") ? next : "/console/";
-    } catch (err) { msg(err.message, "error"); }
-  });
-  document.getElementById("again").addEventListener("click", () => {
-    document.getElementById("step2").hidden = true; document.getElementById("step1").hidden = false; msg("");
+      await post("/auth/change-password", { ticket, newPassword: $("new1").value });
+      done();
+    } catch (err) {
+      msg(err.message, "error");
+      // 票据过期:回到登录
+      if (err.message.includes("重新登录")) { $("change").hidden = true; $("login").hidden = false; $("password").value = ""; }
+    }
   });
 </script>
 </body></html>`;

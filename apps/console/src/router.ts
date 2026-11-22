@@ -9,6 +9,7 @@ export const router = createRouter({
     { path: "/tokens", component: () => import("./views/Tokens.vue"), meta: { title: "个人令牌" } },
     { path: "/admin", component: () => import("./views/Admin.vue"), meta: { title: "管理全部应用" } },
     { path: "/audit", component: () => import("./views/Audit.vue"), meta: { title: "审计日志" } },
+    { path: "/users", component: () => import("./views/Users.vue"), meta: { title: "人员" } },
     { path: "/:rest(.*)*", redirect: "/apps" },
   ],
 });

@@ -1,31 +1,29 @@
-import { and, desc, eq, gte } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import type { AuthStore, LoginChallenge, PersonalToken, Session } from "../auth/store";
+import type { AuthStore, PasswordRecord, PersonalToken, Session } from "../auth/store";
 import * as schema from "./schema";
 
 export class PostgresAuthStore implements AuthStore {
   constructor(private readonly db: PostgresJsDatabase<typeof schema>) {}
 
-  async saveChallenge(c: LoginChallenge) {
-    const row = { ...c, usedAt: c.usedAt ?? null };
+  async getPassword(userId: string) {
+    const [row] = await this.db.select().from(schema.userPasswords).where(eq(schema.userPasswords.userId, userId));
+    return row && toPassword(row);
+  }
+
+  async savePassword(p: PasswordRecord) {
+    const row = { ...p, updatedBy: p.updatedBy ?? null };
     await this.db
-      .insert(schema.loginChallenges)
+      .insert(schema.userPasswords)
       .values(row)
-      .onConflictDoUpdate({ target: schema.loginChallenges.id, set: { attempts: row.attempts, usedAt: row.usedAt } });
+      .onConflictDoUpdate({
+        target: schema.userPasswords.userId,
+        set: { hash: row.hash, mustChange: row.mustChange, updatedAt: row.updatedAt, updatedBy: row.updatedBy },
+      });
   }
 
-  async getChallenge(id: string) {
-    const [row] = await this.db.select().from(schema.loginChallenges).where(eq(schema.loginChallenges.id, id));
-    return row && toChallenge(row);
-  }
-
-  async listChallengesSince(userId: string, since: Date) {
-    const rows = await this.db
-      .select()
-      .from(schema.loginChallenges)
-      .where(and(eq(schema.loginChallenges.userId, userId), gte(schema.loginChallenges.createdAt, since)))
-      .orderBy(desc(schema.loginChallenges.createdAt));
-    return rows.map(toChallenge);
+  async listPasswords() {
+    return (await this.db.select().from(schema.userPasswords)).map(toPassword);
   }
 
   async saveSession(s: Session) {
@@ -39,6 +37,10 @@ export class PostgresAuthStore implements AuthStore {
 
   async deleteSession(tokenHash: string) {
     await this.db.delete(schema.sessions).where(eq(schema.sessions.tokenHash, tokenHash));
+  }
+
+  async deleteSessionsOf(userId: string) {
+    await this.db.delete(schema.sessions).where(eq(schema.sessions.userId, userId));
   }
 
   async saveToken(t: PersonalToken) {
@@ -64,8 +66,8 @@ export class PostgresAuthStore implements AuthStore {
   }
 }
 
-function toChallenge(row: typeof schema.loginChallenges.$inferSelect): LoginChallenge {
-  return { ...row, usedAt: row.usedAt ?? undefined };
+function toPassword(row: typeof schema.userPasswords.$inferSelect): PasswordRecord {
+  return { ...row, updatedBy: row.updatedBy ?? undefined };
 }
 
 function toToken(row: typeof schema.personalTokens.$inferSelect): PersonalToken {

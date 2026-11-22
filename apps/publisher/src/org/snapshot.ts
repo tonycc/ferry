@@ -1,5 +1,5 @@
 /**
- * 组织架构快照:从钉钉、企业微信(本地开发用文件)完整取一次得到的部门树和人员。
+ * 组织架构快照:从数据源(一期是组织架构文件)完整取一次得到的部门树和人员。
  * ID 都带平台前缀,如 dingtalk:123。
  */
 export interface OrgDepartment {
@@ -85,7 +85,7 @@ export function validateSnapshot(next: OrgSnapshot, previous?: OrgSnapshot): str
     }
   }
 
-  // 两个在职的人工号或手机号相同时,验证码可能发给错的人
+  // 两个在职的人工号或手机号相同时,登录时会认错人
   const owners = new Map<string, string>();
   for (const u of active) {
     for (const key of loginKeys(u)) {

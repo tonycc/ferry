@@ -87,8 +87,8 @@ const envSchema = z.object({
    */
   DEV_AUTH: z.enum(["true", "false"]).default("false"),
   /**
-   * 通知(包括登录验证码)怎么发。log:打印到服务日志,只能用于本地开发。
-   * 钉钉工作通知要等 P5;不设置时通知不会发出,也就无法登录
+   * 通知(给负责人的通知、给管理员的告警)怎么发。log:写进服务日志。
+   * 一期没有对外发通知的渠道,不设置时通知内容不会记录
    */
   NOTIFY_VIA: z.enum(["log"]).optional(),
   /** 登录有效期 */

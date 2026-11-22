@@ -107,7 +107,9 @@ export type AuditAction =
   | "app.enable"
   | "app.delete"
   | "token.create"
-  | "token.revoke";
+  | "token.revoke"
+  | "password.reset"
+  | "password.change";
 
 /** 一条审计记录 */
 export interface AuditEvent {
@@ -128,6 +130,16 @@ export interface AuditEvent {
 export interface AuditPage {
   events: AuditEvent[];
   nextBefore?: number;
+}
+
+/** 管理员人员页上的一个人。password:none 没设密码,initial 初始密码还没改,set 已设置 */
+export interface AdminUser {
+  id: string;
+  name: string;
+  jobNumber?: string;
+  hasMobile: boolean;
+  departmentNames: string[];
+  password: "none" | "initial" | "set";
 }
 
 /** 应用密钥:只有名称和更新时间,值保存后不再返回 */
