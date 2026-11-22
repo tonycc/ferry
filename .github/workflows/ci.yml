@@ -68,3 +68,17 @@ jobs:
           TEST_DATABASE_URL: postgres://ferry:ferry-ci@localhost:5432/ferry
           # 找不到 gitleaks 时让密钥扫描的测试失败,而不是跳过
           GITLEAKS_REQUIRED: "1"
+
+  # Ferry 的部署镜像(任务 3.6)能构建出来,并且能启动
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t ferry:ci .
+      - name: Start the image and check /healthz
+        run: |
+          docker run -d --name ferry-ci -p 127.0.0.1:8080:8080 ferry:ci
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          docker logs ferry-ci
+          exit 1

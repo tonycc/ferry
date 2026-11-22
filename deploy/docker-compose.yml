@@ -1,0 +1,97 @@
+# Ferry 的部署配置(任务 3.6):发布服务 + 它自己的 PostgreSQL,和 Dokploy 装在同一台服务器上。
+# 用法见 deploy/README.md。配置写在同目录的 .env 里(从 .env.example 复制),compose 会自动读取。
+#
+# 网络:
+# - Ferry 接入 Dokploy 的 dokploy-network,别名 ferry-publisher:Traefik 经它访问 /authz,
+#   Ferry 经它调用 Dokploy 的接口(dokploy:3000)、给应用做健康检查(dokploy-traefik:80)。
+#   员工应用不在这个网络里(任务 3.2),碰不到 Ferry 的内部地址。
+# - Ferry 的数据库只在内部网络里,不发布端口。Ferry 也不发布宿主机端口,浏览器和 agent 经 Traefik 访问。
+#
+# 项目名和本地开发用的 infra/docker-compose.dev.yml(ferry)不同,互不影响。
+name: ferry-platform
+
+x-logging: &logging
+  # 一期的通知和告警都只写进日志:留够,也别把磁盘写满
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "10"
+
+services:
+  ferry:
+    image: ${FERRY_IMAGE:?请在 deploy/.env 里设置 FERRY_IMAGE}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      FERRY_PLATFORM: dokploy
+      DATABASE_URL: postgres://ferry:${POSTGRES_PASSWORD:?请在 deploy/.env 里设置 POSTGRES_PASSWORD}@postgres:5432/ferry
+      # 这两个不设置时 Ferry 会每次启动随机生成:重启后所有人要重新登录、保存过的应用密钥再也解不开。所以缺了就不启动
+      GATEWAY_SECRET: ${GATEWAY_SECRET:?请在 deploy/.env 里设置 GATEWAY_SECRET(openssl rand -hex 32)}
+      SECRETS_KEY: ${SECRETS_KEY:?请在 deploy/.env 里设置 SECRETS_KEY(openssl rand -hex 32),并另外备份}
+      DOKPLOY_URL: http://dokploy:3000
+      GATEWAY_AUTH_URL: http://ferry-publisher:8080/authz
+      HEALTHCHECK_GATEWAY: http://dokploy-traefik:80
+      ORG_FILE: /config/${ORG_FILE_NAME:-org.json}
+      ARCHIVE_DIR: /data/archives
+      NOTIFY_VIA: log
+      DEV_AUTH: "false"
+    volumes:
+      - archives:/data/archives
+      # 挂整个目录而不是单个文件:编辑器保存时常常是写新文件再改名,挂单个文件的话容器里一直是旧的
+      - ${ORG_DIR:?请在 deploy/.env 里设置 ORG_DIR(组织架构文件所在的目录)}:/config:ro
+    networks:
+      internal: {}
+      dokploy-network:
+        aliases: [ferry-publisher]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+    labels:
+      # Ferry 自己的域名(登录页、控制台、MCP、上传)经 Dokploy 的 Traefik 转过来。
+      # 不挂登录网关;/authz 只给 Traefik 在内部调用,不对外开放(免得外面伪造转发头来调它)
+      traefik.enable: "true"
+      traefik.docker.network: dokploy-network
+      traefik.http.routers.ferry.rule: Host(`${FERRY_HOST:?请在 deploy/.env 里设置 FERRY_HOST}`) && !PathPrefix(`/authz`)
+      traefik.http.routers.ferry.entrypoints: ${FERRY_ENTRYPOINT:-websecure}
+      traefik.http.routers.ferry.tls: ${FERRY_TLS:-true}
+      traefik.http.routers.ferry.priority: "100"
+      traefik.http.routers.ferry.service: ferry
+      traefik.http.services.ferry.loadbalancer.server.port: "8080"
+      # http 访问跳到 https。优先级比上面低:本机只用 http(FERRY_ENTRYPOINT=web)时,上面的路由先匹配,不会跳转
+      traefik.http.routers.ferry-http.rule: Host(`${FERRY_HOST}`)
+      traefik.http.routers.ferry-http.entrypoints: web
+      traefik.http.routers.ferry-http.priority: "1"
+      traefik.http.routers.ferry-http.middlewares: ferry-https
+      traefik.http.routers.ferry-http.service: ferry
+      traefik.http.middlewares.ferry-https.redirectscheme.scheme: https
+      traefik.http.middlewares.ferry-https.redirectscheme.permanent: "true"
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ferry
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 deploy/.env 里设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ferry
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ferry -d ferry"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+networks:
+  internal:
+    internal: true
+  dokploy-network:
+    external: true
+
+volumes:
+  archives:
+  pgdata:

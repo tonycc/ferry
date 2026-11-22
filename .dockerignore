@@ -1,0 +1,15 @@
+# 构建 Ferry 镜像时不需要、也不能带进去的东西(尤其是 .env 里的密钥)
+**/node_modules
+**/dist
+**/data
+.git
+.github
+.env
+.env.*
+!.env.example
+deploy/.env
+*.log
+.DS_Store
+docs
+scripts
+infra
