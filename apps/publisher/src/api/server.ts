@@ -31,7 +31,7 @@ export interface ServerOptions {
   /** 控制台构建结果所在目录,默认 apps/console/dist */
   consoleDir?: string;
   maxArchiveBytes: number;
-  /** 验证码登录和个人令牌;不传时只有开发用的请求头身份 */
+  /** 密码登录和个人令牌;不传时只有开发用的请求头身份 */
   auth?: { service: AuthService; directory: Directory; routes: AuthRouteOptions };
   /** 登录网关;不传时没有 /authz 和 /auth/app */
   gateway?: Gateway;

@@ -35,13 +35,13 @@ describe("Alerts", () => {
     const notifier = new FakeNotifier();
     const notify = notifier.notify.bind(notifier);
     notifier.notify = async (userId, message) => {
-      if (userId === ADMINS[0]) throw new Error("钉钉接口超时");
+      if (userId === ADMINS[0]) throw new Error("通知接口超时");
       return notify(userId, message);
     };
     const logs: string[] = [];
     await new Alerts(notifier, ADMINS, { log: (m) => logs.push(m) }).send("x");
     expect(notifier.sent.map((s) => s.userId)).toEqual([ADMINS[1]]);
-    expect(logs.join("\n")).toContain("钉钉接口超时");
+    expect(logs.join("\n")).toContain("通知接口超时");
   });
 
   it("throttled:冷却期内只发一次,下一次发出时报告压下的次数和涉及的应用", async () => {
@@ -90,13 +90,13 @@ describe("Alerts", () => {
     const notifier = new FakeNotifier();
     const alerts = new Alerts(notifier, ["dingtalk:admin"], { log: () => {} });
     await alerts.jobStatus("组织架构同步");
-    await alerts.jobStatus("组织架构同步", "钉钉接口 500");
-    await alerts.jobStatus("组织架构同步", "钉钉接口 500");
-    await alerts.jobStatus("组织架构同步", "钉钉接口 500");
+    await alerts.jobStatus("组织架构同步", "组织架构文件读不出来");
+    await alerts.jobStatus("组织架构同步", "组织架构文件读不出来");
+    await alerts.jobStatus("组织架构同步", "组织架构文件读不出来");
     await alerts.jobStatus("组织架构同步");
     await alerts.jobStatus("组织架构同步");
     expect(notifier.sent.map((s) => s.message)).toEqual([
-      "【Ferry 告警】组织架构同步失败:钉钉接口 500",
+      "【Ferry 告警】组织架构同步失败:组织架构文件读不出来",
       "【Ferry 告警】组织架构同步已恢复正常",
     ]);
   });
@@ -227,7 +227,7 @@ describe("发布流程里的告警", () => {
     const { adapters, publish } = setup();
     const notify = adapters.notifier.notify.bind(adapters.notifier);
     adapters.notifier.notify = async (userId, message) => {
-      if (userId === "dingtalk:admin") throw new Error("钉钉接口超时");
+      if (userId === "dingtalk:admin") throw new Error("通知接口超时");
       return notify(userId, message);
     };
     adapters.platform.failDeployMarkers.add("platform");

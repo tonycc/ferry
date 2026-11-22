@@ -52,6 +52,8 @@ export const AUDIT_ACTION: Record<AuditAction, string> = {
   "app.delete": "删除应用",
   "token.create": "生成令牌",
   "token.revoke": "作废令牌",
+  "password.reset": "生成初始密码",
+  "password.change": "修改密码",
 };
 
 const shortVersion = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
@@ -82,6 +84,10 @@ export function auditDetail(e: AuditEvent): string {
     case "token.create":
     case "token.revoke":
       return `令牌“${String(d.label ?? "")}”`;
+    case "password.reset":
+      return `给 ${String(d.userId ?? "")} 生成初始密码${d.via === "cli" ? "(命令行)" : ""}`;
+    case "password.change":
+      return d.initial ? "首次登录,把初始密码改成自己的" : "";
     default:
       return "";
   }

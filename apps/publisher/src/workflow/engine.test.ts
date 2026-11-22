@@ -814,7 +814,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
         return deleteDatabase(id);
       };
       adapters.notifier.notify = async () => {
-        throw new Error("钉钉接口超时");
+        throw new Error("通知接口超时");
       };
       await service.deleteApp(admin, "ledger");
       expect(republish).toBeDefined();

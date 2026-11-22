@@ -44,13 +44,13 @@ async function setup() {
     ticketTtlMs: 60_000,
     now: () => now,
   });
-  const auth = new AuthService(new MemoryAuthStore(), directory, adapters.notifier, { now: () => now });
+  const auth = new AuthService(new MemoryAuthStore(), directory, { now: () => now });
   const allowedOrigins = new Set([FERRY]);
   const identity = createIdentity({ auth, directory, adminIds: new Set(), devAuth: false, allowedOrigins });
   const app = buildServer(service, identity, {
     maxArchiveBytes: 1024,
     gateway,
-    auth: { service: auth, directory, routes: { allowedOrigins, secureCookie: false, codeTtlMinutes: 5 } },
+    auth: { service: auth, directory, routes: { allowedOrigins, secureCookie: false } },
   });
   app.log.level = "silent";
 
@@ -91,15 +91,16 @@ async function setup() {
 
   /** 走一遍 Ferry 登录,返回 Ferry 的登录 cookie */
   async function ferryLogin(account: string): Promise<string> {
-    const code = await app.inject({ method: "POST", url: "/auth/code", headers: { origin: FERRY }, payload: { account } });
-    const sent = adapters.notifier.sent.at(-1)?.message.match(/验证码:(\d{6})/)?.[1] ?? "";
-    const verify = await app.inject({
+    const userId = await directory.findLogin(account);
+    const initial = await auth.resetPassword(undefined, userId!);
+    const first = await app.inject({ method: "POST", url: "/auth/login", headers: { origin: FERRY }, payload: { account, password: initial } });
+    const changed = await app.inject({
       method: "POST",
-      url: "/auth/verify",
+      url: "/auth/change-password",
       headers: { origin: FERRY },
-      payload: { challengeId: code.json().challengeId, code: sent },
+      payload: { ticket: first.json().ticket, newPassword: "own-password-1" },
     });
-    return String(verify.headers["set-cookie"]).split(";")[0]!;
+    return String(changed.headers["set-cookie"]).split(";")[0]!;
   }
 
   /** 完整的浏览器流程:访问应用 → 跳 Ferry → 拿票据 → 回调 → 拿到应用 cookie */

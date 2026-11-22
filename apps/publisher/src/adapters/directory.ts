@@ -1,9 +1,9 @@
 import { loginKeys, normalizeMobile, type OrgSnapshot } from "../org/snapshot";
-import type { Directory } from "./types";
+import type { Directory, DirectoryUser } from "./types";
 
 /**
  * 内存里的组织架构。本地开发和测试直接往里写;
- * 接入钉钉、企业微信后,由同步任务把它们的部门和人员写进来。
+ * 组织架构同步任务把数据源(现在是组织架构文件)里的部门和人员写进来。
  */
 export class MemoryDirectory implements Directory {
   /** 部门 ID → 上级部门 ID;根部门的上级是 null */
@@ -14,6 +14,7 @@ export class MemoryDirectory implements Directory {
   private departmentNames = new Map<string, string>();
   /** 规范化后的工号、手机号 → 在职的人 */
   private logins = new Map<string, string>();
+  private users: DirectoryUser[] = [];
 
   /**
    * 用一份快照整体替换(同步完成后、服务启动时调用)。先建好新数据再一次性换上,
@@ -33,6 +34,18 @@ export class MemoryDirectory implements Directory {
     this.names = names;
     this.departmentNames = departmentNames;
     this.logins = logins;
+    this.users = snapshot.users.map((u) => ({
+      id: u.id,
+      name: u.name,
+      departmentIds: [...u.departmentIds],
+      active: u.active,
+      hasMobile: !!u.mobile?.trim(),
+      jobNumber: u.jobNumber?.trim() || undefined,
+    }));
+  }
+
+  async listUsers(): Promise<DirectoryUser[]> {
+    return this.users.map((u) => ({ ...u, departmentIds: [...u.departmentIds] }));
   }
 
   setDepartment(id: string, parentId: string | null): void {

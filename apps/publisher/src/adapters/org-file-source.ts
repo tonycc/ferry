@@ -20,7 +20,7 @@ const fileSchema = z.object({
 
 /**
  * 从 JSON 文件读组织架构,本地开发用,格式见 infra/dev-org.json。
- * 接入钉钉后换成从钉钉通讯录取数的数据源,接口相同。
+ * 以后接入企业通讯录时,换成从通讯录取数的数据源,接口相同。
  */
 export class FileOrgSource implements OrgSource {
   constructor(private readonly path: string) {}

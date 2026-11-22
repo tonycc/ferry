@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ElMessage } from "element-plus";
-import { computed, onMounted } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "./api";
 import { loadMe, me } from "./session";
@@ -9,6 +9,26 @@ const route = useRoute();
 const active = computed(() => "/" + (route.path.split("/")[1] ?? "apps"));
 
 onMounted(() => loadMe().catch((err: Error) => ElMessage.error(err.message)));
+
+const passwordOpen = ref(false);
+const pwSaving = ref(false);
+const pw = reactive({ current: "", next: "", again: "" });
+function resetPasswordForm() {
+  Object.assign(pw, { current: "", next: "", again: "" });
+}
+async function changePassword() {
+  if (pw.next !== pw.again) return ElMessage.error("两次输入的新密码不一样");
+  pwSaving.value = true;
+  try {
+    await api.post("/api/me/password", { currentPassword: pw.current, newPassword: pw.next });
+    ElMessage.success("密码已修改");
+    passwordOpen.value = false;
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  } finally {
+    pwSaving.value = false;
+  }
+}
 
 async function logout() {
   await api.post("/auth/logout").catch(() => {});
@@ -24,16 +44,30 @@ async function logout() {
         <el-menu-item index="/apps">我的应用</el-menu-item>
         <el-menu-item index="/tokens">个人令牌</el-menu-item>
         <el-menu-item v-if="me?.isAdmin" index="/admin">管理全部应用</el-menu-item>
+        <el-menu-item v-if="me?.isAdmin" index="/users">人员</el-menu-item>
         <el-menu-item v-if="me?.isAdmin" index="/audit">审计日志</el-menu-item>
       </el-menu>
       <div class="user" v-if="me">
         <span>{{ me.name }}</span>
+        <el-button link @click="passwordOpen = true">修改密码</el-button>
         <el-button link @click="logout">退出登录</el-button>
       </div>
     </el-header>
     <el-main class="main">
       <router-view v-if="me" />
     </el-main>
+    <el-dialog v-model="passwordOpen" title="修改密码" width="380px" @closed="resetPasswordForm">
+      <el-form label-position="top" @submit.prevent="changePassword">
+        <el-form-item label="当前密码"><el-input v-model="pw.current" type="password" show-password autocomplete="current-password" /></el-form-item>
+        <el-form-item label="新密码(至少 8 位,不能全是数字)"><el-input v-model="pw.next" type="password" show-password autocomplete="new-password" /></el-form-item>
+        <el-form-item label="再输一次新密码"><el-input v-model="pw.again" type="password" show-password autocomplete="new-password" /></el-form-item>
+        <p class="muted">改完后其他浏览器上的登录会失效,这里保持登录。个人令牌不受影响。</p>
+      </el-form>
+      <template #footer>
+        <el-button @click="passwordOpen = false">取消</el-button>
+        <el-button type="primary" :loading="pwSaving" @click="changePassword">保存</el-button>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 

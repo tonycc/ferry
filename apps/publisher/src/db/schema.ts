@@ -102,20 +102,14 @@ export const orgUsers = pgTable("org_users", {
   mobile: text("mobile"),
 });
 
-/** 验证码登录:只存验证码的哈希 */
-export const loginChallenges = pgTable(
-  "login_challenges",
-  {
-    id: uuid("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    codeHash: text("code_hash").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    attempts: integer("attempts").notNull().default(0),
-    usedAt: timestamp("used_at", { withTimezone: true }),
-  },
-  (t) => [index("login_challenges_user_idx").on(t.userId, t.createdAt)],
-);
+/** 登录密码(手机号 + 密码登录):只存 scrypt 哈希;must_change 表示管理员生成的初始密码,登录后必须先改 */
+export const userPasswords = pgTable("user_passwords", {
+  userId: text("user_id").primaryKey(),
+  hash: text("hash").notNull(),
+  mustChange: boolean("must_change").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  updatedBy: text("updated_by"),
+});
 
 /** 浏览器登录会话:只存 cookie 令牌的哈希 */
 export const sessions = pgTable("sessions", {
