@@ -36,6 +36,8 @@
 - 内网 DNS:`*.apps.公司域名` 和 `ferry.公司域名` 都解析到这台服务器(P2)。Ferry 的域名不要放在应用域名下面。
 - 证书(P3):泛域名证书 `*.apps.公司域名` 和 `ferry.公司域名` 的证书。内网用不了 Let's Encrypt,
   把证书放进 Traefik 读的目录(Dokploy 的 `/etc/dokploy/traefik/dynamic`,写一份 `tls.certificates` 配置),具体按 Traefik 文档。
+  Dokploy 的 `traefik.yml` 给 `websecure` 入口设了默认的 `certResolver: letsencrypt`,内网域名的 ACME 验证永远不会成功,
+  Traefik 会反复重试、刷日志(之后用你放的证书)。用内部证书时,把这个默认的 certResolver 从 `traefik.yml` 里去掉,重启 Traefik。
 - 关掉 Traefik 的管理接口:`/etc/dokploy/traefik/traefik.yml` 里 `api.insecure: false`,重启 Traefik(见 `docs/dokploy-findings.md`)。
 - 服务器不能访问外网时,先准备 npm 和镜像仓库的内部代理(任务 1.2),员工应用构建要用。
 
@@ -68,13 +70,13 @@ chmod 600 .env
 
 | 配置 | 怎么填 |
 |---|---|
-| `FERRY_IMAGE` | 上一步的镜像名和标签 |
+| `FERRY_IMAGE` | 上一步的镜像名和标签(不要用 latest) |
 | `FERRY_HOST`、`PUBLIC_URL` | Ferry 的域名和完整地址(`https://ferry.公司域名`) |
 | `APPS_DOMAIN`、`APPS_URL_SCHEME` | 应用域名后缀、`https` |
 | `FERRY_ENTRYPOINT`、`FERRY_TLS` | 有证书时 `websecure`、`true` |
 | `DOKPLOY_API_KEY` | Dokploy 管理页面 → 个人设置里生成 |
 | `POSTGRES_PASSWORD`、`GATEWAY_SECRET`、`SECRETS_KEY` | 各运行一次 `openssl rand -hex 32` |
-| `ORG_FILE_PATH` | 组织架构文件在服务器上的路径(格式见 `infra/dev-org.json`,每人要有手机号) |
+| `ORG_DIR`、`ORG_FILE_NAME` | 组织架构文件所在的目录和文件名(格式见 `infra/dev-org.json`,每人要有手机号)。挂进容器的是整个目录 |
 | `ADMIN_USERS` | 平台管理员的用户 ID,逗号分隔 |
 
 `GATEWAY_SECRET` 和 `SECRETS_KEY` 必须固定:不设置的话 compose 拒绝启动。`SECRETS_KEY` 丢了或换了,员工保存过的应用密钥全部解不开,
@@ -120,7 +122,8 @@ docker compose logs ferry
 docker compose logs -f ferry | grep '告警'
 ```
 
-**改组织架构**:直接改服务器上的组织架构文件,Ferry 每 60 分钟(`ORG_SYNC_MINUTES`)重新读一次;要马上生效就 `docker compose restart ferry`。
+**改组织架构**:直接改 `ORG_DIR` 里的组织架构文件,Ferry 每 60 分钟(`ORG_SYNC_MINUTES`)重新读一次;要马上生效就 `docker compose restart ferry`。
+文件有问题时 Ferry 整份拒绝、继续用旧数据,日志里会有告警。
 
 **升级**:构建或拉取新镜像,改 `.env` 里的 `FERRY_IMAGE`,然后:
 
@@ -141,7 +144,15 @@ docker compose up -d ferry
   docker compose exec -T postgres pg_dump -U ferry -d ferry | gzip > ferry-$(date +%F).sql.gz
   ```
 
-  恢复:`gunzip -c ferry-日期.sql.gz | docker compose exec -T postgres psql -U ferry -d ferry`(恢复到空库)。
+  恢复(会丢掉备份之后的所有记录):
+
+  ```bash
+  docker compose stop ferry
+  docker compose exec -T postgres dropdb -U ferry ferry
+  docker compose exec -T postgres createdb -U ferry ferry
+  gunzip -c ferry-日期.sql.gz | docker compose exec -T postgres psql -U ferry -d ferry
+  docker compose start ferry
+  ```
 - 代码包:在命名卷 `ferry-platform_archives` 里,回滚要用。`docker run --rm -v ferry-platform_archives:/a -v "$PWD":/b alpine tar czf /b/archives-$(date +%F).tgz -C /a .`
 - `.env`:里面的 `SECRETS_KEY` 丢了无法补救。
 

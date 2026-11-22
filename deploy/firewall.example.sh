@@ -12,18 +12,20 @@
 set -euo pipefail
 
 # 宿主机上所有本机地址(容器经这些地址都能到宿主机)
-HOST_ADDRS=$(ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -v ':' )
+HOST_ADDRS=$(ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -v ':')
 
-for addr in $HOST_ADDRS; do
-  # 容器发往宿主机地址的 3000 端口:拒绝。-I 插到最前面,已存在时跳过
-  iptables -C DOCKER-USER -d "$addr" -p tcp --dport 3000 -j REJECT 2>/dev/null \
-    || iptables -I DOCKER-USER -d "$addr" -p tcp --dport 3000 -j REJECT
+# Docker 把发布的端口做了 DNAT:容器经宿主机地址访问 3000 时,到 DOCKER-USER 链时目标地址已经改成 Dokploy 容器的地址。
+# 所以按 conntrack 记下的“改写前的目标”来认:原始目标是宿主机地址、原始端口是 3000、并且是从容器的网桥进来的,才拒绝。
+# - 只认宿主机地址:Traefik 访问应用容器(包括监听 3000 的模板应用)的原始目标是容器地址,不受影响;
+# - 只认容器网桥(docker0、br-*、docker_gwbridge):管理员从外面访问 Dokploy 是从物理网卡进来的,不受影响。
+for iface in docker0 'br-+' docker_gwbridge; do
+  for addr in $HOST_ADDRS; do
+    rule=(-i "$iface" -p tcp -m conntrack --ctorigdst "$addr" --ctorigdstport 3000 --ctdir ORIGINAL -j REJECT)
+    iptables -C DOCKER-USER "${rule[@]}" 2>/dev/null || iptables -I DOCKER-USER "${rule[@]}"
+  done
 done
 
-# Docker 把发布的端口做了 DNAT,容器经宿主机地址访问时目标地址在 DOCKER-USER 里已经改成 Dokploy 容器的地址。
-# 所以还要按“改写前的目标端口”拦一次(conntrack 记着原始目标)
-iptables -C DOCKER-USER -p tcp -m conntrack --ctorigdstport 3000 --ctdir ORIGINAL -j REJECT 2>/dev/null \
-  || iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 3000 --ctdir ORIGINAL -j REJECT
-
-echo "已添加。验证:在一个员工应用的容器里 curl http://<宿主机地址>:3000 应该连不上;管理员从管理网段仍能打开 Dokploy。"
-echo "注意:上面第二条也会拦住外部访问宿主机 3000 端口的请求,管理员访问 Dokploy 要按来源网段另外放行(写在它前面)。"
+echo "已添加。验证(三项都要做):"
+echo "  1. 在一个员工应用的容器里 curl http://<宿主机地址>:3000,应该连不上;"
+echo "  2. 已上线的应用(包括监听 3000 端口的模板应用)照常能打开;"
+echo "  3. 管理员从管理网段仍能打开 Dokploy。"
