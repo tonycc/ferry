@@ -17,7 +17,12 @@ export async function setupGateway(
   service: PublisherService,
   authAddress: string,
   log: Logger,
-  options: { retryMs?: number; schedule?: (retry: () => void, ms: number) => void } = {},
+  options: {
+    retryMs?: number;
+    schedule?: (retry: () => void, ms: number) => void;
+    /** 每次尝试后调用:失败或有应用的域名没挂上网关时带上原因,成功时不带(告警用) */
+    onStatus?: (error?: string) => Promise<void>;
+  } = {},
 ): Promise<boolean> {
   const retryMs = options.retryMs ?? 60_000;
   const schedule = options.schedule ?? ((retry, ms) => setTimeout(retry, ms).unref());
@@ -28,6 +33,7 @@ export async function setupGateway(
     networks = await platform.ensureGatewayNetworks(await service.allAppNames());
   } catch (err) {
     log.error(`写入登录网关配置失败,${Math.round(retryMs / 1000)} 秒后重试: ${(err as Error).message}`);
+    await options.onStatus?.(`${(err as Error).message}(Ferry 每分钟重试)`);
     schedule(() => void setupGateway(platform, service, authAddress, log, options), retryMs);
     return false;
   }
@@ -39,5 +45,7 @@ export async function setupGateway(
       `检查了 ${checked} 个在线应用的域名${failed ? `,其中 ${failed} 个失败` : ""}`,
   );
   for (const warning of networks.warnings) log.error(warning);
+  // 域名没挂上网关的应用可能不用登录就能访问
+  await options.onStatus?.(failed ? `${failed} 个在线应用的域名没能挂上登录网关,这些应用可能不用登录就能访问` : undefined);
   return true;
 }

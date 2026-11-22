@@ -75,7 +75,12 @@ const envSchema = z.object({
   ORG_FILE: z.string().optional(),
   /** 组织架构同步间隔 */
   ORG_SYNC_MINUTES: z.coerce.number().positive().default(60),
-  /** 平台管理员的用户 ID,逗号分隔。管理员可以查看全部应用并停用任意应用 */
+  /**
+   * 同一类可以合并的告警(部署平台或 Ferry 出错导致发布失败)多久内只发一次。
+   * 发布连续失败、备份失败每次都发,不受它影响
+   */
+  ALERT_COOLDOWN_MINUTES: z.coerce.number().positive().default(30),
+  /** 平台管理员的用户 ID,逗号分隔。管理员可以查看全部应用、停用任意应用,并接收告警 */
   ADMIN_USERS: z.string().default(""),
   /**
    * true 时,没有带任何凭据的请求可以用 x-ferry-user 请求头自称是谁。只能用于本地开发,默认关闭

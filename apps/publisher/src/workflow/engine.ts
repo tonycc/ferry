@@ -1,5 +1,6 @@
 import type { Adapters, Archive } from "../adapters/types";
 import { memoryAuditLog, type AuditLog } from "../audit/log";
+import type { Alerts } from "../alerts";
 import { deployFailure, healthFailure, migrationFailure, scanFailure } from "./failures";
 import { isTerminal, stepOrder, type ReleaseState, type StepState } from "./states";
 import { RESERVED_ENV_NAMES, type SecretBox } from "../secrets";
@@ -13,6 +14,8 @@ export interface EngineConfig {
   secretBox?: SecretBox;
   /** 审计日志,记录每次发布的结果;不传时记在内存里(只有测试可以不传) */
   audit?: AuditLog;
+  /** 给平台管理员的告警(发布连续失败、备份失败、平台问题);不传时不告警 */
+  alerts?: Alerts;
 }
 
 type StepResult =
@@ -30,6 +33,11 @@ type StepResult =
     };
 
 type Failure = Extract<StepResult, { kind: "fail" }>;
+
+/** 迁移前备份失败时给 agent 的提示;和发布单的 nextAction 说法一致 */
+export const BACKUP_FAILED_HINT =
+  "不要修改代码,这不是代码的问题,也不要马上重新发布。告诉用户:迁移前备份数据库失败,平台管理员已收到告警;" +
+  "等管理员处理好、用户让你再发布时,再重新发布";
 
 /**
  * 发布状态机。每一步执行前先看资源是否已创建,所以 run 可以安全地重复调用:
@@ -204,7 +212,12 @@ export class Engine {
 
       // 恢复中断的发布时迁移会重跑,但备份只做一次:那时数据库可能已经迁移了一半,再备份就不是迁移前的数据了
       if (app.platform.databaseId && !release.backupId) {
-        release.backupId = await platform.backupDatabase(app.platform.databaseId);
+        try {
+          release.backupId = await platform.backupDatabase(app.platform.databaseId);
+        } catch (err) {
+          // 新代码已经部署了,数据库还没动:和迁移失败一样,有上一个可用版本就把它部署回去
+          return this.backupFailed(app, (err as Error).message);
+        }
         await this.store.saveRelease(release);
       }
       const result = await platform.runCommand(this.appId(app), manifest.migrate);
@@ -237,6 +250,29 @@ export class Engine {
       env[secret.name] = this.config.secretBox.decrypt(app.name, secret.name, secret.ciphertext);
     }
     return env;
+  }
+
+  /** 迁移前备份失败:不是代码的问题,发布终止,数据库没有改动;有上一个可用版本就恢复它 */
+  private async backupFailed(app: AppRecord, error: string): Promise<Failure> {
+    const failure = { kind: "fail", fixable: false, type: "backup_failed", logs: error, hint: BACKUP_FAILED_HINT } as const;
+    if (!app.liveVersion) {
+      return { ...failure, message: "迁移前备份数据库失败,发布已停止:数据库没有改动,应用这次没有上线" };
+    }
+    let restored: Failure;
+    try {
+      restored = await this.restoreLive(app, { ...failure, message: "迁移前备份数据库失败" });
+    } catch (err) {
+      // 备份失败多半是部署平台出了问题,恢复也可能直接出错;这时新代码还在线上,按恢复失败报,每次都告警
+      return {
+        ...failure,
+        type: "rollback_failed",
+        message: `迁移前备份数据库失败,恢复上一版本时也出错了(${(err as Error).message}),应用现在可能无法正常使用`,
+        hint: "不要修改代码。马上告诉用户应用可能无法访问,并请平台管理员处理",
+      };
+    }
+    // 恢复失败时 restoreLive 已经改成 rollback_failed,message 里带着“迁移前备份数据库失败”
+    if (!restored.rolledBack) return restored;
+    return { ...restored, message: "迁移前备份数据库失败,发布已停止:数据库没有改动,线上已恢复为上一个版本" };
   }
 
   /** 新版本不可用时:有上一个可用版本就用保存的代码包把它重新部署回去(只回滚代码,不动数据库) */
@@ -277,6 +313,7 @@ export class Engine {
     };
 
     let next: ReleaseState;
+    let capped = false;
     if (release.kind === "rollback") {
       // 回滚失败时线上仍是原来的版本;不是代码问题,不计入 agent 的修复次数,也不让 agent 去改代码
       next = "FAILED";
@@ -286,6 +323,7 @@ export class Engine {
       next = "FAILED";
     } else if ((await this.priorConsecutiveFailures(release)) + 1 >= this.config.maxFixAttempts) {
       next = "FAILED";
+      capped = true;
       release.error.hint = `已连续失败 ${this.config.maxFixAttempts} 次,不再自动重试,请联系平台管理员`;
     } else {
       next = failure.rolledBack ? "ROLLED_BACK" : "FAILED_FIXABLE";
@@ -295,9 +333,35 @@ export class Engine {
     await this.recordFinish(release);
     // 发现了密钥的代码包不再保留:发布单已经结束,这个版本不会再被部署(回滚目标也一样,扫描不会通过)
     if (failure.type === "scan_failed") await this.adapters.archives.remove(release.appName, release.version);
+    await this.alert(release, failure, capped);
     if (next === "FAILED") {
       const action = release.kind === "rollback" ? "回滚" : "发布";
       await this.adapters.notifier.notify(release.ownerId, `应用 ${release.appName} ${action}失败: ${failure.message}`);
+    }
+  }
+
+  /**
+   * 给平台管理员的告警。连续失败到上限、备份失败、回滚旧版本也失败,每次都单独告警;
+   * 部署平台或 Ferry 自己出错(每个应用的发布都可能因此失败)按类型合并,冷却期内只发一次
+   */
+  private async alert(release: ReleaseRecord, failure: Failure, capped: boolean): Promise<void> {
+    const { alerts } = this.config;
+    if (!alerts) return;
+    const action = release.kind === "rollback" ? "回滚" : "发布";
+    const reason = `${failure.type}:${failure.message}`;
+    const alerted =
+      capped || ["backup_failed", "rollback_failed", "platform_error", "internal_error"].includes(failure.type);
+    if (!alerted) return;
+    const owner = (await this.adapters.directory.nameOf(release.ownerId)) ?? release.ownerId;
+    const about = `应用 ${release.appName}(负责人 ${owner})`;
+    if (capped) {
+      await alerts.send(`${about}连续 ${this.config.maxFixAttempts} 次发布失败,已不再让 agent 自动重试。最近一次:${reason}`);
+    } else if (failure.type === "backup_failed") {
+      await alerts.send(`${about}迁移前备份数据库失败,${action}已停止。${failure.message}。错误:${failure.logs ?? ""}`);
+    } else if (failure.type === "rollback_failed") {
+      await alerts.send(`${about}新版本不可用,恢复上一版本也失败了,应用可能无法访问。${failure.message}`);
+    } else if (failure.type === "platform_error" || failure.type === "internal_error") {
+      await alerts.throttled(failure.type, `${about}${action}失败,原因是部署平台或 Ferry 出错:${reason}`, release.appName);
     }
   }
 

@@ -5,6 +5,7 @@ import { FsArchiveStore } from "./adapters/archive-store";
 import { HttpHealthChecker } from "./adapters/health";
 import { GitleaksScanner } from "./adapters/gitleaks";
 import { AuditLog } from "./audit/log";
+import { Alerts } from "./alerts";
 import { MemoryAuditStore, type AuditStore } from "./audit/store";
 import { PostgresAuditStore } from "./db/postgres-audit-store";
 import { Gateway, HEALTH_HEADER, healthToken } from "./gateway/gateway";
@@ -114,13 +115,25 @@ if (config.DATABASE_URL) {
   console.warn("未设置 DATABASE_URL,使用内存存储:服务重启后应用和发布记录都会丢失");
   store = new MemoryStore();
 }
+// 给平台管理员的告警(任务 3.5):发布连续失败、迁移前备份失败、部署平台出错、后台任务失败
+const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));
+const alerts = new Alerts(adapters.notifier, [...adminIds], { cooldownMs: config.ALERT_COOLDOWN_MINUTES * 60_000 });
+if (adminIds.size === 0) console.warn("未设置 ADMIN_USERS:告警只写进服务日志,不会发给任何人");
+
 // 先用上次同步保存的组织架构,再同步一次,之后定时同步。同步失败只记日志,继续用现有数据
 // 组织架构目前来自文件(本地开发);接入钉钉后换成钉钉通讯录(任务 2.1)
 const orgSync = new OrgSync(config.ORG_FILE ? new FileOrgSource(config.ORG_FILE) : undefined, orgStore, directory);
 await orgSync.init();
 if (!config.ORG_FILE) console.warn("未设置 ORG_FILE:不同步组织架构,按部门的可见范围只能用上次保存的数据");
-await orgSync.run();
-setInterval(() => void orgSync.run(), config.ORG_SYNC_MINUTES * 60_000).unref();
+/** 同步一次;失败或快照被拒时告警管理员(连续失败只在第一次告警,恢复时再告诉一声) */
+async function syncOrg(): Promise<void> {
+  const result = await orgSync.run().catch((err: Error) => ({ status: "failed" as const, error: err.message }));
+  const error =
+    result.status === "failed" ? result.error : result.status === "rejected" ? result.problems.join(";") : undefined;
+  await alerts.jobStatus("组织架构同步", error);
+}
+await syncOrg();
+setInterval(() => void syncOrg(), config.ORG_SYNC_MINUTES * 60_000).unref();
 
 // 审计日志(任务 3.3):操作人的姓名在记录时从组织架构查好存下来
 const audit = new AuditLog(auditStore, directory);
@@ -129,6 +142,7 @@ const engine = new Engine(store, adapters, {
   appsUrlScheme: config.APPS_URL_SCHEME,
   secretBox,
   audit,
+  alerts,
 });
 const service = new PublisherService(store, engine, adapters, {
   appsDomain: config.APPS_DOMAIN,
@@ -142,7 +156,6 @@ const service = new PublisherService(store, engine, adapters, {
   audit,
 });
 
-const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));
 const publicUrl = new URL(config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`);
 const allowedOrigins = new Set([
   publicUrl.origin,
@@ -180,19 +193,30 @@ await server.listen({ port: config.PORT, host: config.HOST });
 // 写入登录网关的 Traefik 配置,并让已有应用的域名都挂上网关。失败只记日志并定时重试,不让 Ferry 退出
 if (config.FERRY_PLATFORM === "dokploy") {
   const authAddress = config.GATEWAY_AUTH_URL ?? `http://host.docker.internal:${config.PORT}/authz`;
-  await setupGateway(adapters.platform, service, authAddress, {
-    info: (m) => server.log.info(m),
-    error: (m) => server.log.error(m),
-  });
+  await setupGateway(
+    adapters.platform,
+    service,
+    authAddress,
+    { info: (m) => server.log.info(m), error: (m) => server.log.error(m) },
+    { onStatus: (error) => alerts.jobStatus("登录网关配置", error) },
+  );
   // 网关容器被重建(升级 Dokploy、改 Traefik 设置)后,它接入的应用网络会丢,应用全成 502。
   // 每分钟查一次(只是一次接口调用;缺了才去服务器上接),出事后最多一分钟恢复
   setInterval(() => {
     service
       .allAppNames()
       .then((names) => adapters.platform.ensureGatewayNetworks(names))
-      .catch((err: Error) => server.log.error(`把网关接入应用网络失败: ${err.message}`));
+      .then(() => alerts.jobStatus("把网关接入应用网络"))
+      .catch((err: Error) => {
+        server.log.error(`把网关接入应用网络失败: ${err.message}`);
+        // 接不上时所有应用都是 502;一直失败只告警一次,恢复时再告诉一声
+        return alerts.jobStatus("把网关接入应用网络", `${err.message}(应用可能都无法访问)`);
+      });
   }, 60_000).unref();
 }
+
+// 冷却期内被压下的告警,冷却期过了还没被新告警带出去的,单独补发
+setInterval(() => void alerts.flush(), 60_000).unref();
 
 // 继续执行上次没跑完的发布(进程重启前正在进行的)
 const resumed = await service.resumeUnfinished();

@@ -50,6 +50,24 @@ describe("setupGateway", () => {
     expect(logs.at(-1)?.message).toContain("登录网关已就绪");
   });
 
+  it("每次尝试后报告状态(告警用):失败带原因,成功不带", async () => {
+    const { adapters, service, log } = await setup();
+    const ensure = adapters.platform.ensureGateway.bind(adapters.platform);
+    adapters.platform.ensureGateway = async () => {
+      throw new Error("connect ECONNREFUSED");
+    };
+    const statuses: (string | undefined)[] = [];
+    const retries: (() => void)[] = [];
+    const options = { schedule: (retry: () => void) => retries.push(retry), onStatus: async (e?: string) => void statuses.push(e) };
+    await setupGateway(adapters.platform, service, "http://ferry/authz", log, options);
+    adapters.platform.ensureGateway = ensure;
+    retries[0]!();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(statuses).toHaveLength(2);
+    expect(statuses[0]).toContain("ECONNREFUSED");
+    expect(statuses[1]).toBeUndefined();
+  });
+
   it("一个应用的域名设置失败,不影响其他应用", async () => {
     const { adapters, service, publish, log, logs } = await setup();
     await publish("ledger");
