@@ -74,8 +74,11 @@ export class AuthService {
   private readonly config: AuthConfig;
   /** 输错次数,按规范化后的账号计。只有一个 Ferry 实例,放在内存里;重启后清零 */
   private readonly failures = new Map<string, { count: number; lockedUntil?: number }>();
-  /** 改密码票据(只存哈希),短时间有效、只能用一次;重启后作废,重新登录一次即可 */
-  private readonly changeTickets = new Map<string, { userId: string; expiresAt: number }>();
+  /**
+   * 改密码票据(只存哈希),短时间有效、只能用一次;重启后作废,重新登录一次即可。
+   * issuedFor 是签发时的密码哈希:密码在这之后变过(被重置、已经改过),票据就不能再用
+   */
+  private readonly changeTickets = new Map<string, { userId: string; expiresAt: number; issuedFor: string }>();
 
   constructor(
     private readonly store: AuthStore,
@@ -90,17 +93,18 @@ export class AuthService {
   /** 用手机号(或工号)和密码登录 */
   async login(account: string, password: string): Promise<LoginResult> {
     const key = accountKey(account);
-    const now = this.config.now().getTime();
-    const failed = this.failures.get(key);
-    const locked = failed?.lockedUntil !== undefined && failed.lockedUntil > now;
-
-    const userId = key ? await this.directory.findLogin(account) : undefined;
+    const userId = await this.directory.findLogin(account);
     const record = userId ? await this.store.getPassword(userId) : undefined;
     let ok = false;
     if (record && password.length <= MAX_PASSWORD_LENGTH) ok = await verifyPassword(password, record.hash);
     else await burnPasswordCheck(password);
     if (ok && userId) ok = await this.directory.isActive(userId);
 
+    // 输错次数和锁定在校验完之后才读写,中间没有 await:同时发来的一批请求各自都会计数,
+    // 校验期间账号被锁了的话,这次就算密码对了也不放行
+    const now = this.config.now().getTime();
+    const failed = this.failures.get(key);
+    const locked = failed?.lockedUntil !== undefined && failed.lockedUntil > now;
     if (!ok || locked || !userId || !record) {
       if (!locked) {
         const count = (failed?.lockedUntil !== undefined ? 0 : (failed?.count ?? 0)) + 1;
@@ -115,7 +119,11 @@ export class AuthService {
 
     if (record.mustChange) {
       const ticket = randomBytes(32).toString("base64url");
-      this.changeTickets.set(hashToken(ticket), { userId, expiresAt: now + this.config.changeTicketTtlMs });
+      this.changeTickets.set(hashToken(ticket), {
+        userId,
+        expiresAt: now + this.config.changeTicketTtlMs,
+        issuedFor: record.hash,
+      });
       return { kind: "must_change", ticket };
     }
     return { kind: "session", ...(await this.newSession(userId)) };
@@ -126,16 +134,24 @@ export class AuthService {
     const hash = hashToken(ticket);
     const entry = this.changeTickets.get(hash);
     const now = this.config.now().getTime();
+    const expired = new UserError("unauthenticated", "改密码的页面已过期,请用初始密码重新登录");
     if (!entry || entry.expiresAt <= now || !(await this.directory.isActive(entry.userId))) {
       this.changeTickets.delete(hash);
-      throw new UserError("unauthenticated", "改密码的页面已过期,请用初始密码重新登录");
+      throw expired;
+    }
+    // 签发之后密码变过(管理员重置了、或者已经用别的票据改过):这张票据作废
+    const current = await this.store.getPassword(entry.userId);
+    if (!current?.mustChange || current.hash !== entry.issuedFor) {
+      this.changeTickets.delete(hash);
+      throw expired;
     }
     checkNewPassword(newPassword);
-    const current = await this.store.getPassword(entry.userId);
-    if (current && (await verifyPassword(newPassword, current.hash))) {
+    if (await verifyPassword(newPassword, current.hash)) {
       throw new UserError("invalid_input", "新密码不能和初始密码一样");
     }
-    this.changeTickets.delete(hash);
+    // 再确认一次票据还在(校验期间可能已经被同时提交的另一次用掉了)
+    if (!this.changeTickets.delete(hash)) throw expired;
+    this.clearTickets(entry.userId);
     await this.setPassword(entry.userId, newPassword, false, entry.userId);
     await this.audit.record(entry.userId, "password.change", undefined, { initial: true });
     return this.newSession(entry.userId);
@@ -154,6 +170,7 @@ export class AuthService {
     checkNewPassword(newPassword);
     if (newPassword === currentPassword) throw new UserError("invalid_input", "新密码不能和当前密码一样");
     await this.setPassword(userId, newPassword, false, userId);
+    this.clearTickets(userId);
     await this.store.deleteSessionsOf(userId);
     await this.audit.record(userId, "password.change", undefined, {});
     return this.newSession(userId);
@@ -167,6 +184,8 @@ export class AuthService {
     if (!(await this.directory.isActive(userId))) throw new UserError("not_found", "组织架构里没有这个人,或者已离职");
     const password = generateInitialPassword();
     await this.setPassword(userId, password, true, actorId);
+    // 之前用旧的初始密码拿到的改密码票据一起作废(初始密码泄露时,重置就是补救办法)
+    this.clearTickets(userId);
     await this.store.deleteSessionsOf(userId);
     await this.audit.record(actorId, "password.reset", undefined, { userId, ...(actorId ? {} : { via: "cli" }) });
     return password;
@@ -184,6 +203,10 @@ export class AuthService {
     const session = await this.store.getSession(hashToken(sessionToken));
     if (!session || session.expiresAt <= this.config.now()) return undefined;
     return (await this.directory.isActive(session.userId)) ? session.userId : undefined;
+  }
+
+  private clearTickets(userId: string): void {
+    for (const [hash, entry] of this.changeTickets) if (entry.userId === userId) this.changeTickets.delete(hash);
   }
 
   private async setPassword(userId: string, password: string, mustChange: boolean, by: string | undefined) {

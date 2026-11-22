@@ -131,6 +131,31 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
     for (let i = 0; i < 6; i++) await expect(auth.login("13999999999", "x-wrong-pass")).rejects.toThrow("账号或密码不正确");
   });
 
+  it("同时发来一批错误密码也逐个计数:之后密码对了也被拒绝", async () => {
+    const { auth, aliceWithPassword } = setup(storeCase.createAuth());
+    await aliceWithPassword();
+    // 10 个错误密码同时校验;如果计数是在校验前读的,整批只会记 1 次
+    await Promise.all(Array.from({ length: 10 }, (_, i) => auth.login("13800000001", `wrong-${i}`).catch(() => undefined)));
+    await expect(auth.login("13800000001", "alice-own-pass")).rejects.toThrow("账号或密码不正确");
+  });
+
+  it("改密码票据:重置密码后作废;已经用别的票据改过之后也作废", async () => {
+    const { auth } = setup(storeCase.createAuth());
+    const leaked = await auth.resetPassword("dingtalk:admin", "dingtalk:alice");
+    const stolen = await auth.login("13800000001", leaked);
+    if (stolen.kind !== "must_change") throw new Error();
+    // 管理员发现初始密码泄露,重新生成
+    const fresh = await auth.resetPassword("dingtalk:admin", "dingtalk:alice");
+    await expect(auth.changeInitialPassword(stolen.ticket, "attacker-pass")).rejects.toThrow("重新登录");
+
+    const a = await auth.login("13800000001", fresh);
+    const b = await auth.login("13800000001", fresh);
+    if (a.kind !== "must_change" || b.kind !== "must_change") throw new Error();
+    await auth.changeInitialPassword(a.ticket, "alice-own-pass");
+    await expect(auth.changeInitialPassword(b.ticket, "other-pass-1")).rejects.toThrow("重新登录");
+    expect((await auth.login("13800000001", "alice-own-pass")).kind).toBe("session");
+  });
+
   it("登录成功后输错次数清零", async () => {
     const { auth, aliceWithPassword } = setup(storeCase.createAuth());
     await aliceWithPassword();
