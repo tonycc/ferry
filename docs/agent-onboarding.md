@@ -35,6 +35,7 @@ agy mcp add --header "Authorization: Bearer <令牌>" ferry <Ferry 地址>/mcp
 
 运行 `agy mcp list`,看到 `ferry` 显示 enabled 即可。这个配置对所有目录都生效。
 在 Antigravity 里第一次用 Ferry 的工具、执行打包和上传命令时,它会请你允许,允许即可。
+它要运行 `env`、`printenv` 这类列出环境变量的命令时**选拒绝**:你电脑上的环境变量里可能有别的密钥,做 Ferry 的应用用不到。
 
 **其他 agent**:添加一个 HTTP(Streamable HTTP)类型的 MCP 服务,地址是 `<Ferry 地址>/mcp`,
 带请求头 `Authorization: Bearer <令牌>`。页面上也给出了 JSON 格式的配置:
