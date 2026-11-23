@@ -224,3 +224,28 @@ Bob 已经有上次做的团队介绍页 `finance-team`,原样再提容易变成
 没有让它真的发布。
 
 **结论**:第一次模拟后修的问题,agy 按对话方式都验证过了;发布前确认这一步也补上了。M2 的三条验收标准在 agy 上都满足。
+
+## 回归(2026-11-23,PR 22、23 合并后)
+
+PR 22 改了发布方式(`publish_app` 只传应用名和 version,清单取代码包里的 app.yaml,上传时就检查),
+PR 23 加了 `PUBLIC_URL` 启动检查和 `AGENT_URL`。合并后在本机 Dokploy 上用 agy(1.5.5,Bob 的令牌)按对话方式回归。
+agent 的目录放在新的空目录 `~/ferry-regress/bob-supplier`:第一次放在 `~/ferry-trial` 下时,agy 会去翻旁边的旧应用目录和测试记录,结果不作数。
+
+> 帮我做一个供应商联系人登记的小应用,能填供应商名称、联系人、电话和备注,本部门的同事都能看到。做好后发布。
+
+| 步骤 | 结果 | 用时 |
+|---|---|---|
+| agy 写应用 | 通过:node-postgres 模板,`visibility: department`,`npx tsc --noEmit` 通过 | 约 3 分钟 |
+| 发布前确认 | 通过:问应用名 bob-supplier、本部门可见、发布后同事能访问,是否发布(没给出访问地址) | — |
+| 回答“确认,发布吧” | 通过:`publish_app({name, version})` 一次上线;上传记录里存下了清单 | 约 6 分钟 |
+| 访问 | 未登录访问跳到 `http://127.0.0.1:8080/auth/app?...`(登录跳转仍按 `PUBLIC_URL`) | — |
+
+**故意制造的错误**(不是盲测):上线后手动把 app.yaml 改成 `visibility: dept`,再让 agent 改标题并发布。
+
+| 步骤 | 结果 |
+|---|---|
+| 上传 | 被拒绝:`app.yaml 有问题: visibility: Invalid option: expected one of "self"\|"department"\|"company" 改好后重新打包上传` |
+| agent 处理 | 通过:读了 app.yaml,改回 `department`,**用同一个 uploadUrl** 重新打包上传(没有重新调用 prepare_app),然后发布,第二个版本上线 |
+
+**结论**:新的发布方式和上传时检查 app.yaml 在真实 agent 上都按预期工作。
+小问题:发布前确认时没给出访问地址(使用说明要求确认的三件事之一是应用名和地址),不影响发布。
