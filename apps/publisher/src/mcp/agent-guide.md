@@ -56,8 +56,9 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
    `cd 应用目录 && zip -r ../app.zip . -x 'node_modules/*' 'dist/*' '.git/*' '.env*'`
    没有 zip 命令时(如 Windows):`python -c "import shutil; shutil.make_archive('../app', 'zip', '.')"`(先删掉 node_modules 和 dist),
    或 PowerShell 的 `Compress-Archive -Path * -DestinationPath ..\app.zip`。
-3. 上传:`curl -sS -T ../app.zip "<uploadUrl>"`。返回里有 version 表示成功;返回错误时按提示改,再重新上传(地址没用掉之前可以再用)。
-4. publish_app(app.yaml 的完整内容, version)。app.yaml 里的 name 必须和 prepare_app 用的应用名一致。
+3. 上传:`curl -sS -T ../app.zip "<uploadUrl>"`。上传时会检查 zip 里的 app.yaml(name 必须和 prepare_app 用的应用名一致)。
+   返回里有 version 表示成功;返回错误时按提示改,重新打包再上传(地址没用掉之前可以再用)。
+4. publish_app(应用名, version)。发布设置以 zip 里的 app.yaml 为准,不用另外传。
 5. 每隔 5 秒左右调用一次 get_publish_status,直到 done 为 true,一般要一到三分钟。期间可以简单告诉用户进度。
 6. 结束后按 nextAction 做。成功时把访问地址告诉用户。
 

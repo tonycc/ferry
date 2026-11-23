@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { manifestSchema, parseManifest, type Visibility } from "@ferry/manifest";
+import { manifestSchema, parseManifest, type Manifest, type Visibility } from "@ferry/manifest";
 import type { Adapters } from "./adapters/types";
 import { canAccess } from "./authz/decide";
 import { UserError } from "./errors";
@@ -7,7 +7,7 @@ import type { User } from "./identity";
 import type { Engine } from "./workflow/engine";
 import type { TemplateFile, TemplateLibrary, TemplateSummary } from "./templates";
 import { pruneArchives } from "./workflow/retention";
-import { checkArchiveLayout, zipEntryNames } from "./zip";
+import { checkArchiveLayout, readZipFile, zipEntryNames } from "./zip";
 import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
 import { MAX_SECRETS_PER_APP, validateSecretName, validateSecretValue, type SecretBox } from "./secrets";
@@ -246,11 +246,54 @@ export class PublisherService {
     // 检查不通过时上传地址还能再用
     const layoutProblem = checkArchiveLayout(names);
     if (layoutProblem) throw new UserError("invalid_input", layoutProblem);
+    // 发布只认代码包里的 app.yaml:在这里读出并校验,写错了在上传时就报出来,并随凭据记下供发布使用
+    const manifest = await this.manifestOf(zip, ticket.appName);
 
-    ticket.receivedAt = new Date();
-    await this.store.saveUpload(ticket);
-    await this.adapters.archives.save(ticket.appName, ticket.version, zip);
+    // 先原子地占用凭据再保存代码包:并发的两次上传只有一次能成功,不会互相覆盖代码包
+    if (!(await this.store.claimUpload(ticket.tokenHash, new Date(), manifest))) {
+      throw new UserError("conflict", "这个上传地址已经用过了,请重新调用 prepare_app");
+    }
+    try {
+      await this.adapters.archives.save(ticket.appName, ticket.version, zip);
+    } catch (err) {
+      // 代码包没存下来:把凭据恢复成未使用,同一个地址可以重新上传
+      await this.store.saveUpload({ ...ticket, receivedAt: undefined, manifest: undefined });
+      throw err;
+    }
     return { app: ticket.appName, version: ticket.version, bytes: zip.length };
+  }
+
+  /** 读出并校验代码包根目录的 app.yaml;有问题时抛出写给 agent 的修复说明 */
+  private async manifestOf(zip: Buffer, appName: string): Promise<Manifest> {
+    const text = readZipFile(zip, "app.yaml");
+    if (!text) {
+      throw new UserError(
+        "invalid_input",
+        "读不出代码包根目录的 app.yaml(文件可能过大、已损坏、加密或用了不常见的压缩方式)。请用 zip 命令或系统自带的压缩工具重新打包上传",
+      );
+    }
+    const parsed = parseManifest(text.toString("utf8"));
+    if (!parsed.ok) throw new UserError("invalid_input", `app.yaml 有问题:\n${parsed.errors.join("\n")}\n改好后重新打包上传`);
+    const { manifest } = parsed;
+    if (manifest.name !== appName) {
+      throw new UserError(
+        "invalid_input",
+        `app.yaml 有问题:\nname: 是 ${manifest.name},但调用 prepare_app 时用的应用名是 ${appName}。把两者改成一致后重新打包上传`,
+      );
+    }
+    await this.checkTemplate(manifest);
+    return manifest;
+  }
+
+  private async checkTemplate(manifest: Manifest): Promise<void> {
+    if (!this.config.templates) return;
+    const templates = await this.config.templates.names();
+    if (!templates.includes(manifest.template)) {
+      throw new UserError(
+        "invalid_input",
+        `app.yaml 有问题:\ntemplate: 没有模板 ${manifest.template},可用的模板:${templates.join("、")}。改好后重新打包上传`,
+      );
+    }
   }
 
   async listTemplates(): Promise<TemplateSummary[]> {
@@ -266,23 +309,13 @@ export class PublisherService {
     return files;
   }
 
-  async publish(user: User, input: { manifestYaml: string; version: string }): Promise<ReleaseView> {
-    const parsed = parseManifest(input.manifestYaml);
-    if (!parsed.ok) throw new UserError("invalid_input", `app.yaml 有问题:\n${parsed.errors.join("\n")}`);
-    const { manifest } = parsed;
-    if (this.config.templates) {
-      const templates = await this.config.templates.names();
-      if (!templates.includes(manifest.template)) {
-        throw new UserError(
-          "invalid_input",
-          `app.yaml 有问题:\ntemplate: 没有模板 ${manifest.template},可用的模板:${templates.join("、")}`,
-        );
-      }
-    }
-
-    const app = await this.store.getApp(manifest.name);
-    if (!app) throw new UserError("not_found", `应用 ${manifest.name} 还没有创建,请先调用 prepare_app`);
-    if (app.ownerId !== user.id) throw new UserError("forbidden", `你不是应用 ${manifest.name} 的负责人`);
+  /**
+   * 发布已上传的代码包。清单只取代码包根目录的 app.yaml,不另外传,免得两份不一致。
+   */
+  async publish(user: User, input: { name: string; version: string }): Promise<ReleaseView> {
+    const app = await this.store.getApp(input.name);
+    if (!app) throw new UserError("not_found", `应用 ${input.name} 还没有创建,请先调用 prepare_app`);
+    if (app.ownerId !== user.id) throw new UserError("forbidden", `你不是应用 ${input.name} 的负责人`);
     if (app.disabled) {
       throw new UserError("forbidden", `应用 ${app.name} 已被管理员停用,不能发布。请联系平台管理员`);
     }
@@ -292,8 +325,24 @@ export class PublisherService {
       throw new UserError(
         "invalid_input",
         `应用 ${app.name} 还没有收到 version 为 ${input.version} 的代码包。请先把 zip 上传到 prepare_app 返回的 uploadUrl,` +
-          "并确认 app.yaml 里的 name 和调用 prepare_app 时用的应用名一致",
+          "并确认 name 和调用 prepare_app 时用的应用名一致",
       );
+    }
+    const archived = (await this.adapters.archives.list(app.name)).some((a) => a.version === input.version);
+    if (!archived) {
+      throw new UserError(
+        "invalid_input",
+        `version 为 ${input.version} 的代码包已失效(上传后太久没有发布,已被清理)。请重新调用 prepare_app、上传,再用新的 version 发布`,
+      );
+    }
+    let manifest = upload.manifest;
+    if (manifest) {
+      await this.checkTemplate(manifest);
+    } else {
+      // 记录清单之前收到的代码包:从代码包里读
+      const zip = await this.adapters.archives.read(app.name, input.version);
+      if (!zip) throw new UserError("invalid_input", `version 为 ${input.version} 的代码包已失效,请重新调用 prepare_app 并上传`);
+      manifest = await this.manifestOf(zip, app.name);
     }
 
     const releases = await this.store.listReleases(app.name);

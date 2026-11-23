@@ -15,7 +15,7 @@ import type { Gateway } from "../gateway/gateway";
 import type { Organization } from "../org/service";
 
 const prepareBody = z.object({ name: z.string() });
-const publishBody = z.object({ manifestYaml: z.string(), version: z.string().min(1) });
+const publishBody = z.object({ name: z.string().min(1), version: z.string().min(1) });
 const disableBody = z.object({ reason: z.string().max(500).optional() });
 const visibilityBody = z.object({ visibility: visibilitySchema });
 const secretBody = z.object({ name: z.string(), value: z.string() });
