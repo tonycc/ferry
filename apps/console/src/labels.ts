@@ -105,6 +105,7 @@ export function auditDetail(e: AuditEvent): string {
       return `${String(d.name ?? d.userId ?? "")}${fields.length ? `:改了${fields.join("、")}` : ""}`;
     }
     case "user.deactivate":
+      return `${String(d.name ?? d.userId ?? "")}${d.wasAdmin ? ",同时取消管理员身份" : ""}`;
     case "user.reactivate":
       return String(d.name ?? d.userId ?? "");
     case "user.admin":

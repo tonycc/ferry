@@ -37,8 +37,11 @@ export interface OrgView {
 export interface OrganizationOptions {
   /** .env 的 ADMIN_USERS:始终是管理员,控制台上不能取消 */
   fixedAdmins: ReadonlySet<string>;
-  /** 标记离职后调用(作废登录会话、令牌和密码) */
-  onDeactivate?: (userId: string) => Promise<void>;
+  /**
+   * 作废这个人的登录会话、令牌和密码。标记离职后调用;恢复在职前再调用一次(可以重复执行),
+   * 万一离职时这一步失败了,恢复后也不会让旧密码、旧令牌又能用
+   */
+  revokeAccess?: (userId: string) => Promise<void>;
   newId?: (kind: "user" | "department") => string;
 }
 
@@ -118,10 +121,8 @@ export class Organization {
         if (parentId !== department.parentId) Object.assign(detail, { fromParentId: department.parentId, parentId });
         department.parentId = parentId;
       }
-      if (name !== department.name) {
-        uniqueSibling(org, name, department.parentId, id);
-        detail.fromName = department.name;
-      }
+      if (name !== department.name || detail.parentId !== undefined) uniqueSibling(org, name, department.parentId, id);
+      if (name !== department.name) detail.fromName = department.name;
       department.name = name;
       return { action: "department.update", detail };
     });
@@ -174,7 +175,8 @@ export class Organization {
   }
 
   /**
-   * 标记离职:不能再登录,登录会话、个人令牌和密码作废;保留所属部门,他负责的应用照常运行,由管理员停用或删除。
+   * 标记离职:不能再登录,登录会话、个人令牌和密码作废,控制台设的管理员身份取消;
+   * 保留所属部门,他负责的应用照常运行,由管理员停用或删除。
    * ADMIN_USERS 里的人不能在控制台上标记离职(那是保底的管理员)
    */
   async deactivate(actorId: string, id: string): Promise<void> {
@@ -186,13 +188,23 @@ export class Organization {
       const user = findUser(org, id);
       if (!user.active) throw new UserError("conflict", `${user.name} 已经是离职状态`);
       user.active = false;
-      return { action: "user.deactivate", detail: { userId: id, name: user.name } };
+      const wasAdmin = !!user.isAdmin;
+      delete user.isAdmin;
+      return { action: "user.deactivate", detail: { userId: id, name: user.name, ...(wasAdmin ? { wasAdmin } : {}) } };
     });
-    await this.options.onDeactivate?.(id);
+    await this.options.revokeAccess?.(id);
   }
 
-  /** 恢复在职(离职标错了,或者人回来了):还是原来的账号和应用;密码和令牌在离职时已作废,要重新生成初始密码、重新领令牌 */
+  /**
+   * 恢复在职(离职标错了,或者人回来了):还是原来的账号和应用,恢复后是普通员工;
+   * 密码和令牌已作废,要重新生成初始密码、重新领令牌
+   */
   async reactivate(actorId: string, id: string): Promise<void> {
+    const current = (await this.store.load())?.users.find((u) => u.id === id);
+    if (!current) throw new UserError("not_found", "人员不存在");
+    if (current.active) throw new UserError("conflict", `${current.name} 已经是在职状态`);
+    // 先确保旧的登录凭据都作废了,再恢复在职(失败时不恢复)
+    await this.options.revokeAccess?.(id);
     await this.change(actorId, (org) => {
       const user = findUser(org, id);
       if (user.active) throw new UserError("conflict", `${user.name} 已经是在职状态`);

@@ -323,7 +323,7 @@ async function server(options: { devAuth?: boolean; adminIds?: string[] } = {}) 
   const auth = new AuthService(new MemoryAuthStore(), directory);
   const organization = new Organization(orgStore, directory, new AuditLog(new MemoryAuditStore(), directory), {
     fixedAdmins: new Set(options.adminIds),
-    onDeactivate: async (id) => void (await auth.endAccess(id)),
+    revokeAccess: async (id) => void (await auth.endAccess(id)),
   });
   await organization.reload();
   const allowedOrigins = new Set(["http://ferry.test"]);

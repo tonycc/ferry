@@ -125,7 +125,7 @@ async function reset(user: AdminUser) {
 
 async function deactivate(user: AdminUser) {
   const ok = await confirm(
-    `把 ${user.name} 标记为离职:立即不能登录,已经登录的地方都会退出,个人令牌和密码作废。\n\n` +
+    `把 ${user.name} 标记为离职:立即不能登录,已经登录的地方都会退出,个人令牌和密码作废${user.isAdmin ? ",管理员身份取消" : ""}。\n\n` +
       "他负责的应用照常运行、同事照常访问;不再需要的应用请在“管理全部应用”里停用或删除。以后可以恢复在职。",
     "标记离职",
     "标记离职",
@@ -135,7 +135,7 @@ async function deactivate(user: AdminUser) {
 
 async function reactivate(user: AdminUser) {
   const ok = await confirm(
-    `恢复 ${user.name} 为在职:还是原来的账号和应用。密码和个人令牌在离职时已经作废,要重新生成初始密码,本人登录后重新领令牌。`,
+    `恢复 ${user.name} 为在职:还是原来的账号和应用,恢复后是普通员工。密码和个人令牌已经作废,要重新生成初始密码,本人登录后重新领令牌。`,
     "恢复在职",
     "恢复",
     "info",

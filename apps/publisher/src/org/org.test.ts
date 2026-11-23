@@ -85,7 +85,7 @@ describe.each(storeCases("ferry_test_org"))("人员和部门管理:$name", (c) =
     let n = 0;
     const organization = new Organization(store, directory, new AuditLog(auditStore, directory), {
       fixedAdmins: new Set(options.fixedAdmins ?? []),
-      onDeactivate: async (id) => void ended.push(id),
+      revokeAccess: async (id) => void ended.push(id),
       newId: (kind) => `local:${options.idPrefix ?? ""}${kind}-${++n}`,
     });
     await organization.reload();
@@ -191,6 +191,38 @@ describe.each(storeCases("ferry_test_org"))("人员和部门管理:$name", (c) =
     await organization.reactivate(ADMIN, "dingtalk:alice");
     expect(await directory.findLogin("13800000001")).toBe("dingtalk:alice");
     expect(await actions()).toEqual(["user.deactivate", "user.create", "user.deactivate", "user.reactivate"]);
+    // 恢复在职前又作废了一次旧凭据;对在职的人点恢复不会动他的凭据
+    expect(ended.at(-1)).toBe("dingtalk:alice");
+    const before = ended.length;
+    await expect(organization.reactivate(ADMIN, "dingtalk:bob")).rejects.toThrow("已经是在职状态");
+    expect(ended).toHaveLength(before);
+  });
+
+  it("恢复在职前作废旧凭据失败时,不恢复", async () => {
+    const store = storeCase.createOrg();
+    await store.update(() => org());
+    const directory = new MemoryDirectory();
+    let fail = false;
+    const organization = new Organization(store, directory, new AuditLog(new MemoryAuditStore(), directory), {
+      fixedAdmins: new Set(),
+      revokeAccess: async () => {
+        if (fail) throw new Error("数据库连不上");
+      },
+    });
+    await organization.reload();
+    await organization.deactivate(ADMIN, "dingtalk:alice");
+    fail = true;
+    await expect(organization.reactivate(ADMIN, "dingtalk:alice")).rejects.toThrow("数据库连不上");
+    expect(await directory.isActive("dingtalk:alice")).toBe(false);
+  });
+
+  it("控制台设的管理员离职时取消管理员身份,恢复在职后是普通员工", async () => {
+    const { directory, organization, store } = await setup();
+    await organization.setAdmin(ADMIN, "dingtalk:bob", true);
+    await organization.deactivate(ADMIN, "dingtalk:bob");
+    await organization.reactivate(ADMIN, "dingtalk:bob");
+    expect(await directory.isAdmin("dingtalk:bob")).toBe(false);
+    expect((await store.load())!.users.find((u) => u.id === "dingtalk:bob")!.isAdmin).toBeUndefined();
   });
 
   it("管理员:控制台设的管理员马上生效;ADMIN_USERS 里的人不能取消;不能取消自己;离职的人不能设为管理员", async () => {
@@ -240,9 +272,15 @@ describe.each(storeCases("ferry_test_org"))("人员和部门管理:$name", (c) =
     await organization.updateDepartment(ADMIN, "dingtalk:finance-ap", { name: "应付组", parentId: "dingtalk:sales" });
     expect(await canAccess(app, bob, directory)).toBe(false);
 
+    // 调到的上级下面已经有同名部门时拒绝
+    await organization.createDepartment(ADMIN, { name: "应付组", parentId: "dingtalk:finance" });
+    await expect(organization.updateDepartment(ADMIN, "dingtalk:finance-ap", { name: "应付组", parentId: "dingtalk:finance" })).rejects.toThrow(
+      "已经有叫“应付组”的部门",
+    );
+
     await organization.updateDepartment(ADMIN, "dingtalk:root", { name: "示例公司", parentId: null });
     expect(await directory.departmentNameOf("dingtalk:root")).toBe("示例公司");
-    expect(await actions()).toEqual(["department.create", "department.update", "department.update"]);
+    expect(await actions()).toEqual(["department.create", "department.update", "department.create", "department.update"]);
   });
 
   it("部门:有下级部门或有人(包括已离职的人)时不能删除;最上级部门不能删除", async () => {

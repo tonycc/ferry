@@ -156,7 +156,7 @@ const auth = new AuthService(authStore, directory, { sessionTtlMs: config.SESSIO
 // 人员和部门:启动时从数据库读进内存,之后每分钟重读一次(命令行建的管理员不用重启就能登录)
 const organization = new Organization(orgStore, directory, audit, {
   fixedAdmins: adminIds,
-  onDeactivate: async (userId) => void (await auth.endAccess(userId)),
+  revokeAccess: async (userId) => void (await auth.endAccess(userId)),
 });
 await organization.reload();
 setInterval(() => void organization.reload().catch((err: Error) => console.error(`重新读取组织架构失败: ${err.message}`)), 60_000).unref();
