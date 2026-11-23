@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DokployClient, DokployError } from "./dokploy-client";
-import { DokployPlatform, formatEnv, lastStartLogs, parseEnv } from "./dokploy";
+import { describeExitedContainer, DokployPlatform, formatEnv, lastStartLogs, parseEnv } from "./dokploy";
 
 type Handler = (input: Record<string, unknown>, request: Request) => unknown;
 
@@ -325,6 +325,7 @@ describe("DokployPlatform", () => {
     });
     expect(called("schedule.create")[0]?.input).toMatchObject({ scheduleType: "dokploy-server" });
     expect(String(called("schedule.create")[0]?.input.script)).toContain('docker logs --timestamps --tail 200 "$cid"');
+    expect(String(called("schedule.create")[0]?.input.script)).toContain('docker inspect "$cid"');
     expect(called("schedule.delete")).toHaveLength(1);
   });
 
@@ -902,5 +903,43 @@ describe("网络隔离", () => {
     const absent = fakeDokploy({ "network.all": () => [] });
     await new DokployPlatform(absent.client, { sleep: async () => {} }).deleteAppNetwork("ledger");
     expect(absent.called("schedule.create")).toHaveLength(0);
+  });
+});
+
+describe("describeExitedContainer", () => {
+  const state = (exitCode: number, oom = false) =>
+    [
+      `FERRY_STATE "ExitCode": ${exitCode},`,
+      `FERRY_STATE "OOMKilled": ${oom},`,
+      'FERRY_STATE "StartedAt": "2026-11-23T11:25:35.711935427Z",',
+      'FERRY_STATE "FinishedAt": "2026-11-23T11:25:35.907137885Z",',
+    ];
+
+  it("退出码 0、没有输出:给出退出码、运行时长,并说明多半是没有调用 listen", () => {
+    const text = describeExitedContainer(["Initializing schedule", ...state(0), "✅ done"].join("\n"))!;
+    expect(text).toContain("退出码 0");
+    expect(text).toContain("运行了约 0.2 秒");
+    expect(text).toContain("没有任何输出");
+    expect(text).toContain("server.listen");
+  });
+
+  it("有输出时附上最后一次启动的输出;内存超限时说明原因", () => {
+    const text = describeExitedContainer(
+      [...state(137, true), "2026-11-23T11:25:35.800Z FATAL ERROR: heap out of memory"].join("\n"),
+    )!;
+    expect(text).toContain("退出码 137");
+    expect(text).toContain("内存上限");
+    expect(text).toContain("FATAL ERROR: heap out of memory");
+    expect(text).not.toContain("server.listen");
+  });
+
+  it("其他退出码只列事实,不猜原因", () => {
+    const text = describeExitedContainer([...state(1), "2026-11-23T11:25:35.800Z Error: boom"].join("\n"))!;
+    expect(text.split("\n")[0]).toBe("(应用启动后退出,退出码 1,运行了约 0.2 秒;下面是它最后一次启动的输出)");
+    expect(text).toContain("Error: boom");
+  });
+
+  it("没有找到退出的容器时返回 undefined", () => {
+    expect(describeExitedContainer("Initializing schedule\n✅ done")).toBeUndefined();
   });
 });
