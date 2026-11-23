@@ -6,7 +6,9 @@ import { TemplateLibrary } from "../templates";
 import { makeZip } from "../test/zip";
 import { Engine } from "../workflow/engine";
 import { MemoryStore } from "../workflow/store";
-import { checkArchiveLayout, zipEntryNames } from "../zip";
+import { checkArchiveLayout, readZipFile, zipEntryNames } from "../zip";
+
+const EXPENSE_YAML = "name: expense\ntemplate: node-postgres\n";
 
 const alice = { id: "dingtalk:alice", departments: ["finance"], isAdmin: false };
 const MCP_HEADERS = { "content-type": "application/json", accept: "application/json, text/event-stream" };
@@ -81,13 +83,39 @@ describe("agent 接入", () => {
     }
   });
 
-  it("app.yaml 写了不存在的模板时直接报错,并列出可用的模板", async () => {
+  it("app.yaml 写了不存在的模板时上传就报错,并列出可用的模板;改好后同一个上传地址还能用", async () => {
     const { service } = setup();
     const prepared = await service.prepareApp(alice, "expense");
-    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, makeZip({ "app.yaml": "", Dockerfile: "" }));
+    const token = prepared.uploadUrl.split("/").pop()!;
     await expect(
-      service.publish(alice, { manifestYaml: "name: expense\ntemplate: node-pg\n", version: prepared.version }),
+      service.receiveUpload(token, makeZip({ "app.yaml": "name: expense\ntemplate: node-pg\n", Dockerfile: "" })),
     ).rejects.toThrow(/没有模板 node-pg.*node-postgres/);
+    await service.receiveUpload(token, makeZip({ "app.yaml": EXPENSE_YAML, Dockerfile: "" }));
+    await expect(service.publish(alice, { name: "expense", version: prepared.version })).resolves.toMatchObject({
+      app: "expense",
+    });
+  });
+
+  it("app.yaml 的 name 和 prepare_app 用的应用名不一致时上传就报错", async () => {
+    const { service } = setup();
+    const prepared = await service.prepareApp(alice, "expense");
+    await expect(
+      service.receiveUpload(
+        prepared.uploadUrl.split("/").pop()!,
+        makeZip({ "app.yaml": "name: other-app\ntemplate: node-postgres\n", Dockerfile: "" }),
+      ),
+    ).rejects.toThrow(/other-app.*expense/);
+  });
+
+  it("app.yaml 字段写错时上传就报错", async () => {
+    const { service } = setup();
+    const prepared = await service.prepareApp(alice, "expense");
+    await expect(
+      service.receiveUpload(
+        prepared.uploadUrl.split("/").pop()!,
+        makeZip({ "app.yaml": EXPENSE_YAML + "visibility: everyone\n", Dockerfile: "" }),
+      ),
+    ).rejects.toThrow(/visibility/);
   });
 
   it("代码包多包了一层目录时上传就报错,改好后同一个上传地址还能用", async () => {
@@ -108,7 +136,7 @@ describe("agent 接入", () => {
       method: "PUT",
       url: path,
       headers: { "content-type": "application/octet-stream" },
-      payload: makeZip({ "app.yaml": "", Dockerfile: "", "server.js": "" }),
+      payload: makeZip({ "app.yaml": EXPENSE_YAML, Dockerfile: "", "server.js": "" }),
     });
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toMatchObject({ version: prepared.version });
@@ -118,6 +146,16 @@ describe("agent 接入", () => {
 describe("代码包结构检查", () => {
   it("读出 zip 里的文件名", () => {
     expect(zipEntryNames(makeZip({ "a.txt": "x", "dir/b.txt": "y" }))).toEqual(["a.txt", "dir/b.txt"]);
+  });
+
+  it("读出根目录文件的内容,不压缩和 deflate 压缩的都支持", () => {
+    const yaml = "name: expense\ntemplate: node-postgres\n# " + "x".repeat(500) + "\n";
+    for (const deflate of [false, true]) {
+      const zip = makeZip({ "sub/app.yaml": "name: wrong\n", "./app.yaml": yaml }, { deflate });
+      expect(readZipFile(zip, "app.yaml")?.toString("utf8")).toBe(yaml);
+      expect(readZipFile(zip, "missing.yaml")).toBeUndefined();
+      expect(readZipFile(zip, "app.yaml", 100)).toBeUndefined();
+    }
     expect(zipEntryNames(Buffer.from("PK\x03\x04 truncated"))).toBeUndefined();
   });
 

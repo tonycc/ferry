@@ -1,9 +1,16 @@
-/**
- * 读出 zip 里的文件名(只读中央目录,不解压)。用来在收到代码包时检查根目录有没有 app.yaml 和 Dockerfile,
- * 让“多包了一层目录”这类问题在上传时就报出来,而不是等到构建失败。
- * 不是合法 zip 时返回 undefined。
- */
-export function zipEntryNames(data: Buffer): string[] | undefined {
+import { inflateRawSync } from "node:zlib";
+
+interface ZipEntry {
+  name: string;
+  /** 0 不压缩,8 deflate */
+  method: number;
+  compressedSize: number;
+  size: number;
+  localOffset: number;
+}
+
+/** 读出 zip 中央目录里的条目(不解压)。不是合法 zip 时返回 undefined */
+function zipEntries(data: Buffer): ZipEntry[] | undefined {
   // 中央目录结束记录在文件末尾,后面最多跟 65535 字节的注释
   const EOCD = 0x06054b50;
   const minStart = Math.max(0, data.length - 22 - 0xffff);
@@ -18,18 +25,55 @@ export function zipEntryNames(data: Buffer): string[] | undefined {
 
   const count = data.readUInt16LE(eocd + 10);
   let offset = data.readUInt32LE(eocd + 16);
-  const names: string[] = [];
+  const entries: ZipEntry[] = [];
   for (let n = 0; n < count; n++) {
     if (offset + 46 > data.length || data.readUInt32LE(offset) !== 0x02014b50) return undefined;
     const nameLength = data.readUInt16LE(offset + 28);
     const extraLength = data.readUInt16LE(offset + 30);
     const commentLength = data.readUInt16LE(offset + 32);
     if (offset + 46 + nameLength > data.length) return undefined;
-    // Windows 上的工具可能用反斜杠
-    names.push(data.toString("utf8", offset + 46, offset + 46 + nameLength).replaceAll("\\", "/"));
+    entries.push({
+      // Windows 上的工具可能用反斜杠
+      name: data.toString("utf8", offset + 46, offset + 46 + nameLength).replaceAll("\\", "/"),
+      method: data.readUInt16LE(offset + 10),
+      compressedSize: data.readUInt32LE(offset + 20),
+      size: data.readUInt32LE(offset + 24),
+      localOffset: data.readUInt32LE(offset + 42),
+    });
     offset += 46 + nameLength + extraLength + commentLength;
   }
-  return names;
+  return entries;
+}
+
+/**
+ * 读出 zip 里的文件名(只读中央目录,不解压)。用来在收到代码包时检查根目录有没有 app.yaml 和 Dockerfile,
+ * 让“多包了一层目录”这类问题在上传时就报出来,而不是等到构建失败。
+ * 不是合法 zip 时返回 undefined。
+ */
+export function zipEntryNames(data: Buffer): string[] | undefined {
+  return zipEntries(data)?.map((entry) => entry.name);
+}
+
+/**
+ * 读出 zip 根目录下一个小文件的内容(用来读 app.yaml)。
+ * 没有这个文件、超过 maxBytes、或用了不支持的压缩方式时返回 undefined。
+ */
+export function readZipFile(data: Buffer, name: string, maxBytes = 64 * 1024): Buffer | undefined {
+  const entry = zipEntries(data)?.find((e) => e.name.replace(/^\.\//, "") === name);
+  if (!entry || entry.size > maxBytes || entry.compressedSize > maxBytes) return undefined;
+  const local = entry.localOffset;
+  if (local + 30 > data.length || data.readUInt32LE(local) !== 0x04034b50) return undefined;
+  const start = local + 30 + data.readUInt16LE(local + 26) + data.readUInt16LE(local + 28);
+  const end = start + entry.compressedSize;
+  if (end > data.length) return undefined;
+  const raw = data.subarray(start, end);
+  if (entry.method === 0) return Buffer.from(raw);
+  if (entry.method !== 8) return undefined;
+  try {
+    return inflateRawSync(raw, { maxOutputLength: maxBytes });
+  } catch {
+    return undefined;
+  }
 }
 
 /** 代码包根目录必须有的文件 */

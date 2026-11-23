@@ -51,8 +51,8 @@ function setup() {
 
   async function publish(user: typeof alice, name: string, marker = "ok") {
     const prepared = await service.prepareApp(user, name);
-    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip(marker));
-    const { releaseId } = await service.publish(user, { manifestYaml: MANIFEST(name), version: prepared.version });
+    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip(MANIFEST(name), marker));
+    const { releaseId } = await service.publish(user, { name, version: prepared.version });
     await service.settle(releaseId);
     return service.status(user, releaseId);
   }
@@ -186,11 +186,8 @@ describe.each(storeCases("ferry_test_audit"))("审计日志:$name", (storeCase) 
   it("第一次上线前按 app.yaml 设置的可见范围也有记录,操作人是发布的人", async () => {
     const { service, all } = setup();
     const prepared = await service.prepareApp(alice, "ledger");
-    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip("ok"));
-    const { releaseId } = await service.publish(alice, {
-      manifestYaml: MANIFEST("ledger") + "visibility: company\n",
-      version: prepared.version,
-    });
+    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip(MANIFEST("ledger") + "visibility: company\n", "ok"));
+    const { releaseId } = await service.publish(alice, { name: "ledger", version: prepared.version });
     await service.settle(releaseId);
 
     const visibility = (await all()).filter((e) => e.action === "app.visibility");

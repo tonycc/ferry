@@ -47,8 +47,9 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
       description:
         "每次发布的第一步:为应用占用名称(已是用户自己的应用则复用),返回一次性的 uploadUrl 和 version。" +
         "接着把应用目录打成 zip(根目录含 app.yaml;排除 node_modules、.git、.env 等)," +
-        '用 HTTP PUT 上传,例如 curl -T app.zip "<uploadUrl>",然后用 version 调用 publish_app。' +
-        "uploadUrl 只能用一次且会过期,失效后重新调用本工具。",
+        '用 HTTP PUT 上传,例如 curl -T app.zip "<uploadUrl>",然后用应用名和 version 调用 publish_app。' +
+        "上传时会检查 app.yaml,有问题会直接返回错误,改好后可以用同一个 uploadUrl 重新上传;" +
+        "上传成功后 uploadUrl 就不能再用,它也会过期,失效后重新调用本工具。",
       inputSchema: { name: z.string().describe("应用名,小写字母、数字和连字符,会成为访问域名的一部分") },
     },
     ({ name }) => respond(() => service.prepareApp(user, name)),
@@ -58,9 +59,9 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
     "publish_app",
     {
       description:
-        "发布应用到企业服务器。只在用户明确确认发布后调用。返回 releaseId,之后用 get_publish_status 查询进度。",
+        "发布应用到企业服务器。只在用户明确确认发布后调用。发布设置以代码包根目录的 app.yaml 为准。返回 releaseId,之后用 get_publish_status 查询进度。",
       inputSchema: {
-        manifestYaml: z.string().describe("代码根目录 app.yaml 的完整内容"),
+        name: z.string().describe("应用名,和调用 prepare_app 时一致"),
         version: z.string().describe("prepare_app 返回的 version,对应的代码包必须已经上传"),
       },
     },

@@ -15,8 +15,8 @@ const admin = { id: "root", departments: ["it"], isAdmin: true };
 const MANIFEST = "name: ledger\ntemplate: node-postgres\ndatabase: postgres\nmigrate: npm run migrate\n";
 
 /** 一个只有 zip 文件头的假代码包;marker 用来让假平台按内容决定部署成败 */
-function zipOf(marker: string): Buffer {
-  return appZip(marker);
+function zipOf(marker: string, manifest = MANIFEST): Buffer {
+  return appZip(manifest, marker);
 }
 
 function tokenOf(uploadUrl: string): string {
@@ -43,11 +43,8 @@ function setup(options: { uploadTtlMs?: number; archiveGraceMs?: number; secretB
   /** 申请上传地址、上传代码包、发起发布,不等发布结束 */
   async function startPublish(marker: string, extra = "") {
     const prepared = await service.prepareApp(alice, "ledger");
-    await service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf(marker));
-    const { releaseId } = await service.publish(alice, {
-      manifestYaml: MANIFEST + extra,
-      version: prepared.version,
-    });
+    await service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf(marker, MANIFEST + extra));
+    const { releaseId } = await service.publish(alice, { name: "ledger", version: prepared.version });
     return { releaseId, version: prepared.version };
   }
 
@@ -201,8 +198,8 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const { service, publish } = setup();
       await publish("v1");
       const prepared = await service.prepareApp(alice, "ledger");
-      await service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v2"));
-      const view = await service.publish(alice, { manifestYaml: MANIFEST + "visibility: company\n", version: prepared.version });
+      await service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v2", MANIFEST + "visibility: company\n"));
+      const view = await service.publish(alice, { name: "ledger", version: prepared.version });
       expect(view.notice).toContain("已忽略");
       await service.settle(view.releaseId);
       expect((await service.appDetail(alice, "ledger")).visibility).toBe("self");
@@ -369,8 +366,8 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       const { service } = setup();
       const { version } = await service.prepareApp(alice, "ledger");
 
-      await expect(service.publish(alice, { manifestYaml: MANIFEST, version })).rejects.toThrow("还没有收到");
-      await expect(service.publish(alice, { manifestYaml: MANIFEST, version: "no-such-version" })).rejects.toThrow(
+      await expect(service.publish(alice, { name: "ledger", version })).rejects.toThrow("还没有收到");
+      await expect(service.publish(alice, { name: "ledger", version: "no-such-version" })).rejects.toThrow(
         "还没有收到",
       );
     });
@@ -562,7 +559,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       });
       const prepared = await other.prepareApp(alice, "ledger");
       await other.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v1"));
-      const { releaseId } = await other.publish(alice, { manifestYaml: MANIFEST, version: prepared.version });
+      const { releaseId } = await other.publish(alice, { name: "ledger", version: prepared.version });
       await other.settle(releaseId);
 
       const view = await other.status(alice, releaseId);
@@ -585,7 +582,7 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       });
       const prepared = await other.prepareApp(alice, "ledger");
       await other.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v1"));
-      const { releaseId } = await other.publish(alice, { manifestYaml: MANIFEST, version: prepared.version });
+      const { releaseId } = await other.publish(alice, { name: "ledger", version: prepared.version });
       await other.settle(releaseId);
       const view = await other.status(alice, releaseId);
       expect(view.state).toBe("FAILED");

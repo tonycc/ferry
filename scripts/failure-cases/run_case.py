@@ -24,7 +24,7 @@ with zipfile.ZipFile(buf, "w") as z:
             z.writestr(rel, manifest if rel == "app.yaml" else p.read_bytes())
 req = urllib.request.Request(prep["uploadUrl"], buf.getvalue(), method="PUT")
 urllib.request.urlopen(req, timeout=60).read()
-view = tool("publish_app", {"manifestYaml": manifest, "version": prep["version"]})
+view = tool("publish_app", {"name": NAME, "version": prep["version"]})
 t0 = time.time()
 while "toolError" not in view and not view["done"]:
     time.sleep(3); view = tool("get_publish_status", {"releaseId": view["releaseId"]})
