@@ -326,6 +326,11 @@ describe("DokployPlatform", () => {
     expect(called("schedule.create")[0]?.input).toMatchObject({ scheduleType: "dokploy-server" });
     expect(String(called("schedule.create")[0]?.input.script)).toContain('docker logs --timestamps --tail 200 "$cid"');
     expect(String(called("schedule.create")[0]?.input.script)).toContain('docker inspect "$cid"');
+    // 只找这次部署退出的容器(按任务 ID),不碰旧版本的
+    const script = String(called("schedule.create")[0]?.input.script);
+    expect(script).toContain("\\.t1$");
+    expect(script).toContain("\\.t2$");
+    expect(script).not.toContain("t-old");
     expect(called("schedule.delete")).toHaveLength(1);
   });
 
@@ -937,6 +942,16 @@ describe("describeExitedContainer", () => {
     const text = describeExitedContainer([...state(1), "2026-11-23T11:25:35.800Z Error: boom"].join("\n"))!;
     expect(text.split("\n")[0]).toBe("(应用启动后退出,退出码 1,运行了约 0.2 秒;下面是它最后一次启动的输出)");
     expect(text).toContain("Error: boom");
+  });
+
+  it("容器被反复重启时并进同一行说明,不出现两行开头", () => {
+    const text = describeExitedContainer(
+      [...state(1), "2026-11-23T11:25:30.000Z Error: first", "2026-11-23T11:25:35.800Z Error: boom"].join("\n"),
+    )!;
+    expect(text.split("\n")[0]).toBe("(应用启动后退出,退出码 1,运行了约 0.2 秒,被反复重启;下面是它最后一次启动的输出)");
+    expect(text).not.toContain("容器启动后退出");
+    expect(text).toContain("Error: boom");
+    expect(text).not.toContain("Error: first");
   });
 
   it("没有找到退出的容器时返回 undefined", () => {

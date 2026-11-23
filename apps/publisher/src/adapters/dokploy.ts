@@ -149,12 +149,8 @@ function hasExited(task: DokployServiceTask): boolean {
 
 const TIMESTAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) ?(.*)$/;
 
-/**
- * 整理启动失败时的应用日志。Swarm 反复重启崩溃的容器,读到的日志是几次启动的输出混在一起,
- * 每行带着 Docker 加的时间戳,顺序也可能是乱的。按时间排好,只保留最后一次启动的输出,去掉时间戳。
- * 相邻两行间隔超过 2 秒就算另一次启动。
- */
 const STATE_PREFIX = "FERRY_STATE";
+const RESTARTED_NOTE = "(容器启动后退出,被反复重启;下面是最后一次启动的输出)\n";
 
 /**
  * 把读退出容器的一次性任务的输出整理成给 agent 看的日志:退出码、运行了多久、最后一次启动的输出。
@@ -191,11 +187,21 @@ export function describeExitedContainer(raw: string): string | undefined {
         "常见原因是没有调用 server.listen(...),或者 listen 写在了没有执行到的分支或函数里",
     );
   }
+  let last = output.length > 0 ? lastStartLogs(output.join("\n")) : "";
+  if (last.startsWith(RESTARTED_NOTE)) {
+    last = last.slice(RESTARTED_NOTE.length);
+    facts.push("被反复重启");
+  }
   const head = `(应用启动后退出${facts.length > 0 ? `,${facts.join(",")}` : ""}`;
   if (output.length === 0) return [`${head},没有任何输出)`, ...explain].join("\n");
-  return [`${head};下面是它最后一次启动的输出)`, ...explain, lastStartLogs(output.join("\n"))].join("\n");
+  return [`${head};下面是它最后一次启动的输出)`, ...explain, last].join("\n");
 }
 
+/**
+ * 整理启动失败时的应用日志。Swarm 反复重启崩溃的容器,读到的日志是几次启动的输出混在一起,
+ * 每行带着 Docker 加的时间戳,顺序也可能是乱的。按时间排好,只保留最后一次启动的输出,去掉时间戳。
+ * 相邻两行间隔超过 2 秒就算另一次启动。
+ */
 export function lastStartLogs(raw: string): string {
   const lines = raw.split("\n").filter((line) => line.trim());
   const parsed = lines.map((line) => {
@@ -207,7 +213,7 @@ export function lastStartLogs(raw: string): string {
   let start = 0;
   for (let i = 1; i < sorted.length; i++) if (sorted[i]!.at - sorted[i - 1]!.at > 2000) start = i;
   const last = sorted.slice(start).map((p) => p.text);
-  const note = start > 0 ? "(容器启动后退出,被反复重启;下面是最后一次启动的输出)\n" : "";
+  const note = start > 0 ? RESTARTED_NOTE : "";
   return note + last.join("\n");
 }
 
@@ -902,10 +908,11 @@ export class DokployPlatform implements DeployPlatform {
       } else {
         stable = undefined;
       }
-      const crashed = tasks.filter((t) => !oldTasks.has(t.containerId) && hasExited(t)).length;
-      if (crashed >= 2 || Date.now() > startDeadline) {
-        // 先读退出的容器自己的输出;读不到再用应用日志(更新时它返回的是还在运行的旧版本的输出)
-        const exited = await this.exitedContainerLogs(appName).catch(() => undefined);
+      const crashed = tasks.filter((t) => !oldTasks.has(t.containerId) && hasExited(t)).map((t) => t.containerId);
+      if (crashed.length >= 2 || Date.now() > startDeadline) {
+        // 先读这次部署退出的容器自己的输出;读不到再用应用日志(更新时它返回的是还在运行的旧版本的输出)。
+        // 只看这次部署的容器:以前版本留下的退出容器说的是别的代码
+        const exited = await this.exitedContainerLogs(appName, crashed).catch(() => undefined);
         if (exited) return { ok: false, reason: "start", logs: exited };
         const raw = await this.getLogs(appId, this.failureLogLines).catch(() => "");
         return { ok: false, reason: "start", logs: lastStartLogs(raw) };
@@ -915,15 +922,18 @@ export class DokployPlatform implements DeployPlatform {
   }
 
   /**
-   * 读应用最近一个已退出容器的输出。Dokploy 的 application.readLogs 只返回正在运行的容器的输出:
+   * 读这次部署的容器里最近退出的那个的输出(taskIds 是这次部署新起、已经退出的 Swarm 任务)。Dokploy 的 application.readLogs 只返回正在运行的容器的输出:
    * 更新时旧版本还在运行,读到的是旧版本的日志,新版本的崩溃信息就丢了(实测)。
    * 所以在 Dokploy 所在服务器上直接用 docker logs 读(和迁移前备份一样,用 dokploy-server 类型的一次性任务)。
    * 没有已退出的容器时返回 undefined
    */
-  private async exitedContainerLogs(appName: string): Promise<string | undefined> {
-    if (!SAFE_NAME.test(appName)) return undefined;
+  private async exitedContainerLogs(appName: string, taskIds: string[]): Promise<string | undefined> {
+    // Dokploy 返回的 containerId 其实是 Swarm 任务 ID,容器名是 <服务名>.<序号>.<任务 ID>
+    const ids = taskIds.filter((id) => /^[a-z0-9]+$/i.test(id));
+    if (!SAFE_NAME.test(appName) || ids.length === 0) return undefined;
+    const filters = ids.map((id) => `--filter "name=^${appName}\\.[0-9]+\\.${id}$"`).join(" ");
     const script = [
-      `cid=$(docker ps -a -q --filter "name=^${appName}\\." --filter status=exited | head -n1)`,
+      `cid=$(docker ps -a -q ${filters} --filter status=exited | head -n1)`,
       'if [ -z "$cid" ]; then exit 0; fi',
       // 退出码、是否因内存超限被杀、启动和退出时间:应用什么都没输出时,只能靠这些判断原因
       `docker inspect "$cid" | grep -E '"(ExitCode|OOMKilled|StartedAt|FinishedAt)"' | sed 's/^ */${STATE_PREFIX} /'`,
