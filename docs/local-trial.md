@@ -236,9 +236,9 @@ agent 的目录放在新的空目录 `~/ferry-regress/bob-supplier`:第一次放
 | 步骤 | 结果 | 用时 |
 |---|---|---|
 | agy 写应用 | 通过:node-postgres 模板,`visibility: department`,`npx tsc --noEmit` 通过 | 约 3 分钟 |
-| 发布前确认 | 通过:问应用名 bob-supplier、本部门可见、发布后同事能访问,是否发布(没给出访问地址) | — |
+| 发布前确认 | 通过:问应用名 bob-supplier、本部门可见、发布后同事能访问,是否发布 | — |
 | 回答“确认,发布吧” | 通过:`publish_app({name, version})` 一次上线;上传记录里存下了清单 | 约 6 分钟 |
-| 访问 | 未登录访问跳到 `http://127.0.0.1:8080/auth/app?...`(登录跳转仍按 `PUBLIC_URL`) | — |
+| 访问 | 只验证了跳转:未登录访问跳到 `http://127.0.0.1:8080/auth/app?...`(登录跳转仍按 `PUBLIC_URL`)。没有按场景 4 用同事账号登录访问 | — |
 
 **故意制造的错误**(不是盲测):上线后手动把 app.yaml 改成 `visibility: dept`,再让 agent 改标题并发布。
 
@@ -248,4 +248,4 @@ agent 的目录放在新的空目录 `~/ferry-regress/bob-supplier`:第一次放
 | agent 处理 | 通过:读了 app.yaml,改回 `department`,**用同一个 uploadUrl** 重新打包上传(没有重新调用 prepare_app),然后发布,第二个版本上线 |
 
 **结论**:新的发布方式和上传时检查 app.yaml 在真实 agent 上都按预期工作。
-小问题:发布前确认时没给出访问地址(使用说明要求确认的三件事之一是应用名和地址),不影响发布。
+确认发布时只给了应用名、没给完整地址:这时还没调用 prepare_app,确切地址要等它返回,符合使用说明。
