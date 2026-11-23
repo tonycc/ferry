@@ -125,7 +125,7 @@ async function reset(user: AdminUser) {
 
 async function deactivate(user: AdminUser) {
   const ok = await confirm(
-    `把 ${user.name} 标记为离职:立即不能登录,已经登录的地方都会退出,个人令牌失效。\n\n` +
+    `把 ${user.name} 标记为离职:立即不能登录,已经登录的地方都会退出,个人令牌和密码作废。\n\n` +
       "他负责的应用照常运行、同事照常访问;不再需要的应用请在“管理全部应用”里停用或删除。以后可以恢复在职。",
     "标记离职",
     "标记离职",
@@ -135,7 +135,7 @@ async function deactivate(user: AdminUser) {
 
 async function reactivate(user: AdminUser) {
   const ok = await confirm(
-    `恢复 ${user.name} 为在职:账号、应用、个人令牌都是原来的。要重新生成初始密码,本人才能登录。`,
+    `恢复 ${user.name} 为在职:还是原来的账号和应用。密码和个人令牌在离职时已经作废,要重新生成初始密码,本人登录后重新领令牌。`,
     "恢复在职",
     "恢复",
     "info",
@@ -276,7 +276,7 @@ onMounted(load);
                   <el-dropdown-item command="admin" :disabled="row.fixedAdmin || (row.isAdmin && row.id === me?.id)">
                     {{ row.isAdmin ? "取消管理员" : "设为管理员" }}
                   </el-dropdown-item>
-                  <el-dropdown-item command="deactivate" :disabled="row.id === me?.id" divided>标记离职</el-dropdown-item>
+                  <el-dropdown-item command="deactivate" :disabled="row.id === me?.id || row.fixedAdmin" divided>标记离职</el-dropdown-item>
                 </template>
                 <el-dropdown-item v-else command="reactivate">恢复在职</el-dropdown-item>
               </el-dropdown-menu>

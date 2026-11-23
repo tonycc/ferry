@@ -37,7 +37,7 @@ export interface OrgView {
 export interface OrganizationOptions {
   /** .env 的 ADMIN_USERS:始终是管理员,控制台上不能取消 */
   fixedAdmins: ReadonlySet<string>;
-  /** 标记离职后调用(作废登录会话) */
+  /** 标记离职后调用(作废登录会话、令牌和密码) */
   onDeactivate?: (userId: string) => Promise<void>;
   newId?: (kind: "user" | "department") => string;
 }
@@ -47,6 +47,8 @@ const MAX_JOB_NUMBER = 32;
 
 export class Organization {
   private readonly newId: (kind: "user" | "department") => string;
+  /** 每次修改后加一:定时重读时如果中途有修改,丢掉读到的旧数据,免得把刚做的修改换回去 */
+  private generation = 0;
 
   constructor(
     private readonly store: OrgStore,
@@ -59,7 +61,10 @@ export class Organization {
 
   /** 从数据库读出最新的组织架构换进内存(启动时、定时调用) */
   async reload(): Promise<void> {
-    this.directory.replace((await this.store.load()) ?? EMPTY_ORG);
+    const generation = this.generation;
+    const snapshot = (await this.store.load()) ?? EMPTY_ORG;
+    if (generation !== this.generation) return;
+    this.directory.replace(snapshot);
   }
 
   async view(): Promise<OrgView> {
@@ -168,9 +173,15 @@ export class Organization {
     });
   }
 
-  /** 标记离职:不能再登录,个人令牌失效;保留所属部门,他负责的应用照常运行,由管理员停用或删除 */
+  /**
+   * 标记离职:不能再登录,登录会话、个人令牌和密码作废;保留所属部门,他负责的应用照常运行,由管理员停用或删除。
+   * ADMIN_USERS 里的人不能在控制台上标记离职(那是保底的管理员)
+   */
   async deactivate(actorId: string, id: string): Promise<void> {
     if (actorId === id) throw new UserError("invalid_input", "不能把自己标记为离职");
+    if (this.options.fixedAdmins.has(id)) {
+      throw new UserError("invalid_input", "这个人是在服务配置(ADMIN_USERS)里指定的管理员,要先从配置里去掉才能标记离职");
+    }
     await this.change(actorId, (org) => {
       const user = findUser(org, id);
       if (!user.active) throw new UserError("conflict", `${user.name} 已经是离职状态`);
@@ -180,7 +191,7 @@ export class Organization {
     await this.options.onDeactivate?.(id);
   }
 
-  /** 恢复在职(离职标错了,或者人回来了):账号、应用、令牌都还是原来的;要重新生成初始密码才能登录 */
+  /** 恢复在职(离职标错了,或者人回来了):还是原来的账号和应用;密码和令牌在离职时已作废,要重新生成初始密码、重新领令牌 */
   async reactivate(actorId: string, id: string): Promise<void> {
     await this.change(actorId, (org) => {
       const user = findUser(org, id);
@@ -252,6 +263,7 @@ export class Organization {
       if (problems.length > 0) throw new UserError("invalid_input", `组织架构检查没通过:${problems[0]}`);
       return org;
     });
+    this.generation++;
     this.directory.replace(next);
     if (record) await this.audit.record(actorId, record.action, undefined, record.detail);
   }

@@ -207,6 +207,8 @@ describe.each(storeCases("ferry_test_org"))("人员和部门管理:$name", (c) =
     await expect(organization.setAdmin(ADMIN, "dingtalk:carol", false)).rejects.toThrow("ADMIN_USERS");
     expect(await isAdmin("dingtalk:carol")).toBe(true);
     await expect(organization.setAdmin(ADMIN, ADMIN, false)).rejects.toThrow("不能取消自己的管理员身份");
+    await expect(organization.deactivate(ADMIN, "dingtalk:carol")).rejects.toThrow("ADMIN_USERS");
+    expect(await directory.isActive("dingtalk:carol")).toBe(true);
 
     await organization.deactivate(ADMIN, "dingtalk:alice");
     await expect(organization.setAdmin(ADMIN, "dingtalk:alice", true)).rejects.toThrow("已离职");
@@ -252,6 +254,30 @@ describe.each(storeCases("ferry_test_org"))("人员和部门管理:$name", (c) =
     await organization.updateUser(ADMIN, "dingtalk:carol", { name: "Carol", jobNumber: "C003", departmentIds: ["dingtalk:root"] });
     await organization.deleteDepartment(ADMIN, "dingtalk:sales");
     expect((await organization.view()).departments.map((d) => d.id)).not.toContain("dingtalk:sales");
+  });
+
+  it("定时重读时中途有修改:丢掉读到的旧数据,不把刚做的修改换回去", async () => {
+    const real = storeCase.createOrg();
+    await real.update(() => org());
+    let release!: () => void;
+    let slow = false;
+    const store: OrgStore = {
+      load: async () => {
+        const snapshot = await real.load();
+        if (slow) await new Promise<void>((r) => (release = r));
+        return snapshot;
+      },
+      update: (change) => real.update(change),
+    };
+    const { directory, organization } = await setup({ store });
+    slow = true;
+    const reloading = organization.reload();
+    await new Promise((r) => setTimeout(r, 10));
+    slow = false;
+    await organization.deactivate(ADMIN, "dingtalk:alice");
+    release();
+    await reloading;
+    expect(await directory.isActive("dingtalk:alice")).toBe(false);
   });
 
   it("两个进程同时改:每次都基于数据库里最新的数据,不会用过时的内存数据覆盖别人刚写的", async () => {

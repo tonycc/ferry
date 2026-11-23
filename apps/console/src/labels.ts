@@ -95,7 +95,7 @@ export function auditDetail(e: AuditEvent): string {
     case "token.revoke":
       return `令牌“${String(d.label ?? "")}”`;
     case "password.reset":
-      return `给 ${String(d.userId ?? "")} 生成初始密码${d.via === "cli" ? "(命令行)" : ""}`;
+      return `给 ${String(d.name ?? d.userId ?? "")} 生成初始密码${d.via === "cli" ? "(命令行)" : ""}`;
     case "password.change":
       return d.initial ? "首次登录,把初始密码改成自己的" : "";
     case "user.create":

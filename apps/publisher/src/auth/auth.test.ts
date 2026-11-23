@@ -250,7 +250,7 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
       ["password.change", "dingtalk:alice"],
       ["password.reset", undefined],
     ]);
-    expect(events[2]?.detail).toEqual({ userId: "dingtalk:alice", via: "cli" });
+    expect(events[2]?.detail).toEqual({ userId: "dingtalk:alice", name: "Alice", via: "cli" });
     const text = JSON.stringify(events);
     for (const secret of [initial, password, fresh]) expect(text).not.toContain(secret);
   });
@@ -323,7 +323,7 @@ async function server(options: { devAuth?: boolean; adminIds?: string[] } = {}) 
   const auth = new AuthService(new MemoryAuthStore(), directory);
   const organization = new Organization(orgStore, directory, new AuditLog(new MemoryAuditStore(), directory), {
     fixedAdmins: new Set(options.adminIds),
-    onDeactivate: (id) => auth.endSessions(id),
+    onDeactivate: async (id) => void (await auth.endAccess(id)),
   });
   await organization.reload();
   const allowedOrigins = new Set(["http://ferry.test"]);
@@ -516,6 +516,15 @@ describe("HTTP 入口的身份", () => {
     expect((await app.inject({ method: "GET", url: "/api/me", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
     const relogin = await app.inject({ method: "POST", url: "/auth/login", headers: ORIGIN, payload: { account: "13800000006", password: "own-password-1" } });
     expect(relogin.statusCode).toBe(401);
+
+    // 恢复在职后旧密码和旧令牌都不能用:密码和令牌在离职时已作废,要重新生成初始密码
+    expect((await post(`/api/admin/users/${encodeURIComponent(id)}/reactivate`)).statusCode).toBe(200);
+    const afterReactivate = await app.inject({ method: "POST", url: "/auth/login", headers: ORIGIN, payload: { account: "13800000006", password: "own-password-1" } });
+    expect(afterReactivate.statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/me", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    const org = (await app.inject({ method: "GET", url: "/api/admin/org", headers: { cookie: bob } })).json() as { users: { id: string; password: string }[] };
+    expect(org.users.find((u) => u.id === id)?.password).toBe("none");
+    await login("13800000006");
   });
 
   it("已登录时改密码:换一个新 cookie,旧的失效;令牌不能用来改密码", async () => {
