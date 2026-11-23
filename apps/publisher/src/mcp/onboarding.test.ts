@@ -148,6 +148,11 @@ describe("代码包结构检查", () => {
     expect(zipEntryNames(makeZip({ "a.txt": "x", "dir/b.txt": "y" }))).toEqual(["a.txt", "dir/b.txt"]);
   });
 
+  it("根目录有两份 app.yaml(app.yaml 和 ./app.yaml)时报错", () => {
+    expect(checkArchiveLayout(["app.yaml", "./app.yaml", "Dockerfile"])).toContain("不止一个 app.yaml");
+    expect(checkArchiveLayout(["./app.yaml", "Dockerfile"])).toBeUndefined();
+  });
+
   it("读出根目录文件的内容,不压缩和 deflate 压缩的都支持", () => {
     const yaml = "name: expense\ntemplate: node-postgres\n# " + "x".repeat(500) + "\n";
     for (const deflate of [false, true]) {

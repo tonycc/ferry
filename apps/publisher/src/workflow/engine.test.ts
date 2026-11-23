@@ -362,6 +362,51 @@ describe.each(storeCases("ferry_test_engine"))("存储:$name", (c) => {
       await expect(service.receiveUpload(tokenOf(uploadUrl), zipOf("v1"))).resolves.toMatchObject({ app: "ledger" });
     });
 
+    it("同一个上传地址并发上传两次:只有一次成功,发布用的是成功那次的清单", async () => {
+      const { service } = setup();
+      const prepared = await service.prepareApp(alice, "ledger");
+      const results = await Promise.allSettled([
+        service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("a", MANIFEST + "port: 4001\n")),
+        service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("b", MANIFEST + "port: 4002\n")),
+      ]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+      expect(String(rejected.reason)).toContain("已经用过了");
+    });
+
+    it("代码包保存失败时上传地址恢复可用", async () => {
+      const { service, adapters } = setup();
+      const prepared = await service.prepareApp(alice, "ledger");
+      const save = adapters.archives.save.bind(adapters.archives);
+      adapters.archives.save = async () => {
+        throw new Error("磁盘满了");
+      };
+      await expect(service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v1"))).rejects.toThrow("磁盘满了");
+      adapters.archives.save = save;
+      await expect(service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v1"))).resolves.toMatchObject({ app: "ledger" });
+    });
+
+    it("代码包已被清理时发布提示重新上传,而不是说没收到", async () => {
+      const { service, adapters } = setup();
+      const prepared = await service.prepareApp(alice, "ledger");
+      await service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v1"));
+      await adapters.archives.remove("ledger", prepared.version);
+      await expect(service.publish(alice, { name: "ledger", version: prepared.version })).rejects.toThrow("已失效");
+    });
+
+    it("记录清单之前收到的代码包:发布时从代码包里读清单", async () => {
+      const { service, store, publish } = setup();
+      await publish("v1");
+      const prepared = await service.prepareApp(alice, "ledger");
+      await service.receiveUpload(tokenOf(prepared.uploadUrl), zipOf("v2", MANIFEST + "port: 4005\n"));
+      const ticket = (await store.getUpload("ledger", prepared.version))!;
+      expect(ticket.manifest?.port).toBe(4005);
+      await store.saveUpload({ ...ticket, manifest: undefined });
+      const { releaseId } = await service.publish(alice, { name: "ledger", version: prepared.version });
+      await service.settle(releaseId);
+      expect((await service.appDetail(alice, "ledger")).port).toBe(4005);
+    });
+
     it("没有上传代码包就发布会被拒绝", async () => {
       const { service } = setup();
       const { version } = await service.prepareApp(alice, "ledger");

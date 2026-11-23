@@ -246,19 +246,32 @@ export class PublisherService {
     // 检查不通过时上传地址还能再用
     const layoutProblem = checkArchiveLayout(names);
     if (layoutProblem) throw new UserError("invalid_input", layoutProblem);
-    // 发布只认代码包里的 app.yaml;这里先检查一遍,写错了在上传时就报出来
-    await this.manifestOf(zip, ticket.appName);
+    // 发布只认代码包里的 app.yaml:在这里读出并校验,写错了在上传时就报出来,并随凭据记下供发布使用
+    const manifest = await this.manifestOf(zip, ticket.appName);
 
-    ticket.receivedAt = new Date();
-    await this.store.saveUpload(ticket);
-    await this.adapters.archives.save(ticket.appName, ticket.version, zip);
+    // 先原子地占用凭据再保存代码包:并发的两次上传只有一次能成功,不会互相覆盖代码包
+    if (!(await this.store.claimUpload(ticket.tokenHash, new Date(), manifest))) {
+      throw new UserError("conflict", "这个上传地址已经用过了,请重新调用 prepare_app");
+    }
+    try {
+      await this.adapters.archives.save(ticket.appName, ticket.version, zip);
+    } catch (err) {
+      // 代码包没存下来:把凭据恢复成未使用,同一个地址可以重新上传
+      await this.store.saveUpload({ ...ticket, receivedAt: undefined, manifest: undefined });
+      throw err;
+    }
     return { app: ticket.appName, version: ticket.version, bytes: zip.length };
   }
 
   /** 读出并校验代码包根目录的 app.yaml;有问题时抛出写给 agent 的修复说明 */
   private async manifestOf(zip: Buffer, appName: string): Promise<Manifest> {
     const text = readZipFile(zip, "app.yaml");
-    if (!text) throw new UserError("invalid_input", "读不出代码包根目录的 app.yaml(文件过大或压缩方式不支持),请检查后重新打包上传");
+    if (!text) {
+      throw new UserError(
+        "invalid_input",
+        "读不出代码包根目录的 app.yaml(文件可能过大、已损坏、加密或用了不常见的压缩方式)。请用 zip 命令或系统自带的压缩工具重新打包上传",
+      );
+    }
     const parsed = parseManifest(text.toString("utf8"));
     if (!parsed.ok) throw new UserError("invalid_input", `app.yaml 有问题:\n${parsed.errors.join("\n")}\n改好后重新打包上传`);
     const { manifest } = parsed;
@@ -268,16 +281,19 @@ export class PublisherService {
         `app.yaml 有问题:\nname: 是 ${manifest.name},但调用 prepare_app 时用的应用名是 ${appName}。把两者改成一致后重新打包上传`,
       );
     }
-    if (this.config.templates) {
-      const templates = await this.config.templates.names();
-      if (!templates.includes(manifest.template)) {
-        throw new UserError(
-          "invalid_input",
-          `app.yaml 有问题:\ntemplate: 没有模板 ${manifest.template},可用的模板:${templates.join("、")}。改好后重新打包上传`,
-        );
-      }
-    }
+    await this.checkTemplate(manifest);
     return manifest;
+  }
+
+  private async checkTemplate(manifest: Manifest): Promise<void> {
+    if (!this.config.templates) return;
+    const templates = await this.config.templates.names();
+    if (!templates.includes(manifest.template)) {
+      throw new UserError(
+        "invalid_input",
+        `app.yaml 有问题:\ntemplate: 没有模板 ${manifest.template},可用的模板:${templates.join("、")}。改好后重新打包上传`,
+      );
+    }
   }
 
   async listTemplates(): Promise<TemplateSummary[]> {
@@ -305,15 +321,29 @@ export class PublisherService {
     }
 
     const upload = await this.store.getUpload(app.name, input.version);
-    const zip = upload?.receivedAt && (await this.adapters.archives.read(app.name, input.version));
-    if (!zip) {
+    if (!upload?.receivedAt) {
       throw new UserError(
         "invalid_input",
         `应用 ${app.name} 还没有收到 version 为 ${input.version} 的代码包。请先把 zip 上传到 prepare_app 返回的 uploadUrl,` +
           "并确认 name 和调用 prepare_app 时用的应用名一致",
       );
     }
-    const manifest = await this.manifestOf(zip, app.name);
+    const archived = (await this.adapters.archives.list(app.name)).some((a) => a.version === input.version);
+    if (!archived) {
+      throw new UserError(
+        "invalid_input",
+        `version 为 ${input.version} 的代码包已失效(上传后太久没有发布,已被清理)。请重新调用 prepare_app、上传,再用新的 version 发布`,
+      );
+    }
+    let manifest = upload.manifest;
+    if (manifest) {
+      await this.checkTemplate(manifest);
+    } else {
+      // 记录清单之前收到的代码包:从代码包里读
+      const zip = await this.adapters.archives.read(app.name, input.version);
+      if (!zip) throw new UserError("invalid_input", `version 为 ${input.version} 的代码包已失效,请重新调用 prepare_app 并上传`);
+      manifest = await this.manifestOf(zip, app.name);
+    }
 
     const releases = await this.store.listReleases(app.name);
     if (releases.some((r) => !isTerminal(r.state))) {

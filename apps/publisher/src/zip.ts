@@ -81,7 +81,13 @@ const REQUIRED_AT_ROOT = ["app.yaml", "Dockerfile"];
 
 /** 检查代码包的根目录;有问题时返回写给 agent 的修复说明 */
 export function checkArchiveLayout(names: string[]): string | undefined {
-  const files = new Set(names.map((name) => name.replace(/^\.\//, "")));
+  const normalized = names.map((name) => name.replace(/^\.\//, ""));
+  const files = new Set(normalized);
+  // 同时有 app.yaml 和 ./app.yaml 时,Ferry 读的和构建时解压出来的可能不是同一份
+  const duplicated = REQUIRED_AT_ROOT.filter((file) => normalized.filter((name) => name === file).length > 1);
+  if (duplicated.length > 0) {
+    return `代码包根目录有不止一个 ${duplicated.join("、")}(比如同时有 app.yaml 和 ./app.yaml)。请在应用目录里重新打包,然后重新上传`;
+  }
   const missing = REQUIRED_AT_ROOT.filter((file) => !files.has(file));
   if (missing.length === 0) return undefined;
 
