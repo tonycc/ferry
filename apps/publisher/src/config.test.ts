@@ -1,0 +1,27 @@
+import { describe, expect, it } from "vitest";
+import { isLoopbackHost, loadConfig } from "./config";
+
+describe("loadConfig", () => {
+  it("只在本机监听时可以不设 PUBLIC_URL", () => {
+    expect(loadConfig({}).PUBLIC_URL).toBeUndefined();
+    expect(loadConfig({ HOST: "localhost" }).HOST).toBe("localhost");
+  });
+
+  it("监听其他机器的连接但没设 PUBLIC_URL 时拒绝启动", () => {
+    expect(() => loadConfig({ HOST: "0.0.0.0" })).toThrow(/PUBLIC_URL/);
+    expect(() => loadConfig({ HOST: "192.168.1.10" })).toThrow(/127\.0\.0\.1/);
+    expect(loadConfig({ HOST: "0.0.0.0", PUBLIC_URL: "https://ferry.corp.example" }).PUBLIC_URL).toBe(
+      "https://ferry.corp.example",
+    );
+  });
+
+  it("PUBLIC_URL 必须是 http(s) 地址", () => {
+    expect(() => loadConfig({ PUBLIC_URL: "ferry.corp.example" })).toThrow();
+    expect(() => loadConfig({ PUBLIC_URL: "ftp://ferry.corp.example" })).toThrow();
+  });
+
+  it("识别本机监听地址", () => {
+    for (const host of ["127.0.0.1", "127.0.1.1", "::1", "localhost"]) expect(isLoopbackHost(host)).toBe(true);
+    for (const host of ["0.0.0.0", "::", "10.0.0.5", "ferry.corp.example"]) expect(isLoopbackHost(host)).toBe(false);
+  });
+});

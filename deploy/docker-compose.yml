@@ -24,6 +24,7 @@ services:
     env_file: .env
     environment:
       HOST: 0.0.0.0
+      PUBLIC_URL: ${PUBLIC_URL:?请在 deploy/.env 里设置 PUBLIC_URL(浏览器和 agent 访问 Ferry 的完整地址)}
       PORT: "8080"
       FERRY_PLATFORM: dokploy
       DATABASE_URL: postgres://ferry:${POSTGRES_PASSWORD:?请在 deploy/.env 里设置 POSTGRES_PASSWORD}@postgres:5432/ferry

@@ -85,7 +85,9 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
   server.registerTool(
     "get_app_logs",
     {
-      description: "读取应用最近的运行日志,用于排查线上问题。",
+      description:
+        "读取应用最近的运行日志,用于排查线上问题。这里只有应用运行时的输出;" +
+        "发布(构建、迁移、健康检查)失败时的日志不在这里,在 get_publish_status 返回的 error.logs 里。",
       inputSchema: { name: z.string(), lines: z.number().int().min(1).max(1000).optional() },
     },
     ({ name, lines }) => respond(() => service.getLogs(user, name, lines)),
