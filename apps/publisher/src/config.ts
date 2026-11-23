@@ -33,7 +33,15 @@ const envSchema = z.object({
    * 只在本机监听(HOST 是 127.0.0.1 等)时可以不设,默认 http://127.0.0.1:<PORT>;
    * 否则必须设置,不然交给 agent 的上传地址是别的机器访问不到的 127.0.0.1
    */
-  PUBLIC_URL: z.url({ protocol: /^https?$/ }).optional(),
+  PUBLIC_URL: z.preprocess(
+    // 空值(.env 里留着 PUBLIC_URL=)当作没设
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z
+      .url({ protocol: /^https?$/, error: "PUBLIC_URL 必须是完整的 http(s) 地址,如 https://ferry.corp.example" })
+      // 去掉末尾的 /,免得拼出 //uploads
+      .transform((url) => url.replace(/\/+$/, ""))
+      .optional(),
+  ),
   /** 代码包的保存目录 */
   ARCHIVE_DIR: z.string().default("./data/archives"),
   MAX_ARCHIVE_MB: z.coerce.number().int().default(100),
@@ -112,7 +120,8 @@ const envSchema = z.object({
 
 /** 只接受本机连接的监听地址 */
 export function isLoopbackHost(host: string): boolean {
-  return host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
+  const h = host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/^::ffff:/, "");
+  return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h);
 }
 
 export type Config = z.infer<typeof envSchema>;

@@ -15,13 +15,22 @@ describe("loadConfig", () => {
     );
   });
 
+  it("PUBLIC_URL 去掉末尾的 /,空值当作没设", () => {
+    expect(loadConfig({ PUBLIC_URL: "https://ferry.corp.example/" }).PUBLIC_URL).toBe("https://ferry.corp.example");
+    expect(loadConfig({ PUBLIC_URL: "http://127.0.0.1:8080//" }).PUBLIC_URL).toBe("http://127.0.0.1:8080");
+    expect(loadConfig({ PUBLIC_URL: "" }).PUBLIC_URL).toBeUndefined();
+    expect(() => loadConfig({ HOST: "0.0.0.0", PUBLIC_URL: " " })).toThrow(/PUBLIC_URL/);
+  });
+
   it("PUBLIC_URL 必须是 http(s) 地址", () => {
     expect(() => loadConfig({ PUBLIC_URL: "ferry.corp.example" })).toThrow();
     expect(() => loadConfig({ PUBLIC_URL: "ftp://ferry.corp.example" })).toThrow();
   });
 
   it("识别本机监听地址", () => {
-    for (const host of ["127.0.0.1", "127.0.1.1", "::1", "localhost"]) expect(isLoopbackHost(host)).toBe(true);
+    for (const host of ["127.0.0.1", "127.0.1.1", "::1", "[::1]", "::ffff:127.0.0.1", " localhost ", "LOCALHOST"]) {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
     for (const host of ["0.0.0.0", "::", "10.0.0.5", "ferry.corp.example"]) expect(isLoopbackHost(host)).toBe(false);
   });
 });

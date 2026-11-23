@@ -122,6 +122,12 @@ const alerts = new Alerts(adapters.notifier, () => [...new Set([...adminIds, ...
 
 // Ferry 对浏览器和 agent 的地址:上传地址、控制台地址、允许的来源都按它来,只在这里算一次
 const ferryUrl = config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`;
+if (!config.PUBLIC_URL) {
+  console.warn(
+    `未设置 PUBLIC_URL:上传地址和控制台地址用 ${ferryUrl},只有本机直接运行的 agent 能访问。` +
+      "agent 在 Docker 容器里或经代理访问 Ferry 时,把 PUBLIC_URL 设成它访问 Ferry 用的地址(如 http://host.docker.internal:8080)",
+  );
+}
 
 // 审计日志(任务 3.3):操作人的姓名在记录时从组织架构查好存下来
 const audit = new AuditLog(auditStore, directory);

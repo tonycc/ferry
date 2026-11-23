@@ -11,6 +11,7 @@ M2 的验收标准:**试用员工不经指导完成发布;同事登录后能访�
 - 本机 Dokploy 在运行(http://localhost:3000 能打开)。
 - `pnpm dev` 在运行,并且 `.env` 里有 `FERRY_PLATFORM=dokploy`、`APPS_DOMAIN=apps.localhost`、`APPS_URL_SCHEME=http`、
   `NOTIFY_VIA=log`、`SECRETS_KEY`。Ferry 地址是 http://127.0.0.1:8080 。
+  agent 跑在 Docker 容器里时,`.env` 里还要设 `PUBLIC_URL`(如 `http://host.docker.internal:8080`),否则它拿到的上传地址是 127.0.0.1,在容器里访问不到。
 - 管理员能登录:本机数据库里已经有下面的角色,Admin 没有密码时运行 `pnpm set-password 13800000005`。
   全新的数据库里还没有人:运行 `pnpm set-password <手机号> --name <姓名>` 建第一个管理员(同时建好最上级部门),
   再在控制台“部门”页建好财务部(下设应付组)、销售部、信息部,在“人员”页添加下面的员工。
