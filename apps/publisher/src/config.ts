@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+/** 可选的 http(s) 地址:空值当作没设(.env 里留着 NAME=),去掉末尾的 /(免得拼出 //uploads) */
+function httpUrl(name: string) {
+  return z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z
+      .url({ protocol: /^https?$/, error: `${name} 必须是完整的 http(s) 地址,如 https://ferry.corp.example` })
+      .transform((url) => url.replace(/\/+$/, ""))
+      .optional(),
+  );
+}
+
 const envSchema = z.object({
   PORT: z.coerce.number().int().default(8080),
   /** 监听地址。Traefik 要能访问到 /authz;本机 Docker Desktop 里的容器能访问到 127.0.0.1 */
@@ -28,8 +39,18 @@ const envSchema = z.object({
   HEALTHCHECK_GATEWAY: z.string().default("http://127.0.0.1:80"),
   /** 部署完成后等应用变健康的最长时间 */
   HEALTHCHECK_TIMEOUT_SECONDS: z.coerce.number().int().default(90),
-  /** agent 访问本服务用的地址,用于拼出上传地址。默认是本机地址 */
-  PUBLIC_URL: z.string().optional(),
+  /**
+   * 浏览器和 agent 访问本服务用的完整地址,上传地址、控制台地址都按它拼。
+   * 只在本机监听(HOST 是 127.0.0.1 等)时可以不设,默认 http://127.0.0.1:<PORT>;
+   * 否则必须设置,不然交给 agent 的上传地址是别的机器访问不到的 127.0.0.1
+   */
+  PUBLIC_URL: httpUrl("PUBLIC_URL"),
+  /**
+   * 只给 agent 用的上传地址前缀,不设时同 PUBLIC_URL。agent 和浏览器访问 Ferry 的地址不一样时才需要,
+   * 比如 agent 跑在 Docker 容器里(http://host.docker.internal:8080),而浏览器用 http://127.0.0.1:8080。
+   * 不要为此去改 PUBLIC_URL:登录允许的来源、打开应用时的登录跳转都按 PUBLIC_URL 走
+   */
+  AGENT_URL: httpUrl("AGENT_URL"),
   /** 代码包的保存目录 */
   ARCHIVE_DIR: z.string().default("./data/archives"),
   MAX_ARCHIVE_MB: z.coerce.number().int().default(100),
@@ -94,7 +115,23 @@ const envSchema = z.object({
    * PUBLIC_URL 的来源总是允许;本地用控制台开发服务器时加上 http://localhost:5173
    */
   ALLOWED_ORIGINS: z.string().default(""),
+}).superRefine((env, ctx) => {
+  if (!env.PUBLIC_URL && !isLoopbackHost(env.HOST)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PUBLIC_URL"],
+      message:
+        `HOST=${env.HOST} 会接受其他机器的连接,必须设置 PUBLIC_URL(agent 和浏览器访问 Ferry 用的地址,如 https://ferry.corp.example);` +
+        "否则交给 agent 的上传地址是 127.0.0.1,别的机器或容器里的 agent 访问不到",
+    });
+  }
 });
+
+/** 只接受本机连接的监听地址 */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/^::ffff:/, "");
+  return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h);
+}
 
 export type Config = z.infer<typeof envSchema>;
 

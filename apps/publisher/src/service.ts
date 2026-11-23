@@ -21,6 +21,8 @@ export interface ServiceConfig {
   maxAppsPerUser: number;
   /** agent 访问本服务用的地址 */
   publicUrl: string;
+  /** agent 上传代码包用的地址前缀;不传时同 publicUrl(只有 agent 和浏览器访问 Ferry 的地址不同时才需要) */
+  agentUrl?: string;
   uploadTtlMs: number;
   /** 上传后多久还没发布的代码包可以清理,默认 24 小时 */
   archiveGraceMs?: number;
@@ -228,7 +230,7 @@ export class PublisherService {
       name,
       url: this.appUrl(app.host),
       version: ticket.version,
-      uploadUrl: `${this.config.publicUrl}/uploads/${token}`,
+      uploadUrl: `${this.config.agentUrl ?? this.config.publicUrl}/uploads/${token}`,
       uploadExpiresAt: ticket.expiresAt.toISOString(),
     };
   }
