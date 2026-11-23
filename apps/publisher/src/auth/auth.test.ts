@@ -5,7 +5,9 @@ import { AuditLog } from "../audit/log";
 import { MemoryAuditStore } from "../audit/store";
 import { buildServer } from "../api/server";
 import { createIdentity } from "../identity";
+import { Organization } from "../org/service";
 import type { OrgSnapshot } from "../org/snapshot";
+import { MemoryOrgStore } from "../org/store";
 import { PublisherService } from "../service";
 import { storeCases, type StoreCase } from "../test/stores";
 import { Engine } from "../workflow/engine";
@@ -248,7 +250,7 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
       ["password.change", "dingtalk:alice"],
       ["password.reset", undefined],
     ]);
-    expect(events[2]?.detail).toEqual({ userId: "dingtalk:alice", via: "cli" });
+    expect(events[2]?.detail).toEqual({ userId: "dingtalk:alice", name: "Alice", via: "cli" });
     const text = JSON.stringify(events);
     for (const secret of [initial, password, fresh]) expect(text).not.toContain(secret);
   });
@@ -305,9 +307,10 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
 });
 
 /** 起一个完整的服务,用 fastify 的 inject 发请求 */
-function server(options: { devAuth?: boolean; adminIds?: string[] } = {}) {
+async function server(options: { devAuth?: boolean; adminIds?: string[] } = {}) {
   const directory = new MemoryDirectory();
-  directory.replace(org());
+  const orgStore = new MemoryOrgStore();
+  await orgStore.update(() => org());
   const adapters = { ...createFakeAdapters(), directory };
   const store = new MemoryStore();
   const service = new PublisherService(store, new Engine(store, adapters, { maxFixAttempts: 3 }), adapters, {
@@ -318,11 +321,16 @@ function server(options: { devAuth?: boolean; adminIds?: string[] } = {}) {
     secretBox: SecretBox.random(),
   });
   const auth = new AuthService(new MemoryAuthStore(), directory);
+  const organization = new Organization(orgStore, directory, new AuditLog(new MemoryAuditStore(), directory), {
+    fixedAdmins: new Set(options.adminIds),
+    revokeAccess: async (id) => void (await auth.endAccess(id)),
+  });
+  await organization.reload();
   const allowedOrigins = new Set(["http://ferry.test"]);
   const identity = createIdentity({ auth, directory, adminIds: new Set(options.adminIds), devAuth: options.devAuth ?? false, allowedOrigins });
   const app = buildServer(service, identity, {
     maxArchiveBytes: 1024 * 1024,
-    auth: { service: auth, directory, routes: { allowedOrigins, secureCookie: false } },
+    auth: { service: auth, directory, organization, routes: { allowedOrigins, secureCookie: false } },
   });
   app.log.level = "silent";
   const ORIGIN = { origin: "http://ferry.test" };
@@ -356,14 +364,14 @@ const toolsList = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", 
 
 describe("HTTP 入口的身份", () => {
   it("网页登录后用 cookie 访问接口;GET 不要求来源", async () => {
-    const { app, login } = server();
+    const { app, login } = await server();
     const cookie = await login();
     const me = await app.inject({ method: "GET", url: "/api/me", headers: { cookie } });
     expect(me.json()).toEqual({ id: "dingtalk:alice", name: "Alice", isAdmin: false });
   });
 
   it("用 cookie 发修改请求时,来源必须是 Ferry 自己;员工应用里伪造的请求被拒绝", async () => {
-    const { app, login, ORIGIN } = server();
+    const { app, login, ORIGIN } = await server();
     const cookie = await login();
     const forged = await app.inject({
       method: "POST",
@@ -381,7 +389,7 @@ describe("HTTP 入口的身份", () => {
   });
 
   it("MCP 只认个人令牌,不认 cookie;作废后立即不能用", async () => {
-    const { app, login, ORIGIN } = server();
+    const { app, login, ORIGIN } = await server();
     const cookie = await login();
     const withCookie = await app.inject({ method: "POST", url: "/mcp", headers: { ...MCP_HEADERS, cookie }, payload: toolsList });
     expect(withCookie.statusCode).toBe(401);
@@ -400,7 +408,7 @@ describe("HTTP 入口的身份", () => {
   });
 
   it("令牌不能用来管理令牌", async () => {
-    const { app, login, ORIGIN } = server();
+    const { app, login, ORIGIN } = await server();
     const cookie = await login();
     const { token } = (await app.inject({ method: "POST", url: "/api/tokens", headers: { cookie, ...ORIGIN }, payload: {} })).json();
     const viaToken = await app.inject({ method: "POST", url: "/api/tokens", headers: { authorization: `Bearer ${token}` }, payload: {} });
@@ -408,7 +416,7 @@ describe("HTTP 入口的身份", () => {
   });
 
   it("应用密钥只能用网页登录管理:个人令牌(agent)查、设、删都被拒绝;返回里没有值", async () => {
-    const { app, login, ORIGIN } = server();
+    const { app, login, ORIGIN } = await server();
     const cookie = await login();
     await app.inject({ method: "POST", url: "/api/apps/prepare", headers: { cookie, ...ORIGIN }, payload: { name: "ledger" } });
     const base = "/api/apps/ledger/secrets";
@@ -448,34 +456,79 @@ describe("HTTP 入口的身份", () => {
     expect(deleted.json()).toEqual([]);
   });
 
-  it("人员页和重置密码只有管理员能用,而且只能用网页登录;返回里有密码状态,没有哈希", async () => {
-    const { app, login, ORIGIN } = server({ adminIds: ["dingtalk:bob"] });
+  it("人员管理只有管理员能用,而且只能用网页登录;返回里有密码状态,没有哈希", async () => {
+    const { app, login, ORIGIN } = await server({ adminIds: ["dingtalk:bob"] });
     const alice = await login();
-    const forbidden = await app.inject({ method: "GET", url: "/api/admin/users", headers: { cookie: alice } });
+    const forbidden = await app.inject({ method: "GET", url: "/api/admin/org", headers: { cookie: alice } });
     expect(forbidden.statusCode).toBe(403);
     const forbiddenReset = await app.inject({ method: "POST", url: "/api/admin/users/dingtalk:bob/reset-password", headers: { cookie: alice, ...ORIGIN } });
     expect(forbiddenReset.statusCode).toBe(403);
+    const forbiddenCreate = await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: alice, ...ORIGIN },
+      payload: { name: "X", mobile: "13800000009", departmentIds: ["dingtalk:finance"] },
+    });
+    expect(forbiddenCreate.statusCode).toBe(403);
 
     const bob = await login("13800000002");
-    const users = await app.inject({ method: "GET", url: "/api/admin/users", headers: { cookie: bob } });
-    expect(users.statusCode).toBe(200);
-    const list = users.json() as { id: string; password: string; hasMobile: boolean }[];
-    expect(list.find((u) => u.id === "dingtalk:alice")).toMatchObject({ password: "set", hasMobile: true });
-    expect(JSON.stringify(list)).not.toContain("scrypt");
+    const res = await app.inject({ method: "GET", url: "/api/admin/org", headers: { cookie: bob } });
+    expect(res.statusCode).toBe(200);
+    const { users, departments } = res.json() as { users: { id: string; password: string; isAdmin: boolean; fixedAdmin: boolean }[]; departments: unknown[] };
+    expect(departments.length).toBeGreaterThan(0);
+    expect(users.find((u) => u.id === "dingtalk:alice")).toMatchObject({ password: "set", isAdmin: false });
+    expect(users.find((u) => u.id === "dingtalk:bob")).toMatchObject({ isAdmin: true, fixedAdmin: true });
+    expect(JSON.stringify(users)).not.toContain("scrypt");
 
     const reset = await app.inject({ method: "POST", url: "/api/admin/users/dingtalk:alice/reset-password", headers: { cookie: bob, ...ORIGIN } });
     expect(reset.json().password).toMatch(/^\w{4}-\w{4}-\w{4}$/);
     // Alice 原来的登录失效
     expect((await app.inject({ method: "GET", url: "/api/me", headers: { cookie: alice } })).statusCode).toBe(401);
 
-    // 管理员的个人令牌不能用来给人生成密码
+    // 管理员的个人令牌不能用来管理人员
     const { token } = (await app.inject({ method: "POST", url: "/api/tokens", headers: { cookie: bob, ...ORIGIN }, payload: {} })).json();
     const viaToken = await app.inject({ method: "POST", url: "/api/admin/users/dingtalk:alice/reset-password", headers: { authorization: `Bearer ${token}` } });
     expect(viaToken.statusCode).toBe(403);
+    const deactivateViaToken = await app.inject({ method: "POST", url: "/api/admin/users/dingtalk:alice/deactivate", headers: { authorization: `Bearer ${token}` } });
+    expect(deactivateViaToken.statusCode).toBe(403);
+  });
+
+  it("管理员在控制台新建的人能登录;标记离职后登录会话和个人令牌立即失效;设为管理员后能进管理接口", async () => {
+    const { app, login, ORIGIN } = await server({ adminIds: ["dingtalk:bob"] });
+    const bob = await login("13800000002");
+    const post = (url: string, payload: Record<string, unknown> = {}) => app.inject({ method: "POST", url, headers: { cookie: bob, ...ORIGIN }, payload });
+
+    const created = await post("/api/admin/users", { name: "Dan", mobile: "13800000006", departmentIds: ["dingtalk:finance"] });
+    expect(created.statusCode).toBe(201);
+    const { id } = created.json();
+    const bad = await post("/api/admin/users", { name: "Dup", mobile: "13800000006", departmentIds: ["dingtalk:finance"] });
+    expect(bad.statusCode).toBe(409);
+    expect(bad.json().message).toContain("手机号和在职的 Dan 重复");
+
+    const dan = await login("13800000006");
+    const { token } = (await app.inject({ method: "POST", url: "/api/tokens", headers: { cookie: dan, ...ORIGIN }, payload: {} })).json();
+    expect((await app.inject({ method: "GET", url: "/api/admin/org", headers: { cookie: dan } })).statusCode).toBe(403);
+    expect((await post(`/api/admin/users/${encodeURIComponent(id)}/admin`, { isAdmin: true })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/admin/org", headers: { cookie: dan } })).statusCode).toBe(200);
+
+    expect((await post(`/api/admin/users/${encodeURIComponent(id)}/deactivate`)).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/me", headers: { cookie: dan } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/me", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    const relogin = await app.inject({ method: "POST", url: "/auth/login", headers: ORIGIN, payload: { account: "13800000006", password: "own-password-1" } });
+    expect(relogin.statusCode).toBe(401);
+
+    // 恢复在职后旧密码和旧令牌都不能用:密码和令牌在离职时已作废,要重新生成初始密码
+    expect((await post(`/api/admin/users/${encodeURIComponent(id)}/reactivate`)).statusCode).toBe(200);
+    const afterReactivate = await app.inject({ method: "POST", url: "/auth/login", headers: ORIGIN, payload: { account: "13800000006", password: "own-password-1" } });
+    expect(afterReactivate.statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/me", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    const org = (await app.inject({ method: "GET", url: "/api/admin/org", headers: { cookie: bob } })).json() as { users: { id: string; password: string }[] };
+    expect(org.users.find((u) => u.id === id)?.password).toBe("none");
+    await login("13800000006");
   });
 
   it("已登录时改密码:换一个新 cookie,旧的失效;令牌不能用来改密码", async () => {
-    const { app, login, ORIGIN } = server();
+    const { app, login, ORIGIN } = await server();
     const cookie = await login();
     const changed = await app.inject({
       method: "POST",
@@ -499,13 +552,13 @@ describe("HTTP 入口的身份", () => {
   });
 
   it("关闭开发身份时,只带 x-ferry-user 请求头会被拒绝", async () => {
-    const { app } = server({ devAuth: false });
+    const { app } = await server({ devAuth: false });
     const res = await app.inject({ method: "GET", url: "/api/apps", headers: { "x-ferry-user": "dingtalk:alice" } });
     expect(res.statusCode).toBe(401);
   });
 
   it("开启开发身份时,带了无效凭据也不会退回去用请求头", async () => {
-    const { app } = server({ devAuth: true });
+    const { app } = await server({ devAuth: true });
     const header = { "x-ferry-user": "dingtalk:alice" };
     expect((await app.inject({ method: "GET", url: "/api/apps", headers: header })).statusCode).toBe(200);
     const badToken = await app.inject({ method: "GET", url: "/api/apps", headers: { ...header, authorization: "Bearer fry_garbage" } });
@@ -515,7 +568,7 @@ describe("HTTP 入口的身份", () => {
   });
 
   it("登录页可以打开;旧的令牌页和管理页地址跳到控制台", async () => {
-    const { app } = server();
+    const { app } = await server();
     expect((await app.inject({ method: "GET", url: "/login" })).body).toContain("登录 Ferry");
     const me = await app.inject({ method: "GET", url: "/me" });
     expect([me.statusCode, me.headers.location]).toEqual([302, "/console/tokens"]);
@@ -524,7 +577,7 @@ describe("HTTP 入口的身份", () => {
   });
 
   it("管理接口:只有管理员能看全部应用(含负责人姓名和部门名),停用要同源请求,停用后列表显示原因", async () => {
-    const { app, login, ORIGIN, service } = server({ adminIds: ["dingtalk:alice"] });
+    const { app, login, ORIGIN, service } = await server({ adminIds: ["dingtalk:alice"] });
 
     await service.prepareApp({ id: "dingtalk:bob", departments: ["dingtalk:finance"], isAdmin: false }, "bob-tool");
     const bob = await login("A002");

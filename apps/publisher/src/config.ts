@@ -69,18 +69,14 @@ const envSchema = z.object({
   DOKPLOY_URL: z.string().optional(),
   DOKPLOY_API_KEY: z.string().optional(),
   /**
-   * 组织架构文件(本地开发用),格式见 infra/dev-org.json。路径相对于启动目录(apps/publisher)。
-   * 不设置时不同步,只用上次保存在数据库里的组织架构
-   */
-  ORG_FILE: z.string().optional(),
-  /** 组织架构同步间隔 */
-  ORG_SYNC_MINUTES: z.coerce.number().positive().default(60),
-  /**
    * 同一类可以合并的告警(部署平台或 Ferry 出错导致发布失败)多久内只发一次。
    * 发布连续失败、备份失败每次都发,不受它影响
    */
   ALERT_COOLDOWN_MINUTES: z.coerce.number().positive().default(30),
-  /** 平台管理员的用户 ID,逗号分隔。管理员可以查看全部应用、停用任意应用,并接收告警 */
+  /**
+   * 固定的平台管理员(用户 ID,逗号分隔):始终是管理员,控制台上不能取消。可以不设,管理员都在控制台上设置;
+   * 第一个管理员用 pnpm set-password <手机号> --name <姓名> 建。管理员可以管理全部应用、人员和部门,并接收告警
+   */
   ADMIN_USERS: z.string().default(""),
   /**
    * true 时,没有带任何凭据的请求可以用 x-ferry-user 请求头自称是谁。只能用于本地开发,默认关闭

@@ -33,14 +33,11 @@ services:
       DOKPLOY_URL: http://dokploy:3000
       GATEWAY_AUTH_URL: http://ferry-publisher:8080/authz
       HEALTHCHECK_GATEWAY: http://dokploy-traefik:80
-      ORG_FILE: /config/${ORG_FILE_NAME:-org.json}
       ARCHIVE_DIR: /data/archives
       NOTIFY_VIA: log
       DEV_AUTH: "false"
     volumes:
       - archives:/data/archives
-      # 挂整个目录而不是单个文件:编辑器保存时常常是写新文件再改名,挂单个文件的话容器里一直是旧的
-      - ${ORG_DIR:?请在 deploy/.env 里设置 ORG_DIR(组织架构文件所在的目录)}:/config:ro
     networks:
       internal: {}
       dokploy-network:

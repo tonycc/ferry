@@ -189,6 +189,25 @@ export class AuthService {
   }
 
   /**
+   * 标记离职时调用:作废登录会话、改密码票据和全部个人令牌,删掉密码。
+   * 离职期间这些本来就过不了在职检查;清掉是为了恢复在职后不会让旧密码、旧电脑上的旧令牌又能用,
+   * 要由管理员重新生成初始密码、本人重新领令牌。返回作废的令牌数
+   */
+  async endAccess(userId: string): Promise<number> {
+    this.clearTickets(userId);
+    await this.store.deleteSessionsOf(userId);
+    await this.store.deletePassword(userId);
+    let revoked = 0;
+    for (const token of await this.store.listTokens(userId)) {
+      if (token.revokedAt) continue;
+      token.revokedAt = this.config.now();
+      await this.store.saveToken(token);
+      revoked++;
+    }
+    return revoked;
+  }
+
+  /**
    * 生成初始密码(管理员在人员页上,或者第一个管理员用命令行)。返回明文,只显示这一次;
    * 这个人原有的登录会话全部作废,下次登录后必须先改密码。actorId 为空表示命令行
    */
@@ -199,7 +218,8 @@ export class AuthService {
     // 之前用旧的初始密码拿到的改密码票据一起作废(初始密码泄露时,重置就是补救办法)
     this.clearTickets(userId);
     await this.store.deleteSessionsOf(userId);
-    await this.audit.record(actorId, "password.reset", undefined, { userId, ...(actorId ? {} : { via: "cli" }) });
+    const name = await this.directory.nameOf(userId);
+    await this.audit.record(actorId, "password.reset", undefined, { userId, ...(name ? { name } : {}), ...(actorId ? {} : { via: "cli" }) });
     return password;
   }
 

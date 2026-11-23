@@ -26,6 +26,10 @@ export class PostgresAuthStore implements AuthStore {
     return (await this.db.select().from(schema.userPasswords)).map(toPassword);
   }
 
+  async deletePassword(userId: string) {
+    await this.db.delete(schema.userPasswords).where(eq(schema.userPasswords.userId, userId));
+  }
+
   async saveSession(s: Session) {
     await this.db.insert(schema.sessions).values(s).onConflictDoNothing();
   }

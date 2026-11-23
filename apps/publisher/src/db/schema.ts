@@ -83,7 +83,7 @@ export const appSecrets = pgTable(
   (t) => [primaryKey({ columns: [t.appName, t.name] })],
 );
 
-/** 组织架构:最近一次同步的部门树。服务启动时读进内存,权限判定只查内存 */
+/** 组织架构:部门树,由平台管理员在控制台维护。服务启动时读进内存,权限判定只查内存 */
 export const orgDepartments = pgTable("org_departments", {
   id: text("id").primaryKey(),
   /** 根部门为空 */
@@ -100,6 +100,8 @@ export const orgUsers = pgTable("org_users", {
   /** 工号、手机号:登录时用来找本人 */
   jobNumber: text("job_number"),
   mobile: text("mobile"),
+  /** 在控制台设为平台管理员;.env 的 ADMIN_USERS 里的人不论这里是什么都是管理员 */
+  isAdmin: boolean("is_admin").notNull().default(false),
 });
 
 /** 登录密码(手机号 + 密码登录):只存 scrypt 哈希;must_change 表示管理员生成的初始密码,登录后必须先改 */

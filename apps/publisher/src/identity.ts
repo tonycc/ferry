@@ -8,7 +8,7 @@ export interface User {
   id: string;
   /** 当前所属的全部部门,ID 带平台前缀,来自组织架构 */
   departments: string[];
-  /** 平台管理员:可以查看全部应用,停用和恢复任意应用 */
+  /** 平台管理员(ADMIN_USERS 里的人,或在控制台设为管理员的在职人员):管理全部应用、人员和部门 */
   isAdmin: boolean;
 }
 
@@ -51,7 +51,7 @@ export function createIdentity(options: IdentityOptions): IdentityResolver {
   const user = async (id: string): Promise<User> => ({
     id,
     departments: await directory.departmentsOf(id),
-    isAdmin: adminIds.has(id),
+    isAdmin: adminIds.has(id) || (await directory.isAdmin(id)),
   });
   const devUser = async (headers: IncomingHttpHeaders): Promise<User | undefined> => {
     const id = devAuth ? single(headers["x-ferry-user"]) : undefined;

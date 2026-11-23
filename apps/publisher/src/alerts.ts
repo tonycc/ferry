@@ -17,7 +17,7 @@ interface ThrottleState {
 }
 
 /**
- * 给平台管理员的告警(任务 3.5),通过和其他通知一样的渠道发给 ADMIN_USERS 里的每个人。
+ * 给平台管理员的告警(任务 3.5),通过和其他通知一样的渠道发给每个平台管理员(ADMIN_USERS 里的人和控制台上设的管理员)。
  * 发送失败只记日志,不影响调用它的发布流程。
  *
  * 三种发法:
@@ -34,11 +34,15 @@ export class Alerts {
   private readonly throttle = new Map<string, ThrottleState>();
   private readonly failingJobs = new Map<string, string>();
 
+  /** 收告警的管理员;传函数时每次发送前现取(控制台上新设的管理员也能收到) */
+  private readonly recipients: () => readonly string[];
+
   constructor(
     private readonly notifier: Notifier,
-    private readonly adminIds: readonly string[],
+    adminIds: readonly string[] | (() => readonly string[]),
     options: AlertsOptions = {},
   ) {
+    this.recipients = typeof adminIds === "function" ? adminIds : () => adminIds;
     this.cooldownMs = options.cooldownMs ?? 30 * 60_000;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? ((m) => console.error(m));
@@ -46,12 +50,13 @@ export class Alerts {
 
   async send(message: string): Promise<void> {
     this.log(`[告警] ${message}`);
-    if (this.adminIds.length === 0) {
-      this.log("没有设置 ADMIN_USERS,上面的告警没有发给任何人");
+    const adminIds = this.recipients();
+    if (adminIds.length === 0) {
+      this.log("没有平台管理员(ADMIN_USERS 为空,控制台上也没有设),上面的告警没有发给任何人");
       return;
     }
     await Promise.all(
-      this.adminIds.map((id) =>
+      adminIds.map((id) =>
         this.notifier
           .notify(id, `【Ferry 告警】${message}`)
           .catch((err: unknown) => this.log(`告警发给 ${id} 失败: ${(err as Error).message ?? String(err)}`)),

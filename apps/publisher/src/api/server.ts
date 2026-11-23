@@ -12,6 +12,7 @@ import type { AuthService } from "../auth/service";
 import { registerAuthRoutes, type AuthRouteOptions } from "./auth-routes";
 import { registerConsole } from "./console";
 import type { Gateway } from "../gateway/gateway";
+import type { Organization } from "../org/service";
 
 const prepareBody = z.object({ name: z.string() });
 const publishBody = z.object({ manifestYaml: z.string(), version: z.string().min(1) });
@@ -32,7 +33,7 @@ export interface ServerOptions {
   consoleDir?: string;
   maxArchiveBytes: number;
   /** 密码登录和个人令牌;不传时只有开发用的请求头身份 */
-  auth?: { service: AuthService; directory: Directory; routes: AuthRouteOptions };
+  auth?: { service: AuthService; directory: Directory; routes: AuthRouteOptions; organization?: Organization };
   /** 登录网关;不传时没有 /authz 和 /auth/app */
   gateway?: Gateway;
 }
@@ -65,8 +66,8 @@ export function buildServer(
   registerConsole(app, options.consoleDir);
 
   if (options.auth) {
-    const { service: auth, directory, routes } = options.auth;
-    registerAuthRoutes(app, auth, identity, directory, routes, options.gateway);
+    const { service: auth, directory, routes, organization } = options.auth;
+    registerAuthRoutes(app, auth, identity, directory, routes, options.gateway, organization);
   }
 
   // ---- 给“我的应用”网页用的 REST 接口,与 MCP 工具一一对应 ----

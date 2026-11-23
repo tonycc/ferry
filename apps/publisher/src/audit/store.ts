@@ -35,6 +35,21 @@ export const AUDIT_ACTIONS = [
   "password.reset",
   /** 本人修改密码;detail.initial 为 true 表示首次登录时把初始密码改掉 */
   "password.change",
+  /** 人员管理(管理员在控制台,或命令行建第一个管理员):detail.userId、detail.name 是被操作的人 */
+  "user.create",
+  /** 修改姓名、手机号、工号或部门;detail.fields 列出改了哪些(不记手机号的值) */
+  "user.update",
+  /** 标记离职 */
+  "user.deactivate",
+  /** 恢复在职 */
+  "user.reactivate",
+  /** 设为或取消平台管理员;detail.isAdmin 是改后的值 */
+  "user.admin",
+  /** 部门管理:detail.departmentId、detail.name */
+  "department.create",
+  /** 改名或调整上级部门;detail 里有改前改后的值 */
+  "department.update",
+  "department.delete",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

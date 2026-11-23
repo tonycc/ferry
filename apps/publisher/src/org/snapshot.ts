@@ -1,6 +1,6 @@
 /**
- * 组织架构快照:从数据源(一期是组织架构文件)完整取一次得到的部门树和人员。
- * ID 都带平台前缀,如 dingtalk:123。
+ * 组织架构:部门树和人员。一期由平台管理员在控制台维护(存在数据库里),见 org/service.ts。
+ * ID 都带来源前缀:控制台新建的是 local:,早期从组织架构文件导入的是 dingtalk:,以后接入钉钉同步时沿用 dingtalk:。
  */
 export interface OrgDepartment {
   id: string;
@@ -16,19 +16,16 @@ export interface OrgUser {
   jobNumber?: string;
   /** 手机号,登录时用。可选;比较前用 normalizeMobile 规范化 */
   mobile?: string;
-  /** false 表示已离职。离职的人不能登录(任务 2.2),但保留最后所属的部门,见 mergeDeparted */
+  /** false 表示已离职。离职的人不能登录,但保留最后所属的部门:他负责的应用照常按部门判定访问,直到管理员处理 */
   active: boolean;
   departmentIds: string[];
+  /** 在控制台设为平台管理员(.env 的 ADMIN_USERS 里的人不论这里是什么都是管理员) */
+  isAdmin?: boolean;
 }
 
 export interface OrgSnapshot {
   departments: OrgDepartment[];
   users: OrgUser[];
-}
-
-/** 组织架构的数据来源:每次返回完整快照 */
-export interface OrgSource {
-  fetch(): Promise<OrgSnapshot>;
 }
 
 const PREFIXED = /^[a-z]+:.+$/;
@@ -48,11 +45,10 @@ export function loginKeys(user: OrgUser): string[] {
 }
 
 /**
- * 应用快照前的检查。数据源出问题时(文件被截断、接口权限不够只返回了一部分),
- * 直接整体替换会让部门可见的应用一下子全都无法访问,所以有任何问题就整份拒绝,保留旧数据。
- * 返回问题列表,为空表示可以应用。
+ * 写回数据库前对整份组织架构做的结构检查(兜底:控制台的每个操作自己会先给出更具体的提示)。
+ * 返回问题列表,为空表示可以保存。
  */
-export function validateSnapshot(next: OrgSnapshot, previous?: OrgSnapshot): string[] {
+export function validateSnapshot(next: OrgSnapshot): string[] {
   const problems: string[] = [];
   const departments = new Map(next.departments.map((d) => [d.id, d]));
 
@@ -97,12 +93,6 @@ export function validateSnapshot(next: OrgSnapshot, previous?: OrgSnapshot): str
     }
   }
 
-  if (previous) {
-    const before = previous.users.filter((u) => u.active).length;
-    const drop = before - active.length;
-    // 在职人数一次减少超过 20% 且超过 10 人,更可能是数据源出了问题而不是真的有这么多人离职
-    if (drop > 10 && drop > before * 0.2) problems.push(`在职人数从 ${before} 降到 ${active.length},减少过多`);
-  }
   return problems;
 }
 
@@ -117,34 +107,4 @@ function hasCycle(departments: Map<string, OrgDepartment>): boolean {
     }
   }
   return false;
-}
-
-/**
- * 处理离职:上一份里在职、新快照里不在或已标记离职的人,记为离职并保留上一份里的所属部门。
- *
- * 保留部门是为了不让离职者负责的应用一下子变成“只有自己可见”:那些应用要由管理员停用或转交,
- * 在那之前同事照常访问。离职的人自己不能再登录(任务 2.2)。
- */
-export function mergeDeparted(next: OrgSnapshot, previous?: OrgSnapshot): { snapshot: OrgSnapshot; departed: number } {
-  if (!previous) return { snapshot: next, departed: 0 };
-  const departments = new Set(next.departments.map((d) => d.id));
-  const nextUsers = new Map(next.users.map((u) => [u.id, u]));
-  const users = [...next.users];
-  let departed = 0;
-
-  for (const old of previous.users) {
-    const current = nextUsers.get(old.id);
-    // 部门被删掉的,不再保留
-    const keptDepartments = old.departmentIds.filter((id) => departments.has(id));
-    if (!current) {
-      users.push({ ...old, active: false, departmentIds: keptDepartments });
-      if (old.active) departed++;
-    } else if (!current.active && old.active) {
-      departed++;
-      if (current.departmentIds.length === 0) {
-        users[users.indexOf(current)] = { ...current, departmentIds: keptDepartments };
-      }
-    }
-  }
-  return { snapshot: { departments: next.departments, users }, departed };
 }

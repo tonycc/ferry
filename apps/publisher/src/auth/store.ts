@@ -35,6 +35,8 @@ export interface AuthStore {
   savePassword(record: PasswordRecord): Promise<void>;
   /** 全部已设置的密码(人员页显示状态用) */
   listPasswords(): Promise<PasswordRecord[]>;
+  /** 标记离职时删掉:恢复在职后要管理员重新生成初始密码 */
+  deletePassword(userId: string): Promise<void>;
 
   saveSession(session: Session): Promise<void>;
   getSession(tokenHash: string): Promise<Session | undefined>;
@@ -64,6 +66,10 @@ export class MemoryAuthStore implements AuthStore {
 
   async listPasswords() {
     return [...this.passwords.values()].map((p) => structuredClone(p));
+  }
+
+  async deletePassword(userId: string) {
+    this.passwords.delete(userId);
   }
 
   async saveSession(session: Session) {
