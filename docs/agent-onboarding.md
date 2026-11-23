@@ -8,6 +8,9 @@
 agent 要能在你的电脑上读写文件、执行命令(打 zip 包、用 curl 上传)。Claude Code 可以;
 其他 agent 如果只能聊天、不能执行命令,目前无法上传代码包(见任务计划 P6)。
 
+不管用哪个 agent,它请你允许运行 `env`、`printenv` 这类列出环境变量的命令,或者读 `.env` 文件时,**选拒绝**:
+里面可能有你的其他密钥,做 Ferry 的应用用不到。
+
 ## 第一步:领取个人令牌
 
 1. 浏览器打开 Ferry 控制台的“个人令牌”页面 `<Ferry 地址>/console/tokens`,用手机号和密码登录(第一次用平台管理员给你的初始密码,登录后要改成自己的密码)。
@@ -35,7 +38,6 @@ agy mcp add --header "Authorization: Bearer <令牌>" ferry <Ferry 地址>/mcp
 
 运行 `agy mcp list`,看到 `ferry` 显示 enabled 即可。这个配置对所有目录都生效。
 在 Antigravity 里第一次用 Ferry 的工具、执行打包和上传命令时,它会请你允许,允许即可。
-它要运行 `env`、`printenv` 这类列出环境变量的命令时**选拒绝**:你电脑上的环境变量里可能有别的密钥,做 Ferry 的应用用不到。
 
 **其他 agent**:添加一个 HTTP(Streamable HTTP)类型的 MCP 服务,地址是 `<Ferry 地址>/mcp`,
 带请求头 `Authorization: Bearer <令牌>`。页面上也给出了 JSON 格式的配置:
