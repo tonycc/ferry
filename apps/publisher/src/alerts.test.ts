@@ -120,8 +120,8 @@ describe("发布流程里的告警", () => {
     });
     async function publish(marker: string) {
       const prepared = await service.prepareApp(alice, "ledger");
-      await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip(marker));
-      const { releaseId } = await service.publish(alice, { manifestYaml: MANIFEST, version: prepared.version });
+      await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip(MANIFEST, marker));
+      const { releaseId } = await service.publish(alice, { name: "ledger", version: prepared.version });
       await service.settle(releaseId);
       return service.status(alice, releaseId);
     }

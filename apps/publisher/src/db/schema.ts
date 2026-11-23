@@ -64,6 +64,8 @@ export const uploads = pgTable(
     version: text("version").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }),
+    /** 收到代码包时从里面读出的 app.yaml */
+    manifest: jsonb("manifest"),
   },
   (t) => [uniqueIndex("uploads_app_version_idx").on(t.appName, t.version)],
 );

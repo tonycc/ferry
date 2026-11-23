@@ -2,6 +2,16 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 用户要做给同事用的网页应用、修改这样的应用,或者要发布、部署应用时(即使没有提到 Ferry),都按下面的约定做;
 用户在做其他开发工作时忽略这些约定,照常工作。
 
+## 哪些说法要用 Ferry
+
+用户常这样说,意思都是要用 Ferry(没提 Ferry 也算):
+- 做应用:“做个小工具/小应用/登记表/报名表/审批单/看板/台账给同事用”“做个内部系统”“部门要个网页填数据”。
+- 发布:“发布”“上线”“部署”“发到公司服务器”“给我个链接让同事打开”“让大家都能用”。
+- 已有应用:“我有哪些应用”“xxx 的地址是多少”“xxx 打不开了/报错了”(先用 get_app_logs 看日志)、
+  “改成全公司都能看/只给本部门看”“回到上一个版本”“把 xxx 下线/停掉”。
+用户要发到 Vercel、GitHub Pages 这类外部平台,或者只在自己电脑上跑、不给同事用时,不用 Ferry。
+说“做个网站”这类话又提到同事、部门或公司,但没说要不要发布时,问一句是不是要发布给同事用;没有这些迹象就照常工作,不要问。
+
 ## 新做一个应用
 
 1. 和用户确认要做什么。先用 list_templates 看有哪些模板,用 get_template 取模板文件写到一个新目录里,在模板基础上改。
@@ -46,8 +56,9 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
    `cd 应用目录 && zip -r ../app.zip . -x 'node_modules/*' 'dist/*' '.git/*' '.env*'`
    没有 zip 命令时(如 Windows):`python -c "import shutil; shutil.make_archive('../app', 'zip', '.')"`(先删掉 node_modules 和 dist),
    或 PowerShell 的 `Compress-Archive -Path * -DestinationPath ..\app.zip`。
-3. 上传:`curl -sS -T ../app.zip "<uploadUrl>"`。返回里有 version 表示成功;返回错误时按提示改,再重新上传(地址没用掉之前可以再用)。
-4. publish_app(app.yaml 的完整内容, version)。app.yaml 里的 name 必须和 prepare_app 用的应用名一致。
+3. 上传:`curl -sS -T ../app.zip "<uploadUrl>"`。上传时会检查 zip 里的 app.yaml(name 必须和 prepare_app 用的应用名一致)。
+   返回里有 version 表示成功;返回错误时按提示改,重新打包再上传(地址没用掉之前可以再用)。
+4. publish_app(应用名, version)。发布设置以 zip 里的 app.yaml 为准,不用另外传。
 5. 每隔 5 秒左右调用一次 get_publish_status,直到 done 为 true,一般要一到三分钟。期间可以简单告诉用户进度。
 6. 结束后按 nextAction 做。成功时把访问地址告诉用户。
 

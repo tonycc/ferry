@@ -71,6 +71,13 @@
       "when": 1795410699139,
       "tag": "0009_org_admin",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795426208761,
+      "tag": "0010_upload_manifest",
+      "breakpoints": true
     }
   ]
 }

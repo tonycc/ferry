@@ -66,6 +66,8 @@ export interface UploadTicket {
   expiresAt: Date;
   /** 有值表示代码包已收到 */
   receivedAt?: Date;
+  /** 收到代码包时从里面读出并校验过的 app.yaml;旧数据里可能没有 */
+  manifest?: Manifest;
 }
 
 /** 应用密钥(见 secrets.ts)。存储里只有密文 */
@@ -105,6 +107,10 @@ export interface Store {
   saveUpload(ticket: UploadTicket): Promise<void>;
   getUploadByTokenHash(tokenHash: string): Promise<UploadTicket | undefined>;
   getUpload(appName: string, version: string): Promise<UploadTicket | undefined>;
+  /**
+   * 原子地把上传凭据标记为已收到,同时记下清单。凭据已经被用过(包括并发的另一次上传抢先)时返回 false。
+   */
+  claimUpload(tokenHash: string, receivedAt: Date, manifest: Manifest): Promise<boolean>;
 
   /** 按名称排序 */
   listSecrets(appName: string): Promise<SecretRecord[]>;
@@ -195,6 +201,14 @@ export class MemoryStore implements Store {
 
   async getUpload(appName: string, version: string) {
     return copy([...this.uploads.values()].find((t) => t.appName === appName && t.version === version));
+  }
+
+  async claimUpload(tokenHash: string, receivedAt: Date, manifest: Manifest) {
+    const ticket = this.uploads.get(tokenHash);
+    if (!ticket || ticket.receivedAt) return false;
+    ticket.receivedAt = receivedAt;
+    ticket.manifest = copy(manifest);
+    return true;
   }
 
   async listSecrets(appName: string) {

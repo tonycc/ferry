@@ -74,7 +74,7 @@ def publish(label):
     up = urllib.request.Request(prepared["uploadUrl"], data=data, method="PUT")
     with urllib.request.urlopen(up, timeout=60) as r:
         print("upload ->", json.loads(r.read()))
-    view = tool("publish_app", {"manifestYaml": app_yaml, "version": prepared["version"]})
+    view = tool("publish_app", {"name": NAME, "version": prepared["version"]})
     print("publish_app ->", view["state"], view["releaseId"])
     started = time.time()
     last = None

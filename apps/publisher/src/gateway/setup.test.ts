@@ -6,8 +6,6 @@ import { MemoryStore } from "../workflow/store";
 import { setupGateway } from "./setup";
 import { appZip } from "../test/zip";
 
-const ZIP = appZip("v1");
-
 async function setup() {
   const adapters = createFakeAdapters();
   adapters.directory.setUserDepartments("dingtalk:alice", ["dingtalk:finance"]);
@@ -21,8 +19,8 @@ async function setup() {
   const alice = { id: "dingtalk:alice", departments: ["dingtalk:finance"], isAdmin: false };
   async function publish(name: string, extra = "") {
     const prepared = await service.prepareApp(alice, name);
-    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, ZIP);
-    const { releaseId } = await service.publish(alice, { manifestYaml: `name: ${name}\ntemplate: node-postgres\n${extra}`, version: prepared.version });
+    await service.receiveUpload(prepared.uploadUrl.split("/").pop()!, appZip(`name: ${name}\ntemplate: node-postgres\n${extra}`, "v1"));
+    const { releaseId } = await service.publish(alice, { name, version: prepared.version });
     await service.settle(releaseId);
   }
   const logs: { level: string; message: string }[] = [];

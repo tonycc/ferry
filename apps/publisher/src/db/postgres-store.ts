@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { and, asc, count, eq, notInArray } from "drizzle-orm";
+import { and, asc, count, eq, isNull, notInArray } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -157,11 +157,20 @@ export class PostgresStore implements Store {
   async saveUpload(ticket: UploadTicket) {
     await this.db
       .insert(schema.uploads)
-      .values({ ...ticket, receivedAt: ticket.receivedAt ?? null })
+      .values({ ...ticket, receivedAt: ticket.receivedAt ?? null, manifest: ticket.manifest ?? null })
       .onConflictDoUpdate({
         target: schema.uploads.tokenHash,
-        set: { receivedAt: ticket.receivedAt ?? null },
+        set: { receivedAt: ticket.receivedAt ?? null, manifest: ticket.manifest ?? null },
       });
+  }
+
+  async claimUpload(tokenHash: string, receivedAt: Date, manifest: Manifest) {
+    const rows = await this.db
+      .update(schema.uploads)
+      .set({ receivedAt, manifest })
+      .where(and(eq(schema.uploads.tokenHash, tokenHash), isNull(schema.uploads.receivedAt)))
+      .returning({ tokenHash: schema.uploads.tokenHash });
+    return rows.length > 0;
   }
 
   async getUploadByTokenHash(tokenHash: string) {
@@ -262,5 +271,6 @@ function toUpload(row: UploadRow): UploadTicket {
     version: row.version,
     expiresAt: row.expiresAt,
     receivedAt: row.receivedAt ?? undefined,
+    manifest: (row.manifest as Manifest | null) ?? undefined,
   };
 }
