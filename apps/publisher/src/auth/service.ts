@@ -188,6 +188,12 @@ export class AuthService {
     return this.newSession(userId);
   }
 
+  /** 标记离职时调用:作废这个人的登录会话和改密码票据(离职后本来就过不了在职检查,这里把残留清掉) */
+  async endSessions(userId: string): Promise<void> {
+    this.clearTickets(userId);
+    await this.store.deleteSessionsOf(userId);
+  }
+
   /**
    * 生成初始密码(管理员在人员页上,或者第一个管理员用命令行)。返回明文,只显示这一次;
    * 这个人原有的登录会话全部作废,下次登录后必须先改密码。actorId 为空表示命令行

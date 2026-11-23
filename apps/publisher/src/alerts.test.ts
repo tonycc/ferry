@@ -89,15 +89,15 @@ describe("Alerts", () => {
   it("jobStatus:由好变坏时告警一次,一直失败不重复,恢复时再告诉一声", async () => {
     const notifier = new FakeNotifier();
     const alerts = new Alerts(notifier, ["dingtalk:admin"], { log: () => {} });
-    await alerts.jobStatus("组织架构同步");
-    await alerts.jobStatus("组织架构同步", "组织架构文件读不出来");
-    await alerts.jobStatus("组织架构同步", "组织架构文件读不出来");
-    await alerts.jobStatus("组织架构同步", "组织架构文件读不出来");
-    await alerts.jobStatus("组织架构同步");
-    await alerts.jobStatus("组织架构同步");
+    await alerts.jobStatus("把网关接入应用网络");
+    await alerts.jobStatus("把网关接入应用网络", "Traefik 容器不存在");
+    await alerts.jobStatus("把网关接入应用网络", "Traefik 容器不存在");
+    await alerts.jobStatus("把网关接入应用网络", "Traefik 容器不存在");
+    await alerts.jobStatus("把网关接入应用网络");
+    await alerts.jobStatus("把网关接入应用网络");
     expect(notifier.sent.map((s) => s.message)).toEqual([
-      "【Ferry 告警】组织架构同步失败:组织架构文件读不出来",
-      "【Ferry 告警】组织架构同步已恢复正常",
+      "【Ferry 告警】把网关接入应用网络失败:Traefik 容器不存在",
+      "【Ferry 告警】把网关接入应用网络已恢复正常",
     ]);
   });
 });

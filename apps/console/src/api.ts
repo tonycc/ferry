@@ -109,7 +109,15 @@ export type AuditAction =
   | "token.create"
   | "token.revoke"
   | "password.reset"
-  | "password.change";
+  | "password.change"
+  | "user.create"
+  | "user.update"
+  | "user.deactivate"
+  | "user.reactivate"
+  | "user.admin"
+  | "department.create"
+  | "department.update"
+  | "department.delete";
 
 /** 一条审计记录 */
 export interface AuditEvent {
@@ -136,10 +144,29 @@ export interface AuditPage {
 export interface AdminUser {
   id: string;
   name: string;
-  jobNumber?: string;
-  hasMobile: boolean;
-  departmentNames: string[];
+  mobile: string | null;
+  jobNumber: string | null;
+  departmentIds: string[];
+  /** false 表示已离职 */
+  active: boolean;
+  isAdmin: boolean;
+  /** 在服务配置 ADMIN_USERS 里指定的管理员,控制台上不能取消 */
+  fixedAdmin: boolean;
   password: "none" | "initial" | "set";
+}
+
+export interface AdminDepartment {
+  id: string;
+  /** 最上级部门为 null */
+  parentId: string | null;
+  name: string;
+  /** 在职人数(只算直接属于这个部门的人) */
+  memberCount: number;
+}
+
+export interface AdminOrg {
+  departments: AdminDepartment[];
+  users: AdminUser[];
 }
 
 /** 应用密钥:只有名称和更新时间,值保存后不再返回 */

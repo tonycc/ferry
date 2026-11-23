@@ -25,9 +25,8 @@ import { consoleUrlOf, PublisherService } from "./service";
 import { Engine } from "./workflow/engine";
 import { openDatabase, PostgresStore } from "./db/postgres-store";
 import { PostgresOrgStore } from "./db/postgres-org-store";
-import { FileOrgSource } from "./adapters/org-file-source";
 import { MemoryOrgStore, type OrgStore } from "./org/store";
-import { OrgSync } from "./org/sync";
+import { Organization } from "./org/service";
 import { MemoryStore, type Store } from "./workflow/store";
 import { SecretBox } from "./secrets";
 
@@ -44,7 +43,7 @@ if (!config.GATEWAY_SECRET) {
 }
 const gatewaySecret = config.GATEWAY_SECRET ?? randomBytes(32).toString("hex");
 
-// 组织架构:权限判定读内存里的这一份,由 OrgSync 从数据源同步、从数据库恢复
+// 组织架构:权限判定读内存里的这一份,由 Organization 从数据库读出(人员和部门由管理员在控制台维护)
 const directory = new MemoryDirectory();
 const adapters: Adapters = {
   ...createFakeAdapters(),
@@ -115,24 +114,11 @@ if (config.DATABASE_URL) {
   store = new MemoryStore();
 }
 // 给平台管理员的告警(任务 3.5):发布连续失败、迁移前备份失败、部署平台出错、后台任务失败
+// ADMIN_USERS 里的人始终是管理员;其余管理员在控制台上设置,告警每次发送时现取
 const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));
-const alerts = new Alerts(adapters.notifier, [...adminIds], { cooldownMs: config.ALERT_COOLDOWN_MINUTES * 60_000 });
-if (adminIds.size === 0) console.warn("未设置 ADMIN_USERS:告警只写进服务日志,不会发给任何人");
-
-// 先用上次同步保存的组织架构,再同步一次,之后定时同步。同步失败只记日志,继续用现有数据
-// 一期组织架构来自文件(ORG_FILE),由管理员维护;以后接入企业通讯录时换数据源
-const orgSync = new OrgSync(config.ORG_FILE ? new FileOrgSource(config.ORG_FILE) : undefined, orgStore, directory);
-await orgSync.init();
-if (!config.ORG_FILE) console.warn("未设置 ORG_FILE:不同步组织架构,按部门的可见范围只能用上次保存的数据");
-/** 同步一次;失败或快照被拒时告警管理员(连续失败只在第一次告警,恢复时再告诉一声) */
-async function syncOrg(): Promise<void> {
-  const result = await orgSync.run().catch((err: Error) => ({ status: "failed" as const, error: err.message }));
-  const error =
-    result.status === "failed" ? result.error : result.status === "rejected" ? result.problems.join(";") : undefined;
-  await alerts.jobStatus("组织架构同步", error);
-}
-await syncOrg();
-setInterval(() => void syncOrg(), config.ORG_SYNC_MINUTES * 60_000).unref();
+const alerts = new Alerts(adapters.notifier, () => [...new Set([...adminIds, ...directory.adminIds()])], {
+  cooldownMs: config.ALERT_COOLDOWN_MINUTES * 60_000,
+});
 
 // Ferry 对浏览器和 agent 的地址:上传地址、控制台地址、允许的来源都按它来,只在这里算一次
 const ferryUrl = config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`;
@@ -167,14 +153,23 @@ const allowedOrigins = new Set([
 // 本机地址 127.0.0.1 和 localhost 都能打开登录页
 if (publicUrl.hostname === "127.0.0.1") allowedOrigins.add(publicUrl.origin.replace("127.0.0.1", "localhost"));
 const auth = new AuthService(authStore, directory, { sessionTtlMs: config.SESSION_DAYS * 24 * 3600_000 }, audit);
-// 第一个管理员怎么登录:用数据库时用命令行设置初始密码(pnpm set-password <手机号>);
-// 内存存储(本地临时试用)时命令行连不上,启动时给还没有密码的管理员各生成一个,打印在这里
-if (!config.DATABASE_URL) {
-  const statuses = await auth.passwordStatuses();
-  for (const id of adminIds) {
-    if (statuses.has(id) || !(await directory.isActive(id))) continue;
-    console.warn(`管理员 ${id} 的初始密码:${await auth.resetPassword(undefined, id)}(内存存储,只用于本地试用;第一次登录后要改)`);
-  }
+// 人员和部门:启动时从数据库读进内存,之后每分钟重读一次(命令行建的管理员不用重启就能登录)
+const organization = new Organization(orgStore, directory, audit, {
+  fixedAdmins: adminIds,
+  onDeactivate: (userId) => auth.endSessions(userId),
+});
+await organization.reload();
+setInterval(() => void organization.reload().catch((err: Error) => console.error(`重新读取组织架构失败: ${err.message}`)), 60_000).unref();
+// 第一个管理员怎么登录:用数据库时用命令行建(pnpm set-password <手机号> --name <姓名>);
+// 内存存储(本地临时试用)时命令行连不上,组织架构是空的就建一个管理员,初始密码打印在这里
+if (!config.DATABASE_URL && directory.adminIds().length === 0) {
+  const { userId } = await organization.bootstrapAdmin({ name: "管理员", mobile: "13800000000" });
+  console.warn(
+    `管理员(手机号 13800000000)的初始密码:${await auth.resetPassword(undefined, userId)}` +
+      "(内存存储,只用于本地试用;第一次登录后要改)",
+  );
+} else if (adminIds.size === 0 && directory.adminIds().length === 0) {
+  console.warn("还没有平台管理员:用 pnpm set-password <手机号> --name <姓名> 建第一个");
 }
 const gateway = new Gateway(service, directory, {
   secret: gatewaySecret,
@@ -191,6 +186,7 @@ const server = buildServer(service, identity, {
   auth: {
     service: auth,
     directory,
+    organization,
     routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:" },
   },
 });

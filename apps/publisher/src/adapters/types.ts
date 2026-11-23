@@ -119,7 +119,7 @@ export interface Notifier {
 }
 
 /**
- * 组织架构:从数据源(现在是组织架构文件)同步来的部门树和人员所属部门。
+ * 组织架构:部门树、人员所属部门和在职状态(一期由平台管理员在控制台维护,见 org/service.ts)。
  * 用户 ID 和部门 ID 都带平台前缀(如 dingtalk:123),不同平台的 ID 不会冲突。
  */
 export interface Directory {
@@ -132,6 +132,8 @@ export interface Directory {
   ancestorsOf(departmentId: string): Promise<string[]>;
   /** 在组织架构里且在职 */
   isActive(userId: string): Promise<boolean>;
+  /** 在控制台设为平台管理员的在职人员(不含只在 ADMIN_USERS 里的人) */
+  isAdmin(userId: string): Promise<boolean>;
   /** 按登录时输入的账号(工号或手机号)找在职的人 */
   findLogin(account: string): Promise<string | undefined>;
   nameOf(userId: string): Promise<string | undefined>;

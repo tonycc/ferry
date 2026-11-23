@@ -10,6 +10,7 @@ export const router = createRouter({
     { path: "/admin", component: () => import("./views/Admin.vue"), meta: { title: "管理全部应用" } },
     { path: "/audit", component: () => import("./views/Audit.vue"), meta: { title: "审计日志" } },
     { path: "/users", component: () => import("./views/Users.vue"), meta: { title: "人员" } },
+    { path: "/departments", component: () => import("./views/Departments.vue"), meta: { title: "部门" } },
     { path: "/:rest(.*)*", redirect: "/apps" },
   ],
 });

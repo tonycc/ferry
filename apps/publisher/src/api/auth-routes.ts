@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
+import type { Organization } from "../org/service";
 import { UserError } from "../errors";
 import { readCookies, requireSameOrigin, SESSION_COOKIE, sessionUserFrom, type IdentityResolver } from "../identity";
 import { LOGIN_PAGE } from "./pages";
@@ -11,6 +12,15 @@ const loginBody = z.object({ account: z.string().min(1).max(100), password: z.st
 const changeInitialBody = z.object({ ticket: z.string().min(1).max(200), newPassword: z.string().max(200) });
 const changeBody = z.object({ currentPassword: z.string().max(200), newPassword: z.string().max(200) });
 const tokenBody = z.object({ label: z.string().max(60).default("") });
+const departmentBody = z.object({ name: z.string().max(200), parentId: z.string().max(200).nullable() });
+const personBody = z.object({
+  name: z.string().max(200),
+  mobile: z.string().max(40).optional(),
+  jobNumber: z.string().max(100).optional(),
+  departmentIds: z.array(z.string().max(200)).max(50),
+});
+const newPersonBody = personBody.extend({ isAdmin: z.boolean().optional() });
+const adminBody = z.object({ isAdmin: z.boolean() });
 
 export interface AuthRouteOptions {
   allowedOrigins: ReadonlySet<string>;
@@ -19,7 +29,7 @@ export interface AuthRouteOptions {
 }
 
 /**
- * 手机号 + 密码登录、登录页、修改密码、个人令牌管理,以及管理员的人员页(生成初始密码)。
+ * 手机号 + 密码登录、登录页、修改密码、个人令牌管理,以及管理员的人员和部门管理(organization 不传时没有)。
  *
  * 登录 cookie 只发给 Ferry 自己的域名(不设 Domain),不覆盖 *.apps:员工应用是任意代码,
  * 如果能收到这个 cookie,就能拿它以访问者的身份调用 Ferry 的接口。
@@ -31,6 +41,7 @@ export function registerAuthRoutes(
   directory: Directory,
   options: AuthRouteOptions,
   gateway?: Gateway,
+  organization?: Organization,
 ): void {
   const cookie = (value: string, maxAgeSeconds: number) =>
     [
@@ -100,30 +111,82 @@ export function registerAuthRoutes(
     return setSession(reply, await auth.changePassword(user.id, currentPassword, newPassword)).send({ ok: true });
   });
 
-  // ---- 管理员的人员页:查看谁设置了密码,给人生成初始密码 ----
+  // ---- 管理员的人员和部门管理(只认网页登录,不认令牌) ----
 
-  app.get("/api/admin/users", async (req) => {
-    requireAdmin(await sessionUser(req));
-    const statuses = await auth.passwordStatuses();
-    const users = await directory.listUsers();
-    return Promise.all(
-      users
-        .filter((u) => u.active)
-        .map(async (u) => ({
+  /** 当前登录的管理员;操作人员和部门都要求是管理员 */
+  const admin = async (req: FastifyRequest) => {
+    const user = await sessionUser(req);
+    requireAdmin(user);
+    return user;
+  };
+
+  if (organization) {
+    /** 人员页、部门页用:全部部门(含在职人数)和全部人员(含已离职的人、管理员身份、密码状态) */
+    app.get("/api/admin/org", async (req) => {
+      await admin(req);
+      const [view, statuses] = await Promise.all([organization.view(), auth.passwordStatuses()]);
+      return {
+        departments: view.departments,
+        users: view.users.map((u) => ({
           id: u.id,
           name: u.name,
-          jobNumber: u.jobNumber,
-          hasMobile: u.hasMobile,
-          departmentNames: await Promise.all(u.departmentIds.map(async (id) => (await directory.departmentNameOf(id)) ?? id)),
+          mobile: u.mobile ?? null,
+          jobNumber: u.jobNumber ?? null,
+          departmentIds: u.departmentIds,
+          active: u.active,
+          isAdmin: u.isAdmin,
+          fixedAdmin: u.fixedAdmin,
           password: statuses.get(u.id) ?? "none",
         })),
-    );
-  });
+      };
+    });
+
+    app.post("/api/admin/departments", async (req, reply) => {
+      const user = await admin(req);
+      return reply.status(201).send(await organization.createDepartment(user.id, departmentBody.parse(req.body)));
+    });
+    app.post<{ Params: { id: string } }>("/api/admin/departments/:id", async (req) => {
+      const user = await admin(req);
+      await organization.updateDepartment(user.id, req.params.id, departmentBody.parse(req.body));
+      return { ok: true };
+    });
+    app.post<{ Params: { id: string } }>("/api/admin/departments/:id/delete", async (req) => {
+      const user = await admin(req);
+      await organization.deleteDepartment(user.id, req.params.id);
+      return { ok: true };
+    });
+
+    app.post("/api/admin/users", async (req, reply) => {
+      const user = await admin(req);
+      const { isAdmin, ...input } = newPersonBody.parse(req.body);
+      const created = await organization.createUser(user.id, input, { isAdmin });
+      return reply.status(201).send({ id: created.id });
+    });
+    app.post<{ Params: { id: string } }>("/api/admin/users/:id", async (req) => {
+      const user = await admin(req);
+      await organization.updateUser(user.id, req.params.id, personBody.parse(req.body));
+      return { ok: true };
+    });
+    app.post<{ Params: { id: string } }>("/api/admin/users/:id/deactivate", async (req) => {
+      const user = await admin(req);
+      await organization.deactivate(user.id, req.params.id);
+      return { ok: true };
+    });
+    app.post<{ Params: { id: string } }>("/api/admin/users/:id/reactivate", async (req) => {
+      const user = await admin(req);
+      await organization.reactivate(user.id, req.params.id);
+      return { ok: true };
+    });
+    app.post<{ Params: { id: string } }>("/api/admin/users/:id/admin", async (req) => {
+      const user = await admin(req);
+      await organization.setAdmin(user.id, req.params.id, adminBody.parse(req.body).isAdmin);
+      return { ok: true };
+    });
+  }
 
   app.post<{ Params: { id: string } }>("/api/admin/users/:id/reset-password", async (req) => {
-    const admin = await sessionUser(req);
-    requireAdmin(admin);
-    return { password: await auth.resetPassword(admin.id, req.params.id) };
+    const user = await admin(req);
+    return { password: await auth.resetPassword(user.id, req.params.id) };
   });
 
   app.post("/auth/logout", async (req, reply) => {
@@ -153,5 +216,5 @@ export function registerAuthRoutes(
 }
 
 function requireAdmin(user: { isAdmin: boolean }): void {
-  if (!user.isAdmin) throw new UserError("forbidden", "只有平台管理员可以管理人员的密码");
+  if (!user.isAdmin) throw new UserError("forbidden", "只有平台管理员可以管理人员和部门");
 }

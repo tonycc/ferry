@@ -9,7 +9,7 @@
 | `../Dockerfile` | Ferry 的镜像:发布服务、构建好的控制台、应用模板、固定版本的 gitleaks(按架构下载并校验) |
 | `docker-compose.yml` | Ferry 和它自己的 PostgreSQL |
 | `.env.example` | 配置模板,复制为 `.env` 后填写 |
-| `set-password.sh` | 给某人生成初始密码(第一个管理员用) |
+| `set-password.sh` | 建第一个平台管理员,或给某人生成初始密码 |
 | `firewall.example.sh` | 防火墙示例(未验证) |
 
 ## 架构
@@ -76,8 +76,7 @@ chmod 600 .env
 | `FERRY_ENTRYPOINT`、`FERRY_TLS` | 有证书时 `websecure`、`true` |
 | `DOKPLOY_API_KEY` | Dokploy 管理页面 → 个人设置里生成 |
 | `POSTGRES_PASSWORD`、`GATEWAY_SECRET`、`SECRETS_KEY` | 各运行一次 `openssl rand -hex 32` |
-| `ORG_DIR`、`ORG_FILE_NAME` | 组织架构文件所在的目录和文件名(格式见 `infra/dev-org.json`,每人要有手机号)。挂进容器的是整个目录 |
-| `ADMIN_USERS` | 平台管理员的用户 ID,逗号分隔 |
+| `ADMIN_USERS` | 可以不填。固定的平台管理员(用户 ID,逗号分隔),控制台上不能取消;其余管理员在控制台“人员”页设置 |
 
 `GATEWAY_SECRET` 和 `SECRETS_KEY` 必须固定:不设置的话 compose 拒绝启动。`SECRETS_KEY` 丢了或换了,员工保存过的应用密钥全部解不开,
 把 `.env` 另外备份到安全的地方。
@@ -90,16 +89,18 @@ docker compose ps
 docker compose logs ferry
 ```
 
-日志里应该有 `密钥扫描:gitleaks 8.30.1`、`组织架构已同步`、`登录网关已就绪(/authz 地址 http://ferry-publisher:8080/authz)`。
+日志里应该有 `密钥扫描:gitleaks 8.30.1`、`登录网关已就绪(/authz 地址 http://ferry-publisher:8080/authz)`;第一次部署还会提示“还没有平台管理员”,按下一步建。
 数据库迁移在启动时自动执行。
 
 ### 5. 第一个管理员
 
 ```bash
-./set-password.sh <管理员手机号>
+./set-password.sh <管理员手机号> --name <姓名> --org <公司名>
 ```
 
-打印出的初始密码只显示一次。用它在 `https://ferry.公司域名/login` 登录,改成自己的密码,之后在控制台“人员”页给其他人生成初始密码。
+这条命令建好最上级部门(公司名)和第一个平台管理员,打印出的初始密码只显示一次。Ferry 每分钟从数据库重读一次组织架构,
+最多一分钟后就能用它在 `https://ferry.公司域名/login` 登录,改成自己的密码。之后在控制台“部门”页建部门,在“人员”页添加员工、
+生成初始密码转交本人;要多一位管理员,在“人员”页把他设为管理员。
 
 ### 6. 检查
 
@@ -122,8 +123,8 @@ docker compose logs ferry
 docker compose logs -f ferry | grep '告警'
 ```
 
-**改组织架构**:直接改 `ORG_DIR` 里的组织架构文件,Ferry 每 60 分钟(`ORG_SYNC_MINUTES`)重新读一次;要马上生效就 `docker compose restart ferry`。
-文件有问题时 Ferry 整份拒绝、继续用旧数据,日志里会有告警。
+**人员和部门**:在控制台“人员”“部门”页维护,改了立即生效。员工离职时在“人员”页标记离职(立即不能登录、令牌失效),
+他负责的应用照常运行,不需要的在“管理全部应用”里停用或删除。所有管理员都被取消或离职时,用 `./set-password.sh <手机号> --name <姓名>` 重新设一位。
 
 **升级**:构建或拉取新镜像,改 `.env` 里的 `FERRY_IMAGE`,然后:
 

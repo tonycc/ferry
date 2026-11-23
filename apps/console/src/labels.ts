@@ -54,7 +54,17 @@ export const AUDIT_ACTION: Record<AuditAction, string> = {
   "token.revoke": "作废令牌",
   "password.reset": "生成初始密码",
   "password.change": "修改密码",
+  "user.create": "新增人员",
+  "user.update": "修改人员",
+  "user.deactivate": "标记离职",
+  "user.reactivate": "恢复在职",
+  "user.admin": "设置管理员",
+  "department.create": "新建部门",
+  "department.update": "修改部门",
+  "department.delete": "删除部门",
 };
+
+const PERSON_FIELD: Record<string, string> = { name: "姓名", mobile: "手机号", jobNumber: "工号", departmentIds: "部门" };
 
 const shortVersion = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
 
@@ -88,6 +98,27 @@ export function auditDetail(e: AuditEvent): string {
       return `给 ${String(d.userId ?? "")} 生成初始密码${d.via === "cli" ? "(命令行)" : ""}`;
     case "password.change":
       return d.initial ? "首次登录,把初始密码改成自己的" : "";
+    case "user.create":
+      return `${String(d.name ?? d.userId ?? "")}${d.isAdmin ? ",设为管理员" : ""}${d.via === "cli" ? "(命令行)" : ""}`;
+    case "user.update": {
+      const fields = Array.isArray(d.fields) ? d.fields.map((f) => PERSON_FIELD[String(f)] ?? String(f)) : [];
+      return `${String(d.name ?? d.userId ?? "")}${fields.length ? `:改了${fields.join("、")}` : ""}`;
+    }
+    case "user.deactivate":
+    case "user.reactivate":
+      return String(d.name ?? d.userId ?? "");
+    case "user.admin":
+      return `${d.isAdmin ? "把" : "取消"} ${String(d.name ?? d.userId ?? "")} ${d.isAdmin ? "设为管理员" : "的管理员身份"}${d.via === "cli" ? "(命令行)" : ""}`;
+    case "department.create":
+    case "department.delete":
+      return String(d.name ?? d.departmentId ?? "");
+    case "department.update":
+      return [
+        d.fromName ? `“${String(d.fromName)}”改名为“${String(d.name)}”` : String(d.name ?? ""),
+        d.parentId !== undefined && d.fromParentId !== undefined ? "调整了上级部门" : "",
+      ]
+        .filter(Boolean)
+        .join(",");
     default:
       return "";
   }

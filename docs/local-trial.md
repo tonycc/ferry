@@ -10,8 +10,10 @@ M2 的验收标准:**试用员工不经指导完成发布;同事登录后能访�
 
 - 本机 Dokploy 在运行(http://localhost:3000 能打开)。
 - `pnpm dev` 在运行,并且 `.env` 里有 `FERRY_PLATFORM=dokploy`、`APPS_DOMAIN=apps.localhost`、`APPS_URL_SCHEME=http`、
-  `ADMIN_USERS=dingtalk:admin`、`NOTIFY_VIA=log`、`SECRETS_KEY`。Ferry 地址是 http://127.0.0.1:8080 。
-- 管理员能登录(没有密码时运行 `pnpm set-password 13800000005`)。
+  `NOTIFY_VIA=log`、`SECRETS_KEY`。Ferry 地址是 http://127.0.0.1:8080 。
+- 管理员能登录:本机数据库里已经有下面的角色,Admin 没有密码时运行 `pnpm set-password 13800000005`。
+  全新的数据库里还没有人:运行 `pnpm set-password <手机号> --name <姓名>` 建第一个管理员(同时建好最上级部门),
+  再在控制台“部门”页建好财务部(下设应付组)、销售部、信息部,在“人员”页添加下面的员工。
 - 给负责人的通知、给管理员的告警都打印在 `pnpm dev` 的终端里,形如 `[通知 → dingtalk:dave] ...`、`[告警] ...`。
 
 **每个人用一个单独的浏览器窗口**:登录 cookie 是按 Ferry 地址存的,同一个窗口只能登录一个人。
@@ -49,6 +51,7 @@ Bob(财务部)能看,Carol(销售部)不能看;反过来 Bob 的本部门应用,
 ### 1. 管理员发初始密码
 
 管理员登录控制台 → “人员”页,给 Dave、Bob、Carol 各生成初始密码,记下来“转交”给自己。
+(可选)顺便试一下新增人员:添加一名员工、生成初始密码,再标记离职,确认他登录不了。
 
 - 预期:每个人显示“初始密码,还没改”;审计日志里有三条“生成初始密码”。
 

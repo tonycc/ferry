@@ -2,8 +2,8 @@ import { loginKeys, normalizeMobile, type OrgSnapshot } from "../org/snapshot";
 import type { Directory, DirectoryUser } from "./types";
 
 /**
- * 内存里的组织架构。本地开发和测试直接往里写;
- * 组织架构同步任务把数据源(现在是组织架构文件)里的部门和人员写进来。
+ * 内存里的组织架构,权限判定只读它。本地开发和测试直接往里写;
+ * 运行时由 org/service.ts 从数据库读出整份换进来(启动时、控制台每次修改后、定时)。
  */
 export class MemoryDirectory implements Directory {
   /** 部门 ID → 上级部门 ID;根部门的上级是 null */
@@ -14,11 +14,13 @@ export class MemoryDirectory implements Directory {
   private departmentNames = new Map<string, string>();
   /** 规范化后的工号、手机号 → 在职的人 */
   private logins = new Map<string, string>();
+  /** 在控制台设为管理员的在职人员 */
+  private admins = new Set<string>();
   private users: DirectoryUser[] = [];
 
   /**
-   * 用一份快照整体替换(同步完成后、服务启动时调用)。先建好新数据再一次性换上,
-   * 权限判定不会读到一半新一半旧的数据。离职的人也保留所属部门,见 mergeDeparted。
+   * 用一份快照整体替换。先建好新数据再一次性换上,权限判定不会读到一半新一半旧的数据。
+   * 离职的人也保留所属部门(他负责的应用照常按部门判定访问)。
    */
   replace(snapshot: OrgSnapshot): void {
     const parents = new Map<string, string | null>(snapshot.departments.map((d) => [d.id, d.parentId]));
@@ -28,6 +30,7 @@ export class MemoryDirectory implements Directory {
     const departmentNames = new Map(snapshot.departments.map((d) => [d.id, d.name]));
     const logins = new Map<string, string>();
     for (const u of snapshot.users) if (u.active) for (const key of loginKeys(u)) logins.set(key, u.id);
+    this.admins = new Set(snapshot.users.filter((u) => u.active && u.isAdmin).map((u) => u.id));
     this.parents = parents;
     this.members = members;
     this.inactive = inactive;
@@ -64,6 +67,15 @@ export class MemoryDirectory implements Directory {
     const value = account.trim();
     if (!value) return undefined;
     return this.logins.get(`job:${value.toLowerCase()}`) ?? this.logins.get(`mobile:${normalizeMobile(value)}`);
+  }
+
+  async isAdmin(userId: string): Promise<boolean> {
+    return this.admins.has(userId);
+  }
+
+  /** 在控制台设为管理员的在职人员(告警发给他们和 ADMIN_USERS 里的人) */
+  adminIds(): string[] {
+    return [...this.admins];
   }
 
   async nameOf(userId: string): Promise<string | undefined> {
