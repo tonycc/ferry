@@ -11,7 +11,7 @@ agent 为员工新建应用时,从这里的模板起步。模板定得越死,自
 - 迁移命令可以重复执行:每次发布都会跑一遍。
 - 不要自己做注册登录。访问应用前 Ferry 的登录网关已经确认了访问者是谁,并按应用的可见范围放行,
   放行时把访问者身份放在请求头里:`X-Ferry-User-Id`(用户 ID)、`X-Ferry-User-Name`(姓名,UTF-8 百分号编码,
-  用 `decodeURIComponent` 解码)、`X-Ferry-User-Departments`(所属部门 ID,逗号分隔)。示例见 `node-postgres/src/server.ts` 的 `visitor()`;静态页面用 `fetch("/whoami")`,见 `static/public/app.js`。
+  用 `decodeURIComponent` 解码)、`X-Ferry-User-Departments`(所属部门 ID,逗号分隔)、`X-Ferry-User-Department-Names`(部门名称,和 ID 一一对应,每个名称单独百分号编码,逗号分隔)。示例见 `node-postgres/src/server.ts` 的 `visitor()`;静态页面用 `fetch("/whoami")`,见 `static/public/app.js`。
 - `/__ferry/` 开头的路径是网关保留的,应用收不到这些请求。
 
 模板只用 Node.js 一套运行环境,代码用 TypeScript,构建时做类型检查(以后内网镜像源只需要准备 npm 一套)。

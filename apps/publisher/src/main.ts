@@ -21,7 +21,7 @@ import { AuthService } from "./auth/service";
 import { MemoryAuthStore, type AuthStore } from "./auth/store";
 import { PostgresAuthStore } from "./db/postgres-auth-store";
 import { LogNotifier, UnconfiguredNotifier } from "./adapters/log-notifier";
-import { PublisherService } from "./service";
+import { consoleUrlOf, PublisherService } from "./service";
 import { Engine } from "./workflow/engine";
 import { openDatabase, PostgresStore } from "./db/postgres-store";
 import { PostgresOrgStore } from "./db/postgres-org-store";
@@ -134,6 +134,9 @@ async function syncOrg(): Promise<void> {
 await syncOrg();
 setInterval(() => void syncOrg(), config.ORG_SYNC_MINUTES * 60_000).unref();
 
+// Ferry 对浏览器和 agent 的地址:上传地址、控制台地址、允许的来源都按它来,只在这里算一次
+const ferryUrl = config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`;
+
 // 审计日志(任务 3.3):操作人的姓名在记录时从组织架构查好存下来
 const audit = new AuditLog(auditStore, directory);
 const engine = new Engine(store, adapters, {
@@ -142,12 +145,13 @@ const engine = new Engine(store, adapters, {
   secretBox,
   audit,
   alerts,
+  consoleUrl: consoleUrlOf(ferryUrl),
 });
 const service = new PublisherService(store, engine, adapters, {
   appsDomain: config.APPS_DOMAIN,
   appsUrlScheme: config.APPS_URL_SCHEME,
   maxAppsPerUser: config.MAX_APPS_PER_USER,
-  publicUrl: config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`,
+  publicUrl: ferryUrl,
   uploadTtlMs: config.UPLOAD_TTL_MINUTES * 60_000,
   archiveGraceMs: config.ARCHIVE_GRACE_HOURS * 3600_000,
   templates: new TemplateLibrary(),
@@ -155,7 +159,7 @@ const service = new PublisherService(store, engine, adapters, {
   audit,
 });
 
-const publicUrl = new URL(config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`);
+const publicUrl = new URL(ferryUrl);
 const allowedOrigins = new Set([
   publicUrl.origin,
   ...config.ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean),

@@ -6,14 +6,14 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
    不要从零开始写,也不要换别的语言或框架:模板之外的写法很可能发布不了。
    要保存数据用 node-postgres;只是页面、文档、看板或纯浏览器里的小工具用 static(没有数据库)。
 2. 应用不要做注册登录。同事打开应用前,Ferry 已经确认了他是谁、能不能看;
-   访问者身份在请求头里:X-Ferry-User-Id、X-Ferry-User-Name(UTF-8 百分号编码,要解码)、X-Ferry-User-Departments(逗号分隔)。
+   访问者身份在请求头里:X-Ferry-User-Id、X-Ferry-User-Name(UTF-8 百分号编码,要解码)、X-Ferry-User-Departments(部门 ID,逗号分隔)、X-Ferry-User-Department-Names(部门名称,和 ID 一一对应,每个名称单独百分号编码后用逗号分隔)。页面上显示部门时用名称,不要显示 ID。
    用法见模板 src/server.ts 里的 visitor();static 模板的页面用 fetch("/whoami") 读取。`/__ferry/` 开头的路径留给 Ferry,应用不要用。
 3. 数据库连接串只从 DATABASE_URL 读取,端口从 PORT 读取,不要在代码里写任何密码或密钥。
    Ferry 发布前会扫描代码包,发现密钥(包括写在 .env 或配置文件里的)就拒绝发布,没有办法豁免。
    第三方密钥(大模型 API key、群机器人 webhook 等)由用户自己在 Ferry 控制台上填写,Ferry 每次发布时注入环境变量:
    给每个密钥起一个名称(大写字母、数字和下划线,如 LLM_API_KEY、DINGTALK_WEBHOOK,不能用 DATABASE_URL、PORT),
    代码里从 process.env.<名称> 读取,读不到时只关闭这个功能、应用照常运行,不要报错退出。
-   这样改完就可以直接发布,不用为此停下来问用户。发布后告诉用户:到控制台(Ferry 地址加 /console/apps/<应用名>#secrets)
+   这样改完就可以直接发布,不用为此停下来问用户。发布后告诉用户:到控制台({{CONSOLE_URL}}/apps/<应用名>#secrets,把 <应用名> 换成真实的应用名)
    的“密钥”里填写这些名称和值,填好后再发布一次才生效(用户说填好了,你就重新走一遍发布流程)。
    不要向用户索要密钥的值,用户发给你了也不要写进代码或任何文件,请他改到控制台里填写。
 4. 改表结构时在 migrations/ 下新增文件,不要改已经发布过的迁移文件。
@@ -75,6 +75,6 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 - list_my_apps:用户有哪些应用、地址和状态。
 - set_visibility:修改可见范围。应用上线后,可见范围以它和网页控制台的设置为准,app.yaml 里的 visibility 只在第一次上线前起作用;
   发布结果里有 notice 时,按它把 app.yaml 改成一致。
-- 员工也可以在网页控制台(Ferry 地址加 /console)查看应用、发布历史和日志,修改可见范围,配置密钥,下线应用。
+- 员工也可以在网页控制台({{CONSOLE_URL}})查看应用、发布历史和日志,修改可见范围,配置密钥,下线应用。
 - get_app_logs:应用上线后出问题时看运行日志。
 - 每人在线的应用数量有上限,超了会提示先下线不用的应用。

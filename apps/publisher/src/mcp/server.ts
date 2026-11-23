@@ -12,12 +12,17 @@ import type { PublisherService } from "../service";
  */
 export const AGENT_GUIDE = readFileSync(new URL("./agent-guide.md", import.meta.url), "utf8");
 
+/** 把说明里的 {{CONSOLE_URL}} 换成这套 Ferry 的控制台地址:agent 只知道 MCP 的地址,不知道控制台在哪 */
+export function agentGuide(consoleUrl: string): string {
+  return AGENT_GUIDE.replaceAll("{{CONSOLE_URL}}", consoleUrl);
+}
+
 /**
  * 给 agent 用的 MCP 工具。每个请求按当前登录用户建一个实例,
  * 所以工具里拿不到、也不需要任何平台凭据。
  */
 export function createMcpServer(service: PublisherService, user: User): McpServer {
-  const server = new McpServer({ name: "ferry", version: "0.0.0" }, { instructions: AGENT_GUIDE });
+  const server = new McpServer({ name: "ferry", version: "0.0.0" }, { instructions: agentGuide(service.consoleUrl()) });
 
   server.registerTool(
     "list_templates",

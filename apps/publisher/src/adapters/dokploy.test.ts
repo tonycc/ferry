@@ -143,6 +143,11 @@ describe("DokployPlatform", () => {
     expect(input.path).toBe("/etc/dokploy/traefik/dynamic/ferry-gateway.yml");
     expect(input.traefikConfig).toContain('address: "http://host.docker.internal:8080/authz"');
     expect(input.traefikConfig).toMatch(/- ferry-strip-identity\n\s+- ferry-auth\n\s+- ferry-strip-health/);
+    // 每个交给应用的身份头都要先删掉客户端带来的,再只接受 /authz 返回的
+    for (const header of ["X-Ferry-User-Id", "X-Ferry-User-Name", "X-Ferry-User-Departments", "X-Ferry-User-Department-Names"]) {
+      expect(input.traefikConfig).toContain(`${header}: ""`);
+      expect(input.traefikConfig).toContain(`- ${header}`);
+    }
   });
 
   it("setEnv:保留已有变量,只更新传入的", async () => {

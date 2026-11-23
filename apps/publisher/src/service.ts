@@ -148,6 +148,11 @@ export interface AdminAppView extends AppView {
   disabledReason?: string;
 }
 
+/** Ferry 地址对应的网页控制台地址。MCP 说明和密钥扫描提示都用它算,保证两处一致 */
+export function consoleUrlOf(publicUrl: string): string {
+  return `${publicUrl.replace(/\/+$/, "")}/console`;
+}
+
 /** REST 和 MCP 共用的业务入口 */
 export class PublisherService {
   private readonly running = new Map<string, Promise<unknown>>();
@@ -160,6 +165,11 @@ export class PublisherService {
     private readonly config: ServiceConfig,
   ) {
     this.audit = config.audit ?? memoryAuditLog();
+  }
+
+  /** 网页控制台的地址(给 agent 的说明里用,agent 自己不知道) */
+  consoleUrl(): string {
+    return consoleUrlOf(this.config.publicUrl);
   }
 
   /**

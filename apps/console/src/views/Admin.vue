@@ -10,6 +10,9 @@ const forbidden = ref(false);
 const filter = ref("");
 /** 正在删除的应用;删除要停数据库、删数据卷,可能要十几秒 */
 const deleting = ref<string>();
+/** 正在停用或恢复的应用:恢复要等部署平台把服务启动起来,也要十几秒 */
+const acting = ref<{ name: string; action: "disable" | "enable" }>();
+const busy = computed(() => !!deleting.value || !!acting.value);
 
 /** 停用的排最前,然后是在线、未上线,已下线的放最后 */
 const shown = computed(() => {
@@ -92,12 +95,15 @@ async function remove(app: AdminAppView) {
 }
 
 async function act(name: string, action: "disable" | "enable", body: object) {
+  acting.value = { name, action };
   try {
     await api.post(`/api/admin/apps/${encodeURIComponent(name)}/${action}`, body);
     ElMessage.success(action === "disable" ? `已停用 ${name}` : `已恢复 ${name}`);
     await load();
   } catch (err) {
     ElMessage.error((err as Error).message);
+  } finally {
+    acting.value = undefined;
   }
 }
 
@@ -112,7 +118,7 @@ onMounted(load);
       <el-input v-model="filter" clearable placeholder="按应用名、负责人或部门筛选" style="max-width: 320px" />
       <span class="muted">共 {{ apps.length }} 个应用<template v-if="filter.trim()">,显示 {{ shown.length }} 个</template></span>
     </div>
-    <el-table v-loading="loading" :data="shown">
+    <el-table v-loading="loading" :data="shown" :empty-text="loading ? ' ' : '没有应用'">
       <el-table-column label="应用" min-width="150">
         <template #default="{ row }">
           <a :href="row.url" target="_blank" rel="noopener">{{ row.name }}</a>
@@ -128,7 +134,11 @@ onMounted(load);
       </el-table-column>
       <el-table-column label="状态" min-width="140">
         <template #default="{ row }">
-          <el-tag :type="appStatus(row)[1]" disable-transitions>{{ appStatus(row)[0] }}</el-tag>
+          <el-tag v-if="acting?.name === row.name" type="info" disable-transitions>
+            {{ acting?.action === "disable" ? "正在停用…" : "正在恢复…" }}
+          </el-tag>
+          <el-tag v-else :type="appStatus(row)[1]" disable-transitions>{{ appStatus(row)[0] }}</el-tag>
+          <div v-if="acting?.name === row.name && acting?.action === 'enable'" class="muted">要等服务重新启动,大约十几秒</div>
           <div v-if="row.disabled && row.disabledReason" class="muted">{{ row.disabledReason }}</div>
           <div v-if="offlineDays(row) !== undefined" class="muted">已下线 {{ offlineDays(row) }} 天</div>
         </template>
@@ -138,14 +148,14 @@ onMounted(load);
       </el-table-column>
       <el-table-column width="150" align="right">
         <template #default="{ row }">
-          <el-button v-if="row.disabled" size="small" :disabled="!!deleting" @click="enable(row)">恢复</el-button>
-          <el-button v-else size="small" type="danger" plain :disabled="!!deleting" @click="disable(row)">停用</el-button>
+          <el-button v-if="row.disabled" size="small" :loading="acting?.name === row.name" :disabled="busy && acting?.name !== row.name" @click="enable(row)">恢复</el-button>
+          <el-button v-else size="small" type="danger" plain :loading="acting?.name === row.name" :disabled="busy && acting?.name !== row.name" @click="disable(row)">停用</el-button>
           <el-button
             v-if="row.disabled || row.unpublished"
             size="small"
             type="danger"
             :loading="deleting === row.name"
-            :disabled="!!deleting && deleting !== row.name"
+            :disabled="busy && deleting !== row.name"
             @click="remove(row)"
           >删除</el-button>
         </template>

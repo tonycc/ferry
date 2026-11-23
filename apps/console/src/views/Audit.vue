@@ -109,7 +109,7 @@ watch(
       </el-tag>
       <span class="muted">点操作人的名字只看这个人的操作</span>
     </div>
-    <el-table v-loading="loading" :data="events" empty-text="没有记录">
+    <el-table v-loading="loading" :data="events" :empty-text="loading ? ' ' : '没有记录'">
       <el-table-column label="时间" width="170">
         <template #default="{ row }"><span class="muted">{{ time(row.at) }}</span></template>
       </el-table-column>

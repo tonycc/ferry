@@ -178,7 +178,7 @@ pnpm typecheck
   `dingtalk:admin`(信息部,13800000005)。用户 ID 的 `dingtalk:` 前缀只是历史命名,一期不接钉钉。改了文件后最长 `ORG_SYNC_MINUTES`(默认 60)分钟生效,或重启服务立即生效。
 - **访问员工应用**:Ferry 启动时(`FERRY_PLATFORM=dokploy`)把登录网关写进 Traefik,并给所有在线应用的域名挂上。
   没登录的访问者会被带到 Ferry 登录,再带着一次性票据回到应用,拿到只对这个应用有效的 cookie(12 小时,`GATEWAY_COOKIE_HOURS`)。
-  应用从请求头 `X-Ferry-User-Id`、`X-Ferry-User-Name`(百分号编码)、`X-Ferry-User-Departments` 读到访问者,见模板。
+  应用从请求头 `X-Ferry-User-Id`、`X-Ferry-User-Name`(百分号编码)、`X-Ferry-User-Departments`、`X-Ferry-User-Department-Names`(部门名称)读到访问者,见模板。
   Traefik 访问 `/authz` 的地址默认是 `http://host.docker.internal:<PORT>/authz`(`GATEWAY_AUTH_URL`);
   建议设置固定的 `GATEWAY_SECRET`,否则每次重启后访问者要重新跳转一次。**Ferry 停了时所有应用都无法访问。**
 - 组织架构为空时谁都无法登录(包括管理员),所以接入真实环境前要先能同步到组织架构。

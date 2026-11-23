@@ -53,7 +53,7 @@ onMounted(async () => {
         </template>
       </el-table-column>
       <template #empty>
-        <div class="empty">
+        <div v-if="!loading" class="empty">
           <p>你还没有应用。</p>
           <p class="muted">告诉你的 agent 要做什么应用,它会通过 Ferry 发布,发布后就会出现在这里。agent 怎么接入见“个人令牌”。</p>
         </div>

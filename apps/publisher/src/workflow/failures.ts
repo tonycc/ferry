@@ -123,7 +123,13 @@ const MAX_LISTED_FINDINGS = 30;
  * 自己的数据库连接串用 Ferry 注入的 DATABASE_URL;第三方密钥(API key、群机器人 webhook 等)
  * 由用户在控制台上配置(任务 3.8),代码改为从同名环境变量读取。值不经过 agent。
  */
-export function scanFailure(findings: Finding[], manifest: Manifest): FailureInfo & { logs: string } {
+export function scanFailure(
+  findings: Finding[],
+  manifest: Manifest,
+  /** 控制台地址;不知道时提示里写“Ferry 地址加 /console” */
+  consoleUrl?: string,
+): FailureInfo & { logs: string } {
+  const secretsPage = `${consoleUrl ?? "Ferry 地址加 /console"}/apps/${manifest.name}#secrets`;
   const listed = findings.slice(0, MAX_LISTED_FINDINGS).map((f) => {
     const where = f.file ? (f.line ? `${f.file}:${f.line}` : f.file) : "(位置未知)";
     return `${where}  ${f.detail}${f.rule ? `(规则 ${f.rule})` : ""}`;
@@ -143,7 +149,7 @@ export function scanFailure(findings: Finding[], manifest: Manifest): FailureInf
         ? "PostgreSQL 连接串:应用自己的数据库连接串由 Ferry 注入在环境变量 DATABASE_URL 里,改为直接使用 process.env.DATABASE_URL,不要自己拼连接串。"
         : "PostgreSQL 连接串:要用数据库就在 app.yaml 里写 database: postgres,Ferry 会建库并把连接串注入环境变量 DATABASE_URL,代码里用 process.env.DATABASE_URL。",
       "连的如果是别的系统的 PostgreSQL(不是本应用自己的库),不要用 DATABASE_URL,另起一个名称(如 HR_DB_URL)从 process.env 读取," +
-        `读不到时关闭这个功能,并告诉用户到 Ferry 控制台(Ferry 地址加 /console/apps/${manifest.name}#secrets)的“密钥”里填写,不要向用户索要值。`,
+        `读不到时关闭这个功能,并告诉用户到 Ferry 控制台(${secretsPage})的“密钥”里填写,不要向用户索要值。`,
     );
   }
   if (hasOtherSystem) {
@@ -157,7 +163,7 @@ export function scanFailure(findings: Finding[], manifest: Manifest): FailureInf
       "第三方 API key、群机器人 webhook、令牌、别的系统的连接串等:删掉代码里的密钥,给每个密钥起一个环境变量名" +
         "(大写字母、数字和下划线,如 LLM_API_KEY、DINGTALK_WEBHOOK,不能用 DATABASE_URL、PORT),改为从 process.env.<名称> 读取;" +
         "读不到时只关闭这个功能、应用照常运行,不要报错退出。然后重新发布," +
-        `并告诉用户:到 Ferry 控制台(Ferry 地址加 /console/apps/${manifest.name}#secrets)的“密钥”里填写这些名称和对应的值,` +
+        `并告诉用户:到 Ferry 控制台(${secretsPage})的“密钥”里填写这些名称和对应的值,` +
         "填好后让你再发布一次才生效。不要向用户索要密钥的值,也不要把值写进代码、app.yaml 或任何文件。" +
         "多行的私钥文件目前不能配置,用到它的功能先关闭。",
     );

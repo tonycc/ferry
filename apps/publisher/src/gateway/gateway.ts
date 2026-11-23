@@ -27,6 +27,8 @@ export const IDENTITY_HEADERS = {
   name: "x-ferry-user-name",
   /** 所属部门 ID,逗号分隔 */
   departments: "x-ferry-user-departments",
+  /** 所属部门的名称,和上面的 ID 一一对应:每个名称单独百分号编码后用逗号连起来(名称里的逗号会被编码) */
+  departmentNames: "x-ferry-user-department-names",
 } as const;
 /** Ferry 自己的健康检查带的请求头。网关在放行后把它删掉,应用收不到 */
 export const HEALTH_HEADER = "x-ferry-health";
@@ -113,12 +115,16 @@ export class Gateway {
     if (!(await this.service.canView(app, viewer))) return page(403, "你没有权限访问这个应用。请联系应用负责人调整可见范围");
 
     const name = (await this.directory.nameOf(userId)) ?? userId;
+    const departmentNames = await Promise.all(
+      viewer.departments.map(async (id) => (await this.directory.departmentNameOf(id)) ?? id),
+    );
     return {
       status: 200,
       headers: {
         [IDENTITY_HEADERS.id]: userId,
         [IDENTITY_HEADERS.name]: encodeURIComponent(name),
         [IDENTITY_HEADERS.departments]: viewer.departments.join(","),
+        [IDENTITY_HEADERS.departmentNames]: departmentNames.map(encodeURIComponent).join(","),
       },
       body: "",
     };

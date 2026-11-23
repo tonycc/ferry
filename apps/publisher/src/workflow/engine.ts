@@ -14,6 +14,8 @@ export interface EngineConfig {
   secretBox?: SecretBox;
   /** 审计日志,记录每次发布的结果;不传时记在内存里(只有测试可以不传) */
   audit?: AuditLog;
+  /** 网页控制台的地址,写进密钥扫描的修复提示里(agent 不知道控制台在哪) */
+  consoleUrl?: string;
   /** 给平台管理员的告警(发布连续失败、备份失败、平台问题);不传时不告警 */
   alerts?: Alerts;
 }
@@ -122,7 +124,7 @@ export class Engine {
     VALIDATING: async (release) => {
       const archive = await this.archive(release.appName, release.version);
       const findings = await this.adapters.scanner.scan(archive.zip);
-      if (findings.length > 0) return { kind: "fail", ...scanFailure(findings, release.manifest) };
+      if (findings.length > 0) return { kind: "fail", ...scanFailure(findings, release.manifest, this.config.consoleUrl) };
       return { kind: "next" };
     },
 
