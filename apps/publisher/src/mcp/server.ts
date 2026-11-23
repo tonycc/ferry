@@ -26,7 +26,7 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
 
   server.registerTool(
     "list_templates",
-    { description: "列出可用的应用模板。新做应用时先调用,选一个模板再用 get_template 取文件。", inputSchema: {} },
+    { description: "列出可用的应用模板。用户要给同事做小工具、登记表、看板、内部系统等网页应用时先调用,选一个模板再用 get_template 取文件。", inputSchema: {} },
     () => respond(() => service.listTemplates()),
   );
 
@@ -58,7 +58,7 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
     "publish_app",
     {
       description:
-        "发布应用到企业服务器。只在用户明确确认发布后调用。返回 releaseId,之后用 get_publish_status 查询进度。",
+        "发布应用到企业服务器(用户说“发布”“上线”“部署”“给同事用”时走这个流程)。只在用户明确确认发布后调用。返回 releaseId,之后用 get_publish_status 查询进度。",
       inputSchema: {
         manifestYaml: z.string().describe("代码根目录 app.yaml 的完整内容"),
         version: z.string().describe("prepare_app 返回的 version,对应的代码包必须已经上传"),
@@ -78,14 +78,14 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
 
   server.registerTool(
     "list_my_apps",
-    { description: "列出当前用户的全部应用和访问地址。", inputSchema: {} },
+    { description: "列出当前用户的全部应用和访问地址。用户问“我有哪些应用”“xxx 的地址/链接是多少”时调用。", inputSchema: {} },
     () => respond(() => service.listApps(user)),
   );
 
   server.registerTool(
     "get_app_logs",
     {
-      description: "读取应用最近的运行日志,用于排查线上问题。",
+      description: "读取应用最近的运行日志,用于排查线上问题。用户说已发布的应用“打不开”“报错”“不对劲”时先调用。",
       inputSchema: { name: z.string(), lines: z.number().int().min(1).max(1000).optional() },
     },
     ({ name, lines }) => respond(() => service.getLogs(user, name, lines)),

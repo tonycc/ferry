@@ -15,6 +15,9 @@ const cli = computed(
   () => `claude mcp add --transport http --scope user ferry ${mcpUrl} --header "Authorization: Bearer ${created.value}"`,
 );
 const agy = computed(() => `agy mcp add --header "Authorization: Bearer ${created.value}" ferry ${mcpUrl}`);
+const codex = computed(
+  () => `[mcp_servers.ferry]\nurl = "${mcpUrl}"\nhttp_headers = { "Authorization" = "Bearer ${created.value}" }`,
+);
 const json = computed(() =>
   JSON.stringify({ mcpServers: { ferry: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${created.value}` } } } }, null, 2),
 );
@@ -88,7 +91,9 @@ onMounted(() => load().catch((err: Error) => ElMessage.error(err.message)));
     <div class="snippet"><pre>{{ cli }}</pre><el-button size="small" @click="copy(cli)">复制</el-button></div>
     <h4>Antigravity:在终端里运行(对所有目录都生效)</h4>
     <div class="snippet"><pre>{{ agy }}</pre><el-button size="small" @click="copy(agy)">复制</el-button></div>
-    <h4>其他支持 MCP 的 agent:添加一个 HTTP 类型的 MCP 服务</h4>
+    <h4>Codex:加到 <code>~/.codex/config.toml</code> 末尾(没有就新建),保存后重开 Codex</h4>
+    <div class="snippet"><pre>{{ codex }}</pre><el-button size="small" @click="copy(codex)">复制</el-button></div>
+    <h4>WorkBuddy:把 <code>ferry</code> 这一项加到 <code>~/.workbuddy/mcp.json</code> 的 <code>mcpServers</code> 里,保存后重开 WorkBuddy;其他支持 MCP 的 agent:添加一个 HTTP 类型的 MCP 服务</h4>
     <div class="snippet"><pre>{{ json }}</pre><el-button size="small" @click="copy(json)">复制</el-button></div>
     <el-button class="done" @click="created = undefined">我已配好</el-button>
   </el-card>
