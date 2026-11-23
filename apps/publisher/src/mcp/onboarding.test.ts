@@ -11,13 +11,14 @@ import { checkArchiveLayout, zipEntryNames } from "../zip";
 const alice = { id: "dingtalk:alice", departments: ["finance"], isAdmin: false };
 const MCP_HEADERS = { "content-type": "application/json", accept: "application/json, text/event-stream" };
 
-function setup() {
+function setup(options: { agentUrl?: string } = {}) {
   const adapters = createFakeAdapters();
   const store = new MemoryStore();
   const service = new PublisherService(store, new Engine(store, adapters, { maxFixAttempts: 3 }), adapters, {
     appsDomain: "apps.test",
     maxAppsPerUser: 5,
     publicUrl: "http://ferry.test",
+    agentUrl: options.agentUrl,
     uploadTtlMs: 60_000,
     templates: new TemplateLibrary(),
   });
@@ -88,6 +89,13 @@ describe("agent 接入", () => {
     await expect(
       service.publish(alice, { manifestYaml: "name: expense\ntemplate: node-pg\n", version: prepared.version }),
     ).rejects.toThrow(/没有模板 node-pg.*node-postgres/);
+  });
+
+  it("设了 agentUrl 时上传地址用它,控制台地址仍用 publicUrl", async () => {
+    const { service } = setup({ agentUrl: "http://host.docker.internal:8080" });
+    const prepared = await service.prepareApp(alice, "expense");
+    expect(prepared.uploadUrl).toMatch(/^http:\/\/host\.docker\.internal:8080\/uploads\//);
+    expect(service.consoleUrl()).toBe("http://ferry.test/console");
   });
 
   it("代码包多包了一层目录时上传就报错,改好后同一个上传地址还能用", async () => {

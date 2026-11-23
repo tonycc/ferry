@@ -22,6 +22,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ HOST: "0.0.0.0", PUBLIC_URL: " " })).toThrow(/PUBLIC_URL/);
   });
 
+  it("AGENT_URL 和 PUBLIC_URL 一样校验和整理,可以单独设置", () => {
+    const config = loadConfig({ AGENT_URL: "http://host.docker.internal:8080/" });
+    expect(config.AGENT_URL).toBe("http://host.docker.internal:8080");
+    expect(config.PUBLIC_URL).toBeUndefined();
+    expect(loadConfig({ AGENT_URL: "" }).AGENT_URL).toBeUndefined();
+    expect(() => loadConfig({ AGENT_URL: "host.docker.internal:8080" })).toThrow(/AGENT_URL/);
+  });
+
   it("PUBLIC_URL 必须是 http(s) 地址", () => {
     expect(() => loadConfig({ PUBLIC_URL: "ferry.corp.example" })).toThrow();
     expect(() => loadConfig({ PUBLIC_URL: "ftp://ferry.corp.example" })).toThrow();

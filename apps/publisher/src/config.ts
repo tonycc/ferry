@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+/** 可选的 http(s) 地址:空值当作没设(.env 里留着 NAME=),去掉末尾的 /(免得拼出 //uploads) */
+function httpUrl(name: string) {
+  return z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z
+      .url({ protocol: /^https?$/, error: `${name} 必须是完整的 http(s) 地址,如 https://ferry.corp.example` })
+      .transform((url) => url.replace(/\/+$/, ""))
+      .optional(),
+  );
+}
+
 const envSchema = z.object({
   PORT: z.coerce.number().int().default(8080),
   /** 监听地址。Traefik 要能访问到 /authz;本机 Docker Desktop 里的容器能访问到 127.0.0.1 */
@@ -33,15 +44,13 @@ const envSchema = z.object({
    * 只在本机监听(HOST 是 127.0.0.1 等)时可以不设,默认 http://127.0.0.1:<PORT>;
    * 否则必须设置,不然交给 agent 的上传地址是别的机器访问不到的 127.0.0.1
    */
-  PUBLIC_URL: z.preprocess(
-    // 空值(.env 里留着 PUBLIC_URL=)当作没设
-    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-    z
-      .url({ protocol: /^https?$/, error: "PUBLIC_URL 必须是完整的 http(s) 地址,如 https://ferry.corp.example" })
-      // 去掉末尾的 /,免得拼出 //uploads
-      .transform((url) => url.replace(/\/+$/, ""))
-      .optional(),
-  ),
+  PUBLIC_URL: httpUrl("PUBLIC_URL"),
+  /**
+   * 只给 agent 用的上传地址前缀,不设时同 PUBLIC_URL。agent 和浏览器访问 Ferry 的地址不一样时才需要,
+   * 比如 agent 跑在 Docker 容器里(http://host.docker.internal:8080),而浏览器用 http://127.0.0.1:8080。
+   * 不要为此去改 PUBLIC_URL:登录允许的来源、打开应用时的登录跳转都按 PUBLIC_URL 走
+   */
+  AGENT_URL: httpUrl("AGENT_URL"),
   /** 代码包的保存目录 */
   ARCHIVE_DIR: z.string().default("./data/archives"),
   MAX_ARCHIVE_MB: z.coerce.number().int().default(100),

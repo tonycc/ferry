@@ -122,10 +122,12 @@ const alerts = new Alerts(adapters.notifier, () => [...new Set([...adminIds, ...
 
 // Ferry 对浏览器和 agent 的地址:上传地址、控制台地址、允许的来源都按它来,只在这里算一次
 const ferryUrl = config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`;
-if (!config.PUBLIC_URL) {
+// agent 上传代码包用的地址:agent 和浏览器访问 Ferry 的地址不同(如 agent 在容器里)时单独设置
+const agentUrl = config.AGENT_URL ?? ferryUrl;
+if (!config.PUBLIC_URL && !config.AGENT_URL) {
   console.warn(
-    `未设置 PUBLIC_URL:上传地址和控制台地址用 ${ferryUrl},只有本机直接运行的 agent 能访问。` +
-      "agent 在 Docker 容器里或经代理访问 Ferry 时,把 PUBLIC_URL 设成它访问 Ferry 用的地址(如 http://host.docker.internal:8080)",
+    `未设置 PUBLIC_URL:上传地址和控制台地址用 ${ferryUrl},只有本机直接运行的 agent 能访问上传地址。` +
+      "agent 在 Docker 容器里时,设 AGENT_URL 为它访问 Ferry 用的地址(如 http://host.docker.internal:8080);不要改 PUBLIC_URL,浏览器登录要用它",
   );
 }
 
@@ -144,6 +146,7 @@ const service = new PublisherService(store, engine, adapters, {
   appsUrlScheme: config.APPS_URL_SCHEME,
   maxAppsPerUser: config.MAX_APPS_PER_USER,
   publicUrl: ferryUrl,
+  agentUrl,
   uploadTtlMs: config.UPLOAD_TTL_MINUTES * 60_000,
   archiveGraceMs: config.ARCHIVE_GRACE_HOURS * 3600_000,
   templates: new TemplateLibrary(),
