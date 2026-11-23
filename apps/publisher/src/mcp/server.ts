@@ -26,7 +26,7 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
 
   server.registerTool(
     "list_templates",
-    { description: "列出可用的应用模板。新做应用时先调用,选一个模板再用 get_template 取文件。", inputSchema: {} },
+    { description: "列出可用的应用模板。用户要给同事做小工具、登记表、看板、内部系统等网页应用时先调用,选一个模板再用 get_template 取文件。", inputSchema: {} },
     () => respond(() => service.listTemplates()),
   );
 
@@ -45,7 +45,7 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
     "prepare_app",
     {
       description:
-        "每次发布的第一步:为应用占用名称(已是用户自己的应用则复用),返回一次性的 uploadUrl 和 version。" +
+        "每次发布的第一步(用户说“发布”“上线”“部署”“给同事用”时从这里开始):为应用占用名称(已是用户自己的应用则复用),返回一次性的 uploadUrl 和 version。" +
         "接着把应用目录打成 zip(根目录含 app.yaml;排除 node_modules、.git、.env 等)," +
         '用 HTTP PUT 上传,例如 curl -T app.zip "<uploadUrl>",然后用应用名和 version 调用 publish_app。' +
         "上传时会检查 app.yaml,有问题会直接返回错误,改好后可以用同一个 uploadUrl 重新上传;" +
@@ -59,7 +59,8 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
     "publish_app",
     {
       description:
-        "发布应用到企业服务器。只在用户明确确认发布后调用。发布设置以代码包根目录的 app.yaml 为准。返回 releaseId,之后用 get_publish_status 查询进度。",
+        "发布应用到企业服务器。只在用户明确确认发布后调用,调用前要先用 prepare_app 占名并上传代码包。" +
+        "发布设置以代码包根目录的 app.yaml 为准。返回 releaseId,之后用 get_publish_status 查询进度。",
       inputSchema: {
         name: z.string().describe("应用名,和调用 prepare_app 时一致"),
         version: z.string().describe("prepare_app 返回的 version,对应的代码包必须已经上传"),
@@ -79,14 +80,14 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
 
   server.registerTool(
     "list_my_apps",
-    { description: "列出当前用户的全部应用和访问地址。", inputSchema: {} },
+    { description: "列出当前用户的全部应用和访问地址。用户问“我有哪些应用”“xxx 的地址/链接是多少”时调用。", inputSchema: {} },
     () => respond(() => service.listApps(user)),
   );
 
   server.registerTool(
     "get_app_logs",
     {
-      description: "读取应用最近的运行日志,用于排查线上问题。",
+      description: "读取应用最近的运行日志,用于排查线上问题。用户说已发布的应用“打不开”“报错”“不对劲”时先调用。",
       inputSchema: { name: z.string(), lines: z.number().int().min(1).max(1000).optional() },
     },
     ({ name, lines }) => respond(() => service.getLogs(user, name, lines)),

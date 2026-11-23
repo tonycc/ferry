@@ -39,6 +39,36 @@ agy mcp add --header "Authorization: Bearer <令牌>" ferry <Ferry 地址>/mcp
 运行 `agy mcp list`,看到 `ferry` 显示 enabled 即可。这个配置对所有目录都生效。
 在 Antigravity 里第一次用 Ferry 的工具、执行打包和上传命令时,它会请你允许,允许即可。
 
+**Codex**(OpenAI 的 Codex 命令行、桌面版和编辑器插件共用一份配置):用文本编辑器打开 `~/.codex/config.toml`
+(没有就新建),在末尾加上下面三行。文件里已经有 `[mcp_servers.ferry]` 这一段(比如以前配过、现在换了新令牌)时,
+把原来那一段替换掉,不要再加一段:同名的段落出现两次,Codex 会读不了整个配置文件。
+
+```toml
+[mcp_servers.ferry]
+url = "<Ferry 地址>/mcp"
+http_headers = { "Authorization" = "Bearer <令牌>" }
+```
+
+保存后重开 Codex,运行 `codex mcp list`(或在 Codex 里输入 `/mcp`),看到 `ferry` 即可。这个配置对所有目录都生效。
+看不到 `ferry` 时,先把 Codex 升级到最新版再试。
+
+**WorkBuddy**(腾讯 WorkBuddy 桌面版):用文本编辑器打开 `~/.workbuddy/mcp.json`(没有就新建),
+在 `mcpServers` 里加上 `ferry` 这一项(文件里已有其他服务的,和它们并列,别删掉原来的):
+
+```json
+{
+  "mcpServers": {
+    "ferry": {
+      "type": "http",
+      "url": "<Ferry 地址>/mcp",
+      "headers": { "Authorization": "Bearer <令牌>" }
+    }
+  }
+}
+```
+
+保存后重开 WorkBuddy,在它的 MCP 设置里看到 `ferry` 已启用即可。第一次用 Ferry 的工具时它会请你允许,允许即可。
+
 **其他 agent**:添加一个 HTTP(Streamable HTTP)类型的 MCP 服务,地址是 `<Ferry 地址>/mcp`,
 带请求头 `Authorization: Bearer <令牌>`。页面上也给出了 JSON 格式的配置:
 
@@ -54,7 +84,23 @@ agy mcp add --header "Authorization: Bearer <令牌>" ferry <Ferry 地址>/mcp
 }
 ```
 
-## 第三步:用起来
+配置只对新开的会话生效:已经开着的 agent 要退出重开。
+
+## 第三步(可选):让 agent 默认用 Ferry 发布
+
+agent 连上 Ferry 后就知道怎么用它。但你没提“发布”或“公司服务器”时(比如只说“做个网站”),
+它可能按习惯推荐 Vercel 之类的外部平台。想更保险,在 agent 的全局说明文件里加一句:
+
+> 给公司做的内部应用,一律通过 ferry MCP 发布到公司服务器,不要用其他托管平台。
+
+| agent | 全局说明文件 |
+| --- | --- |
+| Claude Code | `~/.claude/CLAUDE.md` |
+| Codex | `~/.codex/AGENTS.md` |
+| Antigravity | `~/.gemini/GEMINI.md` |
+| WorkBuddy | 在它的记忆或规则设置里加 |
+
+## 第四步:用起来
 
 直接用自然语言告诉 agent 要做什么,例如:
 
@@ -64,11 +110,19 @@ agent 连上 Ferry 时会收到一份使用说明(何时向你确认、如何打
 并能取到应用模板,不需要你提供其他资料。发布前它会请你确认应用名和谁能看到;
 发布失败时它会读日志自己修复,修不好会告诉你原因。
 
-常用的说法:
+下面这些说法 agent 都会理解成要用 Ferry,不用特意提 Ferry:
 
-- “我有哪些应用?” —— 列出你的应用和访问地址。
-- “把 xxx 回到上一个版本” —— 回滚,只恢复代码,不恢复数据。
-- “把 xxx 下线” —— 访问地址立即失效,数据保留,重新发布即可恢复。
+| 想做的事 | 可以这样说 |
+| --- | --- |
+| 新做应用 | “做个登记表/报名表/看板/台账给同事用”“部门要个网页填数据” |
+| 发布 | “发布”“上线”“部署到公司服务器”“给我个链接让同事打开” |
+| 查应用 | “我有哪些应用?”“xxx 的地址是多少?” |
+| 排查问题 | “xxx 打不开了”“xxx 报错了” —— agent 会先看线上日志 |
+| 改谁能看 | “xxx 改成全公司都能看”“xxx 只给本部门看” |
+| 回滚 | “把 xxx 回到上一个版本” —— 只恢复代码,不恢复数据 |
+| 下线 | “把 xxx 下线” —— 访问地址立即失效,数据保留,重新发布即可恢复 |
+
+只说“做个网站”这类不明确的话时,agent 不一定会想到 Ferry。想让它直接用 Ferry,说一句“用 Ferry 发布”最稳妥。
 
 ## 给维护者
 
