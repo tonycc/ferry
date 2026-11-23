@@ -40,7 +40,8 @@ agy mcp add --header "Authorization: Bearer <令牌>" ferry <Ferry 地址>/mcp
 在 Antigravity 里第一次用 Ferry 的工具、执行打包和上传命令时,它会请你允许,允许即可。
 
 **Codex**(OpenAI 的 Codex 命令行、桌面版和编辑器插件共用一份配置):用文本编辑器打开 `~/.codex/config.toml`
-(没有就新建),在末尾加上:
+(没有就新建),在末尾加上下面三行。文件里已经有 `[mcp_servers.ferry]` 这一段(比如以前配过、现在换了新令牌)时,
+把原来那一段替换掉,不要再加一段:同名的段落出现两次,Codex 会读不了整个配置文件。
 
 ```toml
 [mcp_servers.ferry]
@@ -49,6 +50,7 @@ http_headers = { "Authorization" = "Bearer <令牌>" }
 ```
 
 保存后重开 Codex,运行 `codex mcp list`(或在 Codex 里输入 `/mcp`),看到 `ferry` 即可。这个配置对所有目录都生效。
+看不到 `ferry` 时,先把 Codex 升级到最新版再试。
 
 **WorkBuddy**(腾讯 WorkBuddy 桌面版):用文本编辑器打开 `~/.workbuddy/mcp.json`(没有就新建),
 在 `mcpServers` 里加上 `ferry` 这一项(文件里已有其他服务的,和它们并列,别删掉原来的):
@@ -120,8 +122,7 @@ agent 连上 Ferry 时会收到一份使用说明(何时向你确认、如何打
 | 回滚 | “把 xxx 回到上一个版本” —— 只恢复代码,不恢复数据 |
 | 下线 | “把 xxx 下线” —— 访问地址立即失效,数据保留,重新发布即可恢复 |
 
-只说“做个网站”这类不明确的话时,agent 会先问你是不是要发布给公司同事用。
-想让它直接用 Ferry,说一句“用 Ferry 发布”最稳妥。
+只说“做个网站”这类不明确的话时,agent 不一定会想到 Ferry。想让它直接用 Ferry,说一句“用 Ferry 发布”最稳妥。
 
 ## 给维护者
 

@@ -18,6 +18,10 @@ const agy = computed(() => `agy mcp add --header "Authorization: Bearer ${create
 const codex = computed(
   () => `[mcp_servers.ferry]\nurl = "${mcpUrl}"\nhttp_headers = { "Authorization" = "Bearer ${created.value}" }`,
 );
+/** WorkBuddy 的 mcp.json 里通常已有别的服务,只给出 ferry 这一项,让用户并列加进去 */
+const workbuddy = computed(() =>
+  `"ferry": ${JSON.stringify({ type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${created.value}` } }, null, 2)}`,
+);
 const json = computed(() =>
   JSON.stringify({ mcpServers: { ferry: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${created.value}` } } } }, null, 2),
 );
@@ -91,9 +95,17 @@ onMounted(() => load().catch((err: Error) => ElMessage.error(err.message)));
     <div class="snippet"><pre>{{ cli }}</pre><el-button size="small" @click="copy(cli)">复制</el-button></div>
     <h4>Antigravity:在终端里运行(对所有目录都生效)</h4>
     <div class="snippet"><pre>{{ agy }}</pre><el-button size="small" @click="copy(agy)">复制</el-button></div>
-    <h4>Codex:加到 <code>~/.codex/config.toml</code> 末尾(没有就新建),保存后重开 Codex</h4>
+    <h4>
+      Codex:加到 <code>~/.codex/config.toml</code> 末尾(没有就新建),保存后重开 Codex。
+      文件里已有 <code>[mcp_servers.ferry]</code> 时替换掉原来那一段,不要再加一段
+    </h4>
     <div class="snippet"><pre>{{ codex }}</pre><el-button size="small" @click="copy(codex)">复制</el-button></div>
-    <h4>WorkBuddy:把 <code>ferry</code> 这一项加到 <code>~/.workbuddy/mcp.json</code> 的 <code>mcpServers</code> 里,保存后重开 WorkBuddy;其他支持 MCP 的 agent:添加一个 HTTP 类型的 MCP 服务</h4>
+    <h4>
+      WorkBuddy:打开 <code>~/.workbuddy/mcp.json</code>,把下面这一项加到 <code>mcpServers</code> 里,和已有的服务并列(用逗号隔开),保存后重开 WorkBuddy。
+      文件不存在时,用下一段的完整配置新建
+    </h4>
+    <div class="snippet"><pre>{{ workbuddy }}</pre><el-button size="small" @click="copy(workbuddy)">复制</el-button></div>
+    <h4>其他支持 MCP 的 agent:添加一个 HTTP 类型的 MCP 服务</h4>
     <div class="snippet"><pre>{{ json }}</pre><el-button size="small" @click="copy(json)">复制</el-button></div>
     <el-button class="done" @click="created = undefined">我已配好</el-button>
   </el-card>
