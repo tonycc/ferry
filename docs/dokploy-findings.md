@@ -281,3 +281,25 @@ Ferry 给每个应用一个网络 `ferry-<应用名>`,应用和它的数据库�
 **本机 Docker Desktop 的限制**:Traefik 接着 overlay 网络重启后(包括 `settings.reloadTraefik`),从 macOS 访问 80、443 就没有响应,
 接入的网络越多越明显(`--gw-priority` 也没用)。用 `infra/dokploy/restart-traefik-local.sh`:断开 overlay 网络、重启、再接回去。
 Linux 服务器上没有这个问题。
+
+## 无人值守安装:用接口建管理员和 API key(2026-11-23 验证)
+
+为“安装脚本自动装好 Dokploy”做的验证。在本机另起一套一次性的 Dokploy v0.31.3(独立网络、端口 3100、不挂 Docker socket,
+不影响正在用的那套),只用 curl 完成了原来要在网页上做的两步:
+
+1. **建第一个管理员**:`POST /api/auth/sign-up/email`,JSON `{"email","password","name","lastName"}`,要带 `origin` 请求头。
+   返回 200 和登录 cookie;同时自动建好组织 “My Organization”,这个用户是 owner。之后 `/` 不再跳转 `/register`。
+2. **生成 API key**:用上一步的 cookie 调 `POST /api/trpc/user.createApiKey`,
+   body `{"json":{"name":"ferry","rateLimitEnabled":false,"metadata":{"organizationId":"<组织 ID>"}}}`。
+   组织 ID 从 `GET /api/trpc/organization.all` 取。返回里的 `key` 只出现这一次。
+   better-auth 自己的 `/api/auth/api-key/create` 是 404,要走 tRPC。
+
+要注意的:
+
+- **一定要传 `rateLimitEnabled: false`。** 不传时 key 默认开启限流:**每天 10 次**,第 11 次起返回 429,Ferry 很快就不能用。
+  实测:默认的 key 只用了五六次就开始返回 429(计数方式没细查,可能不止按请求次数算),关掉限流的 key 连续 15 次都是 200。网页上生成的 key 是关着的(`rate_limit_enabled = f`)。
+  自托管版会原样采用传入的限流参数,云版才强制限流。
+- **第二次注册会被拒绝**:管理员建好后再调注册接口,返回 400 `Admin is already created`,不会多出账号。
+- **安装后到注册之前有个空档**:这时谁先访问 3000 端口谁就能注册成为 owner。安装脚本应该在 Dokploy 启动后立刻调注册接口,
+  而且这段时间 3000 端口不要对外开放(比网页手动注册更安全,网页注册要等人打开页面)。
+- 生成的密码和 key 只写进 `.env`(`chmod 600`)和提示用户备份,不要打印到终端或日志里。
