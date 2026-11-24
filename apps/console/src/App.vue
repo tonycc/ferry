@@ -46,7 +46,7 @@ const title = computed(() =>
   typeof route.params.name === "string" ? route.params.name : ((route.meta.title as string | undefined) ?? ""),
 );
 const back = computed(() => route.meta.back as { label: string; to: string } | undefined);
-const initial = computed(() => me.value?.name.slice(0, 1) ?? "");
+const initial = computed(() => Array.from(me.value?.name ?? "")[0] ?? "");
 
 /** 窄屏时侧边栏收起,点顶栏左上角的按钮展开 */
 const navOpen = ref(false);
@@ -324,9 +324,11 @@ function onUserCommand(command: string) {
     z-index: 30;
     left: 0;
     transform: translateX(-100%);
-    transition: transform 0.2s;
+    /* 收起时同时隐藏,免得 Tab 键停在看不见的导航链接上;等滑出动画结束再隐藏 */
+    visibility: hidden;
+    transition: transform 0.2s, visibility 0s linear 0.2s;
   }
-  .sidebar.open { transform: none; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); }
+  .sidebar.open { transform: none; visibility: visible; transition: transform 0.2s; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); }
   .sidebar-mask { position: fixed; inset: 0; z-index: 20; background: rgba(17, 24, 39, 0.3); }
   .nav-toggle { display: inline-flex; }
   .topbar { padding: 0 12px; }

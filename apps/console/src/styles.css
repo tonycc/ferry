@@ -65,7 +65,7 @@
 body { margin: 0; background: var(--color-bg-page); }
 
 a { color: var(--color-primary); text-decoration: none; }
-a:hover { text-decoration: underline; }
+a:not(.el-button):hover { text-decoration: underline; }
 
 code {
   padding: 1px 5px;
