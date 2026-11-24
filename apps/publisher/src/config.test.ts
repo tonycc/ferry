@@ -2,24 +2,16 @@ import { describe, expect, it } from "vitest";
 import { isLoopbackHost, loadConfig } from "./config";
 
 describe("loadConfig", () => {
-  it("只在本机监听时可以不设 PUBLIC_URL", () => {
+  // 监听其他机器的连接但没设 PUBLIC_URL 时能否启动,要看设置向导的配置,见 setup/instance.test.ts
+  it("PUBLIC_URL 可以不设", () => {
     expect(loadConfig({}).PUBLIC_URL).toBeUndefined();
     expect(loadConfig({ HOST: "localhost" }).HOST).toBe("localhost");
-  });
-
-  it("监听其他机器的连接但没设 PUBLIC_URL 时拒绝启动", () => {
-    expect(() => loadConfig({ HOST: "0.0.0.0" })).toThrow(/PUBLIC_URL/);
-    expect(() => loadConfig({ HOST: "192.168.1.10" })).toThrow(/127\.0\.0\.1/);
-    expect(loadConfig({ HOST: "0.0.0.0", PUBLIC_URL: "https://ferry.corp.example" }).PUBLIC_URL).toBe(
-      "https://ferry.corp.example",
-    );
   });
 
   it("PUBLIC_URL 去掉末尾的 /,空值当作没设", () => {
     expect(loadConfig({ PUBLIC_URL: "https://ferry.corp.example/" }).PUBLIC_URL).toBe("https://ferry.corp.example");
     expect(loadConfig({ PUBLIC_URL: "http://127.0.0.1:8080//" }).PUBLIC_URL).toBe("http://127.0.0.1:8080");
     expect(loadConfig({ PUBLIC_URL: "" }).PUBLIC_URL).toBeUndefined();
-    expect(() => loadConfig({ HOST: "0.0.0.0", PUBLIC_URL: " " })).toThrow(/PUBLIC_URL/);
   });
 
   it("AGENT_URL 和 PUBLIC_URL 一样校验和整理,可以单独设置", () => {

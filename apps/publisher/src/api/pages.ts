@@ -78,3 +78,39 @@ ${POST}
   });
 </script>
 </body></html>`;
+
+/**
+ * 设置向导(docs/setup-wizard.md)。现在只有第 1 步:输入设置码;后面的步骤在之后的版本里加上。
+ * 只在未初始化时能打开,完成初始化后 404。
+ */
+export const SETUP_PAGE = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置 Ferry</title><style>${STYLE}</style></head>
+<body>
+<h1>设置 Ferry</h1>
+<form id="code" hidden>
+  <p class="hint">设置码在安装命令结束时显示过一次;也可以在服务器上查看设置码文件(Ferry 的 SETUP_CODE_FILE 设置)。</p>
+  <label for="value">设置码</label>
+  <input id="value" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" required>
+  <button type="submit">继续</button>
+</form>
+<div id="next" hidden>
+  <p class="ok">设置码正确。</p>
+  <p class="hint">接下来的步骤(域名和 DNS、证书、管理员)还在开发中。</p>
+</div>
+<p id="msg"></p>
+<script>
+${POST}
+  const $ = (id) => document.getElementById(id);
+  const msg = (text, cls) => { $("msg").textContent = text; $("msg").className = cls || ""; };
+  const show = (session) => { $("code").hidden = session; $("next").hidden = !session; if (!session) $("value").focus(); };
+  fetch("/api/setup/status").then((r) => r.json()).then((s) => show(Boolean(s.session))).catch(() => show(false));
+  $("code").addEventListener("submit", async (e) => {
+    e.preventDefault(); msg("");
+    try {
+      await post("/api/setup/code", { code: $("value").value });
+      show(true);
+    } catch (err) { msg(err.message, "error"); }
+  });
+</script>
+</body></html>`;

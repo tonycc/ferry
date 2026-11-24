@@ -29,6 +29,11 @@ import { MemoryOrgStore, type OrgStore } from "./org/store";
 import { Organization } from "./org/service";
 import { MemoryStore, type Store } from "./workflow/store";
 import { SecretBox } from "./secrets";
+import { PostgresSetupStore } from "./db/postgres-setup-store";
+import { MemorySetupStore, type SetupStore } from "./setup/store";
+import { checkInstance, resolveInstance } from "./setup/instance";
+import { ensureSetupCode, removeSetupCodeFile } from "./setup/code";
+import { SetupService } from "./setup/service";
 
 const config = loadConfig();
 
@@ -42,6 +47,34 @@ if (!config.GATEWAY_SECRET) {
   console.warn("未设置 GATEWAY_SECRET:本次随机生成,服务重启后访问应用要重新跳转登录一次");
 }
 const gatewaySecret = config.GATEWAY_SECRET ?? randomBytes(32).toString("hex");
+
+let store: Store;
+let orgStore: OrgStore = new MemoryOrgStore();
+let authStore: AuthStore = new MemoryAuthStore();
+let auditStore: AuditStore = new MemoryAuditStore();
+let setupStore: SetupStore = new MemorySetupStore();
+if (config.DATABASE_URL) {
+  // 启动时自动执行尚未执行的数据库迁移
+  const database = await openDatabase(config.DATABASE_URL);
+  store = new PostgresStore(database.db);
+  orgStore = new PostgresOrgStore(database.db);
+  authStore = new PostgresAuthStore(database.db);
+  auditStore = new PostgresAuditStore(database.db);
+  setupStore = new PostgresSetupStore(database.db);
+} else {
+  console.warn("未设置 DATABASE_URL,使用内存存储:服务重启后应用和发布记录都会丢失");
+  store = new MemoryStore();
+}
+
+// 地址配置:环境变量优先,其次是设置向导写进数据库的(docs/setup-wizard.md)。还没完成初始化时只开放设置向导
+const instance = resolveInstance(process.env, config, await setupStore.getSettings());
+checkInstance(instance, config);
+if (instance.initialized) {
+  await removeSetupCodeFile(config.SETUP_CODE_FILE);
+} else {
+  await ensureSetupCode(setupStore, config.SETUP_CODE_FILE, (m) => console.warn(m));
+  console.warn("未完成初始化:只开放设置向导(/setup)和 /healthz,登录、控制台、MCP、上传、登录网关都暂停");
+}
 
 // 组织架构:权限判定读内存里的这一份,由 Organization 从数据库读出(人员和部门由管理员在控制台维护)
 const directory = new MemoryDirectory();
@@ -73,7 +106,7 @@ if (config.FERRY_PLATFORM === "dokploy") {
   adapters.platform = new DokployPlatform(
     new DokployClient({ baseUrl: config.DOKPLOY_URL, apiKey: config.DOKPLOY_API_KEY }),
     {
-      https: config.APPS_URL_SCHEME === "https",
+      https: instance.appsUrlScheme === "https",
       backupKeep: config.BACKUP_KEEP,
       appLimits: limits(config.APP_CPU_LIMIT, config.APP_MEMORY_LIMIT_MB),
       databaseLimits: limits(config.DB_CPU_LIMIT, config.DB_MEMORY_LIMIT_MB),
@@ -98,21 +131,6 @@ if (config.SECRETS_KEY) {
   secretBox = SecretBox.random();
 }
 
-let store: Store;
-let orgStore: OrgStore = new MemoryOrgStore();
-let authStore: AuthStore = new MemoryAuthStore();
-let auditStore: AuditStore = new MemoryAuditStore();
-if (config.DATABASE_URL) {
-  // 启动时自动执行尚未执行的数据库迁移
-  const database = await openDatabase(config.DATABASE_URL);
-  store = new PostgresStore(database.db);
-  orgStore = new PostgresOrgStore(database.db);
-  authStore = new PostgresAuthStore(database.db);
-  auditStore = new PostgresAuditStore(database.db);
-} else {
-  console.warn("未设置 DATABASE_URL,使用内存存储:服务重启后应用和发布记录都会丢失");
-  store = new MemoryStore();
-}
 // 给平台管理员的告警(任务 3.5):发布连续失败、迁移前备份失败、部署平台出错、后台任务失败
 // ADMIN_USERS 里的人始终是管理员;其余管理员在控制台上设置,告警每次发送时现取
 const adminIds = new Set(config.ADMIN_USERS.split(",").map((id) => id.trim()).filter(Boolean));
@@ -121,10 +139,10 @@ const alerts = new Alerts(adapters.notifier, () => [...new Set([...adminIds, ...
 });
 
 // Ferry 对浏览器和 agent 的地址:上传地址、控制台地址、允许的来源都按它来,只在这里算一次
-const ferryUrl = config.PUBLIC_URL ?? `http://127.0.0.1:${config.PORT}`;
+const ferryUrl = instance.publicUrl ?? `http://127.0.0.1:${config.PORT}`;
 // agent 上传代码包用的地址:agent 和浏览器访问 Ferry 的地址不同(如 agent 在容器里)时单独设置
 const agentUrl = config.AGENT_URL ?? ferryUrl;
-if (!config.PUBLIC_URL && !config.AGENT_URL) {
+if (instance.initialized && !instance.publicUrl && !config.AGENT_URL) {
   console.warn(
     `未设置 PUBLIC_URL:上传地址和控制台地址用 ${ferryUrl},只有本机直接运行的 agent 能访问上传地址。` +
       "agent 在 Docker 容器里时,设 AGENT_URL 为它访问 Ferry 用的地址(如 http://host.docker.internal:8080);不要改 PUBLIC_URL,浏览器登录要用它",
@@ -135,15 +153,15 @@ if (!config.PUBLIC_URL && !config.AGENT_URL) {
 const audit = new AuditLog(auditStore, directory);
 const engine = new Engine(store, adapters, {
   maxFixAttempts: config.MAX_FIX_ATTEMPTS,
-  appsUrlScheme: config.APPS_URL_SCHEME,
+  appsUrlScheme: instance.appsUrlScheme,
   secretBox,
   audit,
   alerts,
   consoleUrl: consoleUrlOf(ferryUrl),
 });
 const service = new PublisherService(store, engine, adapters, {
-  appsDomain: config.APPS_DOMAIN,
-  appsUrlScheme: config.APPS_URL_SCHEME,
+  appsDomain: instance.appsDomain,
+  appsUrlScheme: instance.appsUrlScheme,
   maxAppsPerUser: config.MAX_APPS_PER_USER,
   publicUrl: ferryUrl,
   agentUrl,
@@ -171,19 +189,19 @@ await organization.reload();
 setInterval(() => void organization.reload().catch((err: Error) => console.error(`重新读取组织架构失败: ${err.message}`)), 60_000).unref();
 // 第一个管理员怎么登录:用数据库时用命令行建(pnpm set-password <手机号> --name <姓名>);
 // 内存存储(本地临时试用)时命令行连不上,组织架构是空的就建一个管理员,初始密码打印在这里
-if (!config.DATABASE_URL && directory.adminIds().length === 0) {
+if (instance.initialized && !config.DATABASE_URL && directory.adminIds().length === 0) {
   const { userId } = await organization.bootstrapAdmin({ name: "管理员", mobile: "13800000000" });
   console.warn(
     `管理员(手机号 13800000000)的初始密码:${await auth.resetPassword(undefined, userId)}` +
       "(内存存储,只用于本地试用;第一次登录后要改)",
   );
-} else if (adminIds.size === 0 && directory.adminIds().length === 0) {
+} else if (instance.initialized && adminIds.size === 0 && directory.adminIds().length === 0) {
   console.warn("还没有平台管理员:用 pnpm set-password <手机号> --name <姓名> 建第一个");
 }
 const gateway = new Gateway(service, directory, {
   secret: gatewaySecret,
   ferryUrl: publicUrl.origin,
-  appsScheme: config.APPS_URL_SCHEME,
+  appsScheme: instance.appsUrlScheme,
   appCookieTtlMs: config.GATEWAY_COOKIE_HOURS * 3600_000,
   ticketTtlMs: 60_000,
   now: () => new Date(),
@@ -198,11 +216,13 @@ const server = buildServer(service, identity, {
     organization,
     routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:" },
   },
+  setup: { service: new SetupService(setupStore), initialized: () => instance.initialized },
 });
 await server.listen({ port: config.PORT, host: config.HOST });
 
 // 写入登录网关的 Traefik 配置,并让已有应用的域名都挂上网关。失败只记日志并定时重试,不让 Ferry 退出
-if (config.FERRY_PLATFORM === "dokploy") {
+// 未初始化时不碰 Traefik 和已有应用:那时还没有正式域名,登录网关也不工作
+if (instance.initialized && config.FERRY_PLATFORM === "dokploy") {
   const authAddress = config.GATEWAY_AUTH_URL ?? `http://host.docker.internal:${config.PORT}/authz`;
   await setupGateway(
     adapters.platform,
@@ -230,7 +250,7 @@ if (config.FERRY_PLATFORM === "dokploy") {
 setInterval(() => void alerts.flush(), 60_000).unref();
 
 // 继续执行上次没跑完的发布(进程重启前正在进行的)
-const resumed = await service.resumeUnfinished();
+const resumed = instance.initialized ? await service.resumeUnfinished() : [];
 if (resumed.length > 0) server.log.info({ releases: resumed }, `继续执行 ${resumed.length} 个未完成的发布`);
 
 /** 0 表示不限制;只限制其中一项时另一项不限 */

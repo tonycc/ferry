@@ -303,3 +303,46 @@ Linux 服务器上没有这个问题。
 - **安装后到注册之前有个空档**:这时谁先访问 3000 端口谁就能注册成为 owner。安装脚本应该在 Dokploy 启动后立刻调注册接口,
   而且这段时间 3000 端口不要对外开放(比网页手动注册更安全,网页注册要等人打开页面)。
 - 生成的密码和 key 只写进 `.env`(`chmod 600`)和提示用户备份,不要打印到终端或日志里。
+
+## 设置向导要用的三项验证(2026-11-24)
+
+为[设置向导](setup-wizard.md) PR 1 做的验证,在本机 Dokploy v0.31.3、Traefik v3.7.16 上。
+
+### 证书接口能用 API key 调用,但 Traefik 不会自动加载
+
+- `POST /api/certificates.create`,`x-api-key` 鉴权,必填 `name`、`certificateData`(证书链 PEM)、`privateKey`、`organizationId`
+  (从 `organization.all` 取);`serverId` 不传表示本机。返回 `certificateId` 和 `certificatePath`。
+  **返回内容里带着私钥原文**,Ferry 不能把响应写进日志。
+- Dokploy 写到 `/etc/dokploy/traefik/dynamic/certificates/<certificatePath>/`:`chain.crt`、`privkey.key`、`certificate.yml`
+  (`tls.certificates` 指向前两个文件)。
+- `certificates.update`(`certificateId` 加新的证书和私钥)原地覆盖这三个文件;`certificates.remove` 删除目录。另有 `certificates.all`、`certificates.one`。
+- **新建或更新后,Traefik 不会自己加载。** 等了 30 秒仍然是 TRAEFIK DEFAULT CERT。原因:文件写在 `dynamic` 下新建的子目录里,
+  Traefik 的文件监听只看得到 `dynamic` 这一层的变化。只要 `dynamic` 下任何一个顶层文件有写入,Traefik 就重新读整个目录,
+  新证书几秒内生效(更新也一样)。所以 Ferry 每次新建或更新证书后,用 `settings.updateTraefikFile` 把自己的
+  `ferry-gateway.yml` 原样重写一次来触发加载,不用重启 Traefik。
+- 证书按 SNI 选择,和有没有路由无关:装上覆盖 `ferry.x` 和 `*.apps.x` 的证书后,这两个名字握手都拿到它。
+
+### 兜底路由的优先级符合预期
+
+用一次性容器挂上两条兜底路由(标签方式,和 compose 里一样):`PathPrefix(/) && !PathPrefix(/authz)`,优先级 1,
+一条 `websecure` + `tls=true`、一条 `web` 不带 tls。另加一条文件方式的 `Host(sim.apps.localhost)` 路由模拟员工应用(Dokploy 给应用写的就是这种,不设优先级时按规则长度算)。
+
+| 请求 | 结果 |
+|---|---|
+| `sim.apps.localhost`(http、https) | 到应用,兜底路由不抢 |
+| 没有应用的 `nope.apps.localhost`(http、https) | 到兜底,带着原来的 Host |
+| `http://127.0.0.1/setup`、`https://127.0.0.1/setup` | 到兜底 |
+| `/authz`(http、https) | 404,兜底路由不接 |
+| Dokploy 自己的 `dokploy.docker.localhost` | 照常 |
+| `/.well-known/acme-challenge/*` | Traefik 内部路由优先级最高,不受影响 |
+
+### `https://IP` 用 Traefik 默认证书
+
+不带 SNI(用 IP 访问)握手拿到的是 `CN=TRAEFIK DEFAULT CERT`,带 `tls=true` 的兜底路由能接住,浏览器提示一次证书警告。
+Dokploy 默认的 `traefik.yml` 在 `websecure` 上全局设了 `certResolver: letsencrypt`,没有域名的规则不会触发申请,不影响;安装命令照计划去掉它。
+
+### 本机环境:Docker Desktop 重启后 /etc/dokploy 被清空
+
+这次验证时发现 Docker Desktop 重启过,虚拟机里的 `/etc/dokploy` 被重新生成:应用的路由文件、`ferry-gateway.yml` 都没了,
+`traefik.yml` 又回到 `api.insecure: true`,所有应用 404(`setup-local.sh` 开头已提示过)。恢复:重新运行 `infra/dokploy/setup-local.sh`,
+启动 Ferry(会重写 `ferry-gateway.yml`),再把应用各重新发布一次让 Dokploy 写回路由文件。Linux 服务器上没有这个问题。

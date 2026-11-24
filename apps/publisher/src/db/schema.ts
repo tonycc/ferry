@@ -1,4 +1,5 @@
-import { bigint, boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { bigint, boolean, check, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 /**
  * PostgreSQL 表结构,是数据库迁移的唯一来源。
@@ -158,3 +159,29 @@ export const auditEvents = pgTable(
   },
   (t) => [index("audit_events_app_idx").on(t.appName, t.id), index("audit_events_actor_idx").on(t.actorId, t.id)],
 );
+
+/**
+ * 设置向导写入的本实例配置(单行,id 固定为 1)。环境变量里设了的以环境变量为准,见 setup/instance.ts。
+ * 设置码只存哈希,明文在服务器上的文件里
+ */
+export const instanceSettings = pgTable(
+  "instance_settings",
+  {
+    id: integer("id").primaryKey().default(1),
+    publicUrl: text("public_url"),
+    appsDomain: text("apps_domain"),
+    appsUrlScheme: text("apps_url_scheme"),
+    /** Dokploy 证书 ID、到期时间、覆盖的域名 */
+    certificate: jsonb("certificate"),
+    setupCodeHash: text("setup_code_hash"),
+    setupCompletedAt: timestamp("setup_completed_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("instance_settings_single_row", sql`${t.id} = 1`)],
+);
+
+/** 设置向导的会话:只存 cookie 令牌的哈希。存在数据库里,向导中途 Ferry 重启后仍然有效 */
+export const setupSessions = pgTable("setup_sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});

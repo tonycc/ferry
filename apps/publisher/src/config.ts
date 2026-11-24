@@ -115,17 +115,18 @@ const envSchema = z.object({
    * PUBLIC_URL 的来源总是允许;本地用控制台开发服务器时加上 http://localhost:5173
    */
   ALLOWED_ORIGINS: z.string().default(""),
-}).superRefine((env, ctx) => {
-  if (!env.PUBLIC_URL && !isLoopbackHost(env.HOST)) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["PUBLIC_URL"],
-      message:
-        `HOST=${env.HOST} 会接受其他机器的连接,必须设置 PUBLIC_URL(agent 和浏览器访问 Ferry 用的地址,如 https://ferry.corp.example);` +
-        "否则交给 agent 的上传地址是 127.0.0.1,别的机器或容器里的 agent 访问不到",
-    });
-  }
+  /**
+   * 1:只在本机监听时也进入未初始化模式(只开放设置向导),用于在本机开发设置向导。要配合 DATABASE_URL。
+   * 不设时,本机监听算作已初始化,见 setup/instance.ts
+   */
+  SETUP_DEV: z.enum(["0", "1"]).default("0"),
+  /**
+   * 未初始化时设置码写在这个文件里(chmod 600),不打进日志。安装命令从这里读出来显示给人;完成初始化后删除。
+   * 部署时放在数据卷上,容器重建后还在
+   */
+  SETUP_CODE_FILE: z.string().default("./data/state/setup-code"),
 });
+// PUBLIC_URL 什么时候必须设:要看是否已完成设置向导(数据库里的配置),在 setup/instance.ts 的 checkInstance 里检查
 
 /** 只接受本机连接的监听地址 */
 export function isLoopbackHost(host: string): boolean {

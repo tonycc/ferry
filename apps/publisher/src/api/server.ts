@@ -11,6 +11,7 @@ import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { registerAuthRoutes, type AuthRouteOptions } from "./auth-routes";
 import { registerConsole } from "./console";
+import { registerSetupGate, registerSetupRoutes, type SetupRouteOptions } from "./setup-routes";
 import type { Gateway } from "../gateway/gateway";
 import type { Organization } from "../org/service";
 
@@ -36,6 +37,8 @@ export interface ServerOptions {
   auth?: { service: AuthService; directory: Directory; routes: AuthRouteOptions; organization?: Organization };
   /** 登录网关;不传时没有 /authz 和 /auth/app */
   gateway?: Gateway;
+  /** 设置向导和未初始化模式;不传时视为已初始化(测试和旧的调用方式) */
+  setup?: SetupRouteOptions;
 }
 
 export function buildServer(
@@ -60,6 +63,12 @@ export function buildServer(
     app.log.error(err);
     return reply.status(500).send({ error: "internal_error", message: "服务内部错误" });
   });
+
+  // 要在其他路由之前,未初始化时的拦截才作用到全部路由
+  if (options.setup) {
+    registerSetupGate(app, options.setup);
+    registerSetupRoutes(app, options.setup);
+  }
 
   app.get("/healthz", async () => ({ ok: true }));
   app.get("/", async (_req, reply) => reply.redirect("/console/"));
