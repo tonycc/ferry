@@ -15,8 +15,8 @@
   --color-bg-subtle: #F1F5F9;
   --color-border: #E2E8F0;
   --color-border-strong: #CBD5E1;
-  --color-text-muted: #94A3B8;
-  --color-text-secondary: #64748B;
+  --color-text-muted: #64748B;
+  --color-text-secondary: #475569;
   --color-text-primary: #334155;
   --color-text-heading: #0F172A;
 
@@ -249,10 +249,10 @@ a.app-cell-name:hover { color: var(--color-brand); text-decoration: none; }
   flex-shrink: 0;
   background: currentColor;
 }
-.status-tag.success { background: #ECFDF5; color: #059669; }
+.status-tag.success { background: #ECFDF5; color: #047857; }
 .status-tag.processing { background: var(--color-brand-soft); color: var(--color-brand); }
-.status-tag.pending { background: #FFFBEB; color: #D97706; }
-.status-tag.failed { background: #FEF2F2; color: #DC2626; }
+.status-tag.pending { background: #FFFBEB; color: #B45309; }
+.status-tag.failed { background: #FEF2F2; color: #B91C1C; }
 .status-tag.closed { background: var(--color-bg-subtle); color: var(--color-text-secondary); }
 .status-tag.plain { background: transparent; padding-left: 0; }
 
@@ -272,13 +272,13 @@ a.app-cell-name:hover { color: var(--color-brand); text-decoration: none; }
 }
 
 /* ---- Element Plus 细节 ---- */
-.el-button--primary:not(.is-link):not(.is-text):not(.is-plain) {
+.el-button--primary:not(.el-button--danger):not(.is-link):not(.is-text):not(.is-plain) {
   border: 0;
   background: var(--gradient-brand);
   box-shadow: var(--shadow-brand);
 }
-.el-button--primary:not(.is-link):not(.is-text):not(.is-plain):hover { filter: brightness(1.06); }
-.el-button--primary:not(.is-link):not(.is-text):not(.is-plain).is-disabled { box-shadow: none; filter: none; opacity: 0.55; }
+.el-button--primary:not(.el-button--danger):not(.is-link):not(.is-text):not(.is-plain):hover { filter: brightness(1.06); }
+.el-button--primary:not(.el-button--danger):not(.is-link):not(.is-text):not(.is-plain).is-disabled { box-shadow: none; filter: none; opacity: 0.55; }
 .el-descriptions__label { white-space: nowrap; }
 .el-dialog { border-radius: var(--radius-card); }
 .el-tabs__item { font-size: var(--font-size-body); }

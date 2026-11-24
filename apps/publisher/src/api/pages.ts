@@ -12,7 +12,7 @@ export const PAGE_STYLE = `
     radial-gradient(800px 600px at 50% 110%, rgba(14,165,233,.14), transparent 60%), #F8FAFC; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.6; color: #334155;
     -webkit-font-smoothing: antialiased; max-width: 420px; margin: 12vh auto 48px; padding: 36px; box-sizing: border-box;
-    background: rgba(255,255,255,.85); backdrop-filter: blur(12px); border: 1px solid rgba(226,232,240,.9); border-radius: 20px;
+    background: rgba(255,255,255,.85); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border: 1px solid rgba(226,232,240,.9); border-radius: 20px;
     box-shadow: 0 30px 60px -30px rgba(30,27,75,.35); }
   h1 { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: #0F172A; }
   h1::before { content: ""; display: block; width: 44px; height: 44px; margin-bottom: 20px; border-radius: 13px;
@@ -26,12 +26,12 @@ export const PAGE_STYLE = `
   button { width: 100%; height: 42px; margin-top: 22px; padding: 0 18px; font-size: 14px; font-family: inherit; font-weight: 600; cursor: pointer;
     color: #fff; background: linear-gradient(135deg, #4F46E5, #7C3AED); border: 0; border-radius: 10px; box-shadow: 0 10px 22px -10px rgba(79,70,229,.9); }
   button:hover { filter: brightness(1.06); } button:disabled { opacity: .6; cursor: default; filter: none; }
-  .hint { color: #64748B; font-size: 13px; } .error { color: #DC2626; } .ok { color: #059669; }
+  .hint { color: #475569; font-size: 13px; } .error { color: #B91C1C; } .ok { color: #047857; }
   #msg:empty { display: none; }
   code { background: #F1F5F9; padding: 1px 6px; border-radius: 5px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
   pre { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 10px 12px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
   table { width: 100%; border-collapse: collapse; margin-top: 12px; } td, th { text-align: left; padding: 8px 4px; border-bottom: 1px solid #E2E8F0; font-size: 13px; }
-  th { color: #94A3B8; font-weight: 600; }
+  th { color: #64748B; font-weight: 600; }
   @media (max-width: 480px) { body { margin: 0; min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; padding: 32px 20px; } }
 `;
 

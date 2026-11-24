@@ -47,7 +47,7 @@ const title = computed(() =>
   typeof route.params.name === "string" ? route.params.name : ((route.meta.title as string | undefined) ?? ""),
 );
 /** 顶栏面包屑的第一段:当前页面所在的导航分组 */
-const group = computed(() => groups.find((g) => g.items.some((i) => i.path === active.value))?.label);
+const activeGroup = computed(() => groups.find((g) => g.items.some((i) => i.path === active.value))?.label);
 const back = computed(() => route.meta.back as { label: string; to: string } | undefined);
 const initial = computed(() => Array.from(me.value?.name ?? "")[0] ?? "");
 
@@ -128,7 +128,7 @@ function onUserCommand(command: string) {
           <router-link v-if="back" :to="back.to" class="back-button">
             <el-icon><ArrowLeft /></el-icon>{{ back.label }}
           </router-link>
-          <span v-if="!back && group" class="crumb-group">{{ group }} /</span>
+          <span v-if="!back && activeGroup" class="crumb-group">{{ activeGroup }} /</span>
           <span class="topbar-title">{{ title }}</span>
         </div>
         <el-dropdown v-if="me" trigger="click" placement="bottom-end" @command="onUserCommand">
@@ -263,6 +263,7 @@ function onUserCommand(command: string) {
   height: 56px;
   padding: 0 24px;
   background: rgba(255, 255, 255, 0.85);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--color-border);
 }
