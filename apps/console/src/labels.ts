@@ -35,6 +35,14 @@ export function appStatus(app: AppView): [string, TagType, number] {
   return ["未上线", "warning", 2];
 }
 
+/** 应用归到哪一张统计卡片(StatCards.vue):和 appStatus 的判断顺序一致 */
+export function appStatKey(app: AppView): "live" | "pending" | "offline" | "disabled" {
+  if (app.disabled) return "disabled";
+  if (app.unpublished) return "offline";
+  if (app.live) return "live";
+  return "pending";
+}
+
 export const time = (iso?: string) => (iso ? new Date(iso).toLocaleString("zh-CN", { hour12: false }) : "—");
 
 /** 审计日志的操作名称 */

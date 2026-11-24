@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowLeft, Document, Files, Grid, Key, Menu, OfficeBuilding, User } from "@element-plus/icons-vue";
+import { ArrowDown, ArrowLeft, ArrowRight, Document, Files, Grid, Key, Menu, OfficeBuilding, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { type Component, computed, markRaw, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "./api";
+import FerryLogo from "./components/FerryLogo.vue";
 import { loadMe, me } from "./session";
 
 interface NavItem {
@@ -45,6 +46,8 @@ const active = computed(() => "/" + (route.path.split("/")[1] ?? "apps"));
 const title = computed(() =>
   typeof route.params.name === "string" ? route.params.name : ((route.meta.title as string | undefined) ?? ""),
 );
+/** 顶栏面包屑的第一段:当前页面所在的导航分组 */
+const group = computed(() => groups.find((g) => g.items.some((i) => i.path === active.value))?.label);
 const back = computed(() => route.meta.back as { label: string; to: string } | undefined);
 const initial = computed(() => Array.from(me.value?.name ?? "")[0] ?? "");
 
@@ -89,8 +92,9 @@ function onUserCommand(command: string) {
   <div class="console-layout">
     <aside class="sidebar" :class="{ open: navOpen }">
       <div class="sidebar-brand">
-        <div class="brand-logo">F</div>
-        <span class="brand-name">Ferry 控制台</span>
+        <FerryLogo />
+        <span class="brand-name">Ferry</span>
+        <span class="brand-tag">控制台</span>
       </div>
       <nav class="sidebar-nav" aria-label="控制台导航">
         <div v-for="group in visibleGroups" :key="group.label" class="nav-group">
@@ -107,6 +111,11 @@ function onUserCommand(command: string) {
           </router-link>
         </div>
       </nav>
+      <div v-if="active !== '/tokens'" class="help-card">
+        <div class="help-title">让 agent 帮你发布</div>
+        <p>生成个人令牌并配进 Claude Code、Codex 等 agent,说一句“发布”就能上线。</p>
+        <router-link to="/tokens" class="help-link">去生成令牌 <el-icon><ArrowRight /></el-icon></router-link>
+      </div>
     </aside>
     <div v-if="navOpen" class="sidebar-mask" @click="navOpen = false" />
 
@@ -119,6 +128,7 @@ function onUserCommand(command: string) {
           <router-link v-if="back" :to="back.to" class="back-button">
             <el-icon><ArrowLeft /></el-icon>{{ back.label }}
           </router-link>
+          <span v-if="!back && group" class="crumb-group">{{ group }} /</span>
           <span class="topbar-title">{{ title }}</span>
         </div>
         <el-dropdown v-if="me" trigger="click" placement="bottom-end" @command="onUserCommand">
@@ -170,7 +180,7 @@ function onUserCommand(command: string) {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  width: 220px;
+  width: 228px;
   height: 100vh;
   background: var(--color-bg-base);
   border-right: 1px solid var(--color-border);
@@ -180,49 +190,65 @@ function onUserCommand(command: string) {
   align-items: center;
   gap: 10px;
   height: 56px;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--color-bg-subtle);
+  padding: 0 18px;
 }
-.brand-logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-button);
-  background: var(--color-text-heading);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 700;
-}
-.brand-name { color: var(--color-text-heading); font-size: 14px; font-weight: 700; }
-
-.sidebar-nav { flex: 1; overflow-y: auto; padding: 12px 0; }
-.nav-group { margin-bottom: 8px; }
-.nav-group-label {
-  padding: 8px 20px 4px;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-badge);
+.brand-name { color: var(--color-text-heading); font-size: 15px; font-weight: 700; letter-spacing: 0.2px; }
+.brand-tag {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--color-brand-soft);
+  color: var(--color-brand);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.5px;
+}
+
+.sidebar-nav { flex: 1; overflow-y: auto; padding: 4px 12px 12px; }
+.nav-group-label {
+  padding: 14px 10px 6px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
 }
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 1px 8px;
-  padding: 7px 12px;
-  border-radius: 6px;
+  margin: 2px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
   color: var(--color-text-secondary);
   font-size: var(--font-size-body);
   transition: background 0.1s, color 0.1s;
 }
-.nav-item:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); text-decoration: none; }
-.nav-item:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
-.nav-item.active { background: var(--color-primary-light); color: var(--color-primary); font-weight: 500; }
+.nav-item:hover { background: var(--color-bg-subtle); color: var(--color-text-heading); text-decoration: none; }
+.nav-item:focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
+.nav-item.active { background: var(--color-brand-soft); color: var(--color-brand); font-weight: 600; }
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: -12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-brand);
+}
 .nav-icon { flex-shrink: 0; width: 16px; height: 16px; }
 .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.help-card {
+  margin: 12px;
+  padding: 14px;
+  border: 1px solid #E0E7FF;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #EEF2FF, #F5F3FF);
+}
+.help-title { color: var(--color-text-heading); font-size: 13px; font-weight: 600; }
+.help-card p { margin: 4px 0 10px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
+.help-link { display: inline-flex; align-items: center; gap: 4px; color: var(--color-brand); font-size: 12px; font-weight: 600; }
 
 /* ---- 顶栏 ---- */
 .main-column { display: flex; flex-direction: column; flex: 1; min-width: 0; }
@@ -236,15 +262,17 @@ function onUserCommand(command: string) {
   gap: 12px;
   height: 56px;
   padding: 0 24px;
-  background: var(--color-bg-base);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--color-border);
 }
-.topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.topbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.crumb-group { color: var(--color-text-muted); font-size: var(--font-size-body); white-space: nowrap; }
 .topbar-title {
   overflow: hidden;
   color: var(--color-text-heading);
-  font-size: 17px;
-  font-weight: var(--font-weight-heading);
+  font-size: 15px;
+  font-weight: var(--font-weight-title);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -257,10 +285,9 @@ function onUserCommand(command: string) {
   border-radius: 6px;
   color: var(--color-text-secondary);
   font-size: var(--font-size-body);
-  font-weight: var(--font-weight-title);
   white-space: nowrap;
 }
-.back-button:hover { background: var(--color-primary-light); color: var(--color-primary); text-decoration: none; }
+.back-button:hover { background: var(--color-brand-soft); color: var(--color-brand); text-decoration: none; }
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -282,7 +309,7 @@ function onUserCommand(command: string) {
   gap: 8px;
   padding: 4px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -293,29 +320,31 @@ function onUserCommand(command: string) {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
-  font-size: 12px;
+  background: linear-gradient(135deg, #F59E0B, #EF4444);
+  color: #fff;
+  font-size: 13px;
   font-weight: 600;
 }
 .user-name {
   max-width: 120px;
   overflow: hidden;
-  color: var(--color-text-primary);
+  color: var(--color-text-heading);
   font-size: var(--font-size-body);
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .user-arrow { color: var(--color-text-muted); }
 .dropdown-user { min-width: 160px; padding: 8px 16px 6px; }
 .dropdown-name { color: var(--color-text-heading); font-size: var(--font-size-body); font-weight: 500; }
-.dropdown-role { margin-top: 2px; color: var(--color-text-muted); font-size: var(--font-size-badge); }
+.dropdown-role { margin-top: 2px; color: var(--color-text-muted); font-size: 11px; }
 :global(.el-dropdown-menu__item.logout) { color: var(--color-danger); }
 
-.main { flex: 1; width: 100%; max-width: 1280px; padding: 20px 24px 40px; }
+/* 内容区不设最大宽度,铺满剩余空间 */
+.main { flex: 1; width: 100%; padding: 18px 24px 32px; }
 
 /* ---- 窄屏:侧边栏改成抽屉 ---- */
 @media (max-width: 768px) {
@@ -329,10 +358,10 @@ function onUserCommand(command: string) {
     transition: transform 0.2s, visibility 0s linear 0.2s;
   }
   .sidebar.open { transform: none; visibility: visible; transition: transform 0.2s; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); }
-  .sidebar-mask { position: fixed; inset: 0; z-index: 20; background: rgba(17, 24, 39, 0.3); }
+  .sidebar-mask { position: fixed; inset: 0; z-index: 20; background: rgba(15, 23, 42, 0.3); }
   .nav-toggle { display: inline-flex; }
   .topbar { padding: 0 12px; }
-  .user-name { display: none; }
+  .crumb-group, .user-name { display: none; }
   .main { padding: 12px; }
 }
 </style>
