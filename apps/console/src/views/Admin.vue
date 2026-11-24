@@ -123,7 +123,6 @@ onMounted(load);
         <div class="filter-bar">
           <el-input v-model="filter" clearable placeholder="按应用名、负责人或部门筛选" style="width: 280px" />
         </div>
-        <span class="status-note">共 {{ apps.length }} 个应用<template v-if="filter.trim()">,显示 {{ shown.length }} 个</template></span>
       </div>
       <el-table v-loading="loading" class="data-table" :data="pagedItems" :empty-text="loading ? ' ' : '没有应用'">
         <el-table-column label="应用" min-width="150">
@@ -174,7 +173,13 @@ onMounted(load);
           </template>
         </el-table-column>
       </el-table>
-      <TableFooter v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" unit="个应用" />
+      <TableFooter
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        :total="total"
+        unit="个应用"
+        :summary="filter.trim() ? `筛选出 ${total} 个,共 ${apps.length} 个应用` : undefined"
+      />
     </div>
   </section>
 </template>

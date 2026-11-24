@@ -38,6 +38,10 @@ narrowQuery.addEventListener("change", onNarrow);
 /** 发布历史从新到旧,接口最多返回最近 50 条 */
 const releases = computed(() => app.value?.releases ?? []);
 const { currentPage: releasePage, pageSize: releasePageSize, total: releaseTotal, pagedItems: pagedReleases } = useLocalPagination(releases, [], 10);
+// 发布进行中页面会自动刷新,新发布排在最前面;回到第一页,免得后面几页的行一条条往下挪
+watch(releaseTotal, (next, prev) => {
+  if (next > prev) releasePage.value = 1;
+});
 
 const running = computed(() => app.value?.releases.some((r) => !r.done) ?? false);
 const canRollback = computed(() => !!app.value && app.value.live && !app.value.disabled && !app.value.unpublished && !running.value);

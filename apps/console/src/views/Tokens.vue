@@ -42,6 +42,8 @@ async function create() {
     created.value = result.token;
     label.value = "";
     await load();
+    // 新令牌排在最前面,回到第一页才看得到
+    currentPage.value = 1;
   } catch (err) {
     ElMessage.error((err as Error).message);
   } finally {
