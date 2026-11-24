@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { UserError } from "../errors";
 import { SETUP_COOKIE, type SetupService } from "../setup/service";
+import { SETUP_PAGE } from "./pages";
 
 export interface SetupRouteOptions {
   service: SetupService;
@@ -21,7 +22,7 @@ function isSetupRoute(route: string | undefined): boolean {
 }
 
 /**
- * 未初始化模式(docs/setup-wizard.md):只开放设置向导和 /healthz。
+ * 未初始化模式(docs/setup-wizard.md):只开放设置向导和 /healthz,首页跳到向导。
  * 登录、控制台、MCP、上传、登录网关 /authz 都返回“还没完成初始化”;初始化完成后向导的接口返回 404。
  * 要在注册其他路由之前调用,钩子才会作用到全部路由。
  */
@@ -33,6 +34,8 @@ export function registerSetupGate(app: FastifyInstance, options: SetupRouteOptio
       return;
     }
     if (allowedBeforeSetup(route)) return;
+    // 打开 Ferry 的首页就进向导,和初始化后进控制台一样
+    if (route === "/") return reply.redirect("/setup");
     return reply
       .status(503)
       .send({ error: "not_initialized", message: "Ferry 还没有完成初始化,请管理员先用设置向导完成初始化" });
@@ -42,6 +45,8 @@ export function registerSetupGate(app: FastifyInstance, options: SetupRouteOptio
 export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOptions): void {
   const { service } = options;
 
+  app.get("/setup", async (_req, reply) => reply.type("text/html; charset=utf-8").header("cache-control", "no-store").send(SETUP_PAGE));
+
   app.get("/api/setup/status", async (req) => ({
     initialized: options.initialized(),
     session: await service.hasSession(req.headers),
@@ -50,7 +55,7 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
   app.post("/api/setup/code", async (req, reply) => {
     requireSameHostOrigin(req);
     const { code } = codeBody.parse(req.body);
-    const { token } = await service.verifyCode(code);
+    const { token } = await service.verifyCode(code, clientIp(req));
     const cookie = [
       `${SETUP_COOKIE}=${token}`,
       "Path=/",
@@ -78,6 +83,17 @@ function requireSameHostOrigin(req: FastifyRequest): void {
   if (!host || host !== req.headers.host) {
     throw new UserError("forbidden", "请求来源不对,只能在设置向导页面上操作");
   }
+}
+
+/**
+ * 访问者的 IP,按它分别计算设置码输错次数。经 Traefik 转过来时,Traefik 丢掉客户端自带的 X-Forwarded-For、
+ * 换成它看到的来源(入口没有配置信任的上游时的默认行为),取最后一个。
+ * 直接访问 Ferry(只在本机开发时)时客户端能伪造这个头,但所有来源合计的次数上限仍然有效
+ */
+function clientIp(req: FastifyRequest): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const last = (Array.isArray(forwarded) ? forwarded.join(",") : forwarded)?.split(",").pop()?.trim();
+  return last || req.ip;
 }
 
 /** 经 Traefik 转过来时看它设置的 X-Forwarded-Proto(Traefik 会覆盖客户端自己带的) */

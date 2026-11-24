@@ -86,7 +86,7 @@ for (const c of storeCases("ferry_test_setup")) {
       const file = join(dir, "setup-code");
       await ensureSetupCode(store, file, log);
       const code = await readFile(file, "utf8");
-      const { token } = await new SetupService(store).verifyCode(code.toLowerCase());
+      const { token } = await new SetupService(store).verifyCode(code.toLowerCase(), "10.0.0.1");
       const restarted = new SetupService(c.createSetup());
       expect(await restarted.hasSession({ cookie: `${SETUP_COOKIE}=${token}` })).toBe(true);
       expect(await restarted.hasSession({ cookie: `${SETUP_COOKIE}=nope` })).toBe(false);
@@ -98,11 +98,30 @@ for (const c of storeCases("ferry_test_setup")) {
       await ensureSetupCode(store, join(dir, "setup-code"), log);
       let now = new Date("2026-11-24T00:00:00Z");
       const service = new SetupService(store, { now: () => now });
-      const { token } = await service.verifyCode(await readFile(join(dir, "setup-code"), "utf8"));
+      const { token } = await service.verifyCode(await readFile(join(dir, "setup-code"), "utf8"), "10.0.0.1");
       now = new Date("2026-11-24T01:59:00Z");
       expect(await service.hasSession({ cookie: `${SETUP_COOKIE}=${token}` })).toBe(true);
       now = new Date("2026-11-24T02:00:01Z");
       expect(await service.hasSession({ cookie: `${SETUP_COOKIE}=${token}` })).toBe(false);
+    });
+
+    it("锁定只针对输错的来源,别人反复输错不会把管理员锁在外面", async () => {
+      const file = join(dir, "setup-code");
+      await ensureSetupCode(store, file, log);
+      const service = new SetupService(store);
+      for (let i = 0; i < 5; i++) await expect(service.verifyCode("AAAA-AAAA-AAAA", "10.0.0.66")).rejects.toThrow("设置码不对");
+      await expect(service.verifyCode("AAAA-AAAA-AAAA", "10.0.0.66")).rejects.toThrow(/分钟后再试/);
+      await expect(service.verifyCode(await readFile(file, "utf8"), "10.0.0.1")).resolves.toHaveProperty("token");
+    });
+
+    it("所有来源合计输错到上限时全部锁定,换着来源猜也不行", async () => {
+      const file = join(dir, "setup-code");
+      await ensureSetupCode(store, file, log);
+      const service = new SetupService(store, { maxTotalFailures: 8 });
+      for (let i = 0; i < 8; i++) {
+        await expect(service.verifyCode("AAAA-AAAA-AAAA", `10.0.1.${i}`)).rejects.toThrow("设置码不对");
+      }
+      await expect(service.verifyCode(await readFile(file, "utf8"), "10.0.0.1")).rejects.toThrow(/分钟后再试/);
     });
 
     it("连续输错 5 次锁定 10 分钟,锁定期间对的设置码也不行", async () => {
@@ -111,22 +130,22 @@ for (const c of storeCases("ferry_test_setup")) {
       const code = await readFile(file, "utf8");
       let now = new Date("2026-11-24T00:00:00Z");
       const service = new SetupService(store, { now: () => now });
-      for (let i = 0; i < 5; i++) await expect(service.verifyCode("AAAA-AAAA-AAAA")).rejects.toThrow("设置码不对");
-      await expect(service.verifyCode(code)).rejects.toThrow(/10 分钟后再试/);
+      for (let i = 0; i < 5; i++) await expect(service.verifyCode("AAAA-AAAA-AAAA", "10.0.0.1")).rejects.toThrow("设置码不对");
+      await expect(service.verifyCode(code, "10.0.0.1")).rejects.toThrow(/10 分钟后再试/);
       now = new Date("2026-11-24T00:10:01Z");
-      await expect(service.verifyCode(code)).resolves.toHaveProperty("token");
+      await expect(service.verifyCode(code, "10.0.0.1")).resolves.toHaveProperty("token");
     });
 
     it("同时发来的多个猜测也受次数限制", async () => {
       await ensureSetupCode(store, join(dir, "setup-code"), log);
       const service = new SetupService(store);
-      const results = await Promise.allSettled(Array.from({ length: 20 }, () => service.verifyCode("AAAA-AAAA-AAAA")));
+      const results = await Promise.allSettled(Array.from({ length: 20 }, () => service.verifyCode("AAAA-AAAA-AAAA", "10.0.0.1")));
       const wrong = results.filter((r) => r.status === "rejected" && String(r.reason).includes("设置码不对"));
       expect(wrong.length).toBeLessThanOrEqual(5);
     });
 
     it("还没有设置码时不能开会话", async () => {
-      await expect(new SetupService(store).verifyCode("AAAA-AAAA-AAAA")).rejects.toThrow(/还没有生成设置码/);
+      await expect(new SetupService(store).verifyCode("AAAA-AAAA-AAAA", "10.0.0.1")).rejects.toThrow(/还没有生成设置码/);
     });
   });
 }
@@ -161,12 +180,17 @@ describe("未初始化模式", () => {
     code = await readFile(join(dir, "setup-code"), "utf8");
   });
 
-  it("只开放 /healthz 和 /api/setup/*,其余(含 /authz、上传、MCP、控制台)都返回 503", async () => {
+  it("只开放 /healthz、/setup 和 /api/setup/*,首页跳到向导,其余(含 /authz、上传、MCP、控制台)都返回 503", async () => {
     const app = server();
     expect((await app.inject({ method: "GET", url: "/healthz" })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: "/api/setup/status" })).json()).toEqual({ initialized: false, session: false });
+    const home = await app.inject({ method: "GET", url: "/" });
+    expect(home.statusCode).toBe(302);
+    expect(home.headers.location).toBe("/setup");
+    const page = await app.inject({ method: "GET", url: "/setup" });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain("设置码");
     for (const [method, url] of [
-      ["GET", "/"],
       ["GET", "/console/"],
       ["GET", "/api/apps"],
       ["POST", "/api/releases"],
@@ -205,10 +229,25 @@ describe("未初始化模式", () => {
     expect(String(plain.headers["set-cookie"])).not.toContain("Secure");
   });
 
+  it("按 Traefik 给的 X-Forwarded-For 分来源计数", async () => {
+    const app = server();
+    const post = (ip: string, value: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/setup/code",
+        headers: { host: "10.0.0.5", origin: "https://10.0.0.5", "x-forwarded-for": ip },
+        payload: { code: value },
+      });
+    for (let i = 0; i < 5; i++) expect((await post("10.0.0.66", "AAAA-AAAA-AAAA")).statusCode).toBe(401);
+    expect((await post("10.0.0.66", code)).statusCode).toBe(429);
+    expect((await post("10.0.0.1", code)).statusCode).toBe(200);
+  });
+
   it("完成初始化后向导的接口 404,其他照常", async () => {
     const app = server();
     initialized = true;
     expect((await app.inject({ method: "GET", url: "/api/setup/status" })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/setup" })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/api/setup/code", payload: { code } })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/healthz" })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: "/" })).statusCode).toBe(302);
