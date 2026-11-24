@@ -133,36 +133,38 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="page-title"><h2>部门</h2></div>
-  <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
-  <el-card v-else v-loading="loading" shadow="never">
-    <p class="muted hint">
-      “本部门可见”的应用,同部门和上级部门的同事能打开。最上级部门代表整个公司,不算作任何人的上级部门。
-      只能删除没有下级部门、也没有人(包括已离职的人)的部门。
-    </p>
-    <el-empty v-if="!loading && tree.length === 0" description="还没有部门:用命令行建第一个管理员时会建好最上级部门" />
-    <el-tree v-else :data="tree" node-key="id" default-expand-all :expand-on-click-node="false">
-      <template #default="{ data }">
-        <div class="node">
-          <span>{{ data.label }}</span>
-          <span class="muted count">{{ data.memberCount }} 人</span>
-          <span class="spacer" />
-          <el-button link size="small" :disabled="busy" @click.stop="openCreate(data.id)">新建下级部门</el-button>
-          <el-button link size="small" :disabled="busy" @click.stop="openEdit(data.id)">{{ data.isRoot ? "改名" : "编辑" }}</el-button>
-          <el-button
-            v-if="!data.isRoot"
-            link
-            size="small"
-            type="danger"
-            :disabled="busy || data.memberCount > 0 || childrenOf(data.id).length > 0"
-            @click.stop="remove(data)"
-          >
-            删除
-          </el-button>
-        </div>
-      </template>
-    </el-tree>
-  </el-card>
+  <section class="ops-page">
+    <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
+    <div v-else v-loading="loading" class="content-panel">
+      <div class="panel-toolbar"><div class="panel-title">组织架构</div></div>
+      <p class="panel-note">
+        “本部门可见”的应用,同部门和上级部门的同事能打开。最上级部门代表整个公司,不算作任何人的上级部门。
+        只能删除没有下级部门、也没有人(包括已离职的人)的部门。
+      </p>
+      <el-empty v-if="!loading && tree.length === 0" description="还没有部门:用命令行建第一个管理员时会建好最上级部门" />
+      <el-tree v-else :data="tree" node-key="id" default-expand-all :expand-on-click-node="false">
+        <template #default="{ data }">
+          <div class="node">
+            <span>{{ data.label }}</span>
+            <span class="count">{{ data.memberCount }} 人</span>
+            <span class="spacer" />
+            <el-button link size="small" :disabled="busy" @click.stop="openCreate(data.id)">新建下级部门</el-button>
+            <el-button link size="small" :disabled="busy" @click.stop="openEdit(data.id)">{{ data.isRoot ? "改名" : "编辑" }}</el-button>
+            <el-button
+              v-if="!data.isRoot"
+              link
+              size="small"
+              type="danger"
+              :disabled="busy || data.memberCount > 0 || childrenOf(data.id).length > 0"
+              @click.stop="remove(data)"
+            >
+              删除
+            </el-button>
+          </div>
+        </template>
+      </el-tree>
+    </div>
+  </section>
 
   <el-dialog
     v-model="dialog.open"
@@ -197,9 +199,9 @@ onMounted(load);
 </template>
 
 <style scoped>
-.hint { margin: 0 0 12px; }
 .node { display: flex; align-items: center; gap: 8px; flex: 1; padding-right: 8px; }
-.count { font-size: 12px; }
+.count { padding: 0 8px; border-radius: var(--radius-tag); background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: var(--font-size-badge); line-height: 1.8; }
 .spacer { flex: 1; }
-:deep(.el-tree-node__content) { height: 36px; }
+:deep(.el-tree-node__content) { height: 40px; border-radius: 6px; }
+:deep(.el-tree-node__content:hover) { background: var(--color-bg-page); }
 </style>

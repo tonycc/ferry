@@ -23,6 +23,9 @@ importers:
 
   apps/console:
     dependencies:
+      '@element-plus/icons-vue':
+        specifier: ^2.3.2
+        version: 2.3.2(vue@3.5.45(typescript@5.9.3))
       '@ferry/manifest':
         specifier: workspace:*
         version: link:../../packages/manifest
