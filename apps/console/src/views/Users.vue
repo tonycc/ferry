@@ -2,6 +2,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
 import { api, ApiError, type AdminDepartment, type AdminOrg, type AdminUser } from "../api";
+import StatusTag from "../components/StatusTag.vue";
 import { me } from "../session";
 
 /**
@@ -220,72 +221,74 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="page-title"><h2>人员</h2></div>
-  <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
-  <el-card v-else shadow="never">
-    <div class="bar">
-      <el-radio-group v-model="status">
-        <el-radio-button value="active">在职 {{ counts.active }}</el-radio-button>
-        <el-radio-button value="inactive">已离职 {{ counts.inactive }}</el-radio-button>
-        <el-radio-button value="all">全部</el-radio-button>
-      </el-radio-group>
-      <el-input v-model="filter" clearable placeholder="按姓名、手机号、工号或部门筛选" style="max-width: 280px" />
-      <span class="spacer" />
-      <el-button type="primary" :disabled="loading || departments.length === 0" @click="openCreate">新增人员</el-button>
+  <section class="ops-page">
+    <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
+    <div v-else class="content-panel">
+      <div class="panel-toolbar">
+        <div class="filter-bar">
+          <el-radio-group v-model="status">
+            <el-radio-button value="active">在职 {{ counts.active }}</el-radio-button>
+            <el-radio-button value="inactive">已离职 {{ counts.inactive }}</el-radio-button>
+            <el-radio-button value="all">全部</el-radio-button>
+          </el-radio-group>
+          <el-input v-model="filter" clearable placeholder="按姓名、手机号、工号或部门筛选" style="width: 280px" />
+        </div>
+        <el-button type="primary" :disabled="loading || departments.length === 0" @click="openCreate">新增人员</el-button>
+      </div>
+      <p class="panel-note">员工用手机号(或工号)和密码登录。新增后生成初始密码转交本人;忘记密码也在这里重新生成。部门在“部门”页维护。</p>
+      <el-table v-loading="loading" class="data-table" :data="shown" :empty-text="loading ? ' ' : status === 'inactive' ? '没有已离职的人' : '还没有人员'">
+        <el-table-column label="姓名" min-width="140">
+          <template #default="{ row }">
+            <span :class="{ muted: !row.active }">{{ row.name }}</span>
+            <StatusTag v-if="row.isAdmin" type="primary" class="tag">
+              {{ row.fixedAdmin ? "管理员(配置指定)" : "管理员" }}
+            </StatusTag>
+            <StatusTag v-if="!row.active" type="info" class="tag">已离职</StatusTag>
+            <StatusTag v-if="row.id === me?.id" type="info" plain class="tag">我</StatusTag>
+          </template>
+        </el-table-column>
+        <el-table-column label="手机号" width="130">
+          <template #default="{ row }">{{ row.mobile ?? "—" }}</template>
+        </el-table-column>
+        <el-table-column label="工号" width="100">
+          <template #default="{ row }">{{ row.jobNumber ?? "—" }}</template>
+        </el-table-column>
+        <el-table-column label="部门" min-width="160">
+          <template #default="{ row }">{{ namesOf(row).join("、") || "—" }}</template>
+        </el-table-column>
+        <el-table-column label="登录密码" width="150">
+          <template #default="{ row }">
+            <StatusTag v-if="row.active" :type="PASSWORD[row.password as AdminUser['password']][1]">
+              {{ PASSWORD[row.password as AdminUser["password"]][0] }}
+            </StatusTag>
+            <span v-else class="muted">不能登录</span>
+          </template>
+        </el-table-column>
+        <el-table-column width="260" align="right">
+          <template #default="{ row }">
+            <el-button size="small" :disabled="!!busy" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.active" size="small" :loading="busy === row.id" :disabled="!!busy && busy !== row.id" @click="reset(row)">
+              {{ row.password === "none" ? "生成初始密码" : "重置密码" }}
+            </el-button>
+            <el-dropdown trigger="click" :disabled="!!busy" @command="(c: string) => onCommand(row, c)">
+              <el-button size="small" :disabled="!!busy">更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <template v-if="row.active">
+                    <el-dropdown-item command="admin" :disabled="row.fixedAdmin || (row.isAdmin && row.id === me?.id)">
+                      {{ row.isAdmin ? "取消管理员" : "设为管理员" }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="deactivate" :disabled="row.id === me?.id || row.fixedAdmin" divided>标记离职</el-dropdown-item>
+                  </template>
+                  <el-dropdown-item v-else command="reactivate">恢复在职</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
-    <p class="muted hint">员工用手机号(或工号)和密码登录。新增后生成初始密码转交本人;忘记密码也在这里重新生成。部门在“部门”页维护。</p>
-    <el-table v-loading="loading" :data="shown" :empty-text="loading ? ' ' : status === 'inactive' ? '没有已离职的人' : '还没有人员'">
-      <el-table-column label="姓名" min-width="140">
-        <template #default="{ row }">
-          <span :class="{ muted: !row.active }">{{ row.name }}</span>
-          <el-tag v-if="row.isAdmin" size="small" type="primary" class="tag" disable-transitions>
-            {{ row.fixedAdmin ? "管理员(配置指定)" : "管理员" }}
-          </el-tag>
-          <el-tag v-if="!row.active" size="small" type="info" class="tag" disable-transitions>已离职</el-tag>
-          <el-tag v-if="row.id === me?.id" size="small" class="tag" disable-transitions>我</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="手机号" width="130">
-        <template #default="{ row }">{{ row.mobile ?? "—" }}</template>
-      </el-table-column>
-      <el-table-column label="工号" width="100">
-        <template #default="{ row }">{{ row.jobNumber ?? "—" }}</template>
-      </el-table-column>
-      <el-table-column label="部门" min-width="160">
-        <template #default="{ row }">{{ namesOf(row).join("、") || "—" }}</template>
-      </el-table-column>
-      <el-table-column label="登录密码" width="150">
-        <template #default="{ row }">
-          <el-tag v-if="row.active" :type="PASSWORD[row.password as AdminUser['password']][1]" disable-transitions>
-            {{ PASSWORD[row.password as AdminUser["password"]][0] }}
-          </el-tag>
-          <span v-else class="muted">不能登录</span>
-        </template>
-      </el-table-column>
-      <el-table-column width="260" align="right">
-        <template #default="{ row }">
-          <el-button size="small" :disabled="!!busy" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="row.active" size="small" :loading="busy === row.id" :disabled="!!busy && busy !== row.id" @click="reset(row)">
-            {{ row.password === "none" ? "生成初始密码" : "重置密码" }}
-          </el-button>
-          <el-dropdown trigger="click" :disabled="!!busy" @command="(c: string) => onCommand(row, c)">
-            <el-button size="small" :disabled="!!busy">更多</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <template v-if="row.active">
-                  <el-dropdown-item command="admin" :disabled="row.fixedAdmin || (row.isAdmin && row.id === me?.id)">
-                    {{ row.isAdmin ? "取消管理员" : "设为管理员" }}
-                  </el-dropdown-item>
-                  <el-dropdown-item command="deactivate" :disabled="row.id === me?.id || row.fixedAdmin" divided>标记离职</el-dropdown-item>
-                </template>
-                <el-dropdown-item v-else command="reactivate">恢复在职</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </template>
-      </el-table-column>
-    </el-table>
-  </el-card>
+  </section>
 
   <el-dialog v-model="dialog.open" :title="dialog.editing ? `编辑 ${dialog.editing.name}` : '新增人员'" width="480px" :close-on-click-modal="false">
     <el-form label-width="72px" @submit.prevent="save">
@@ -325,8 +328,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
-.spacer { flex: 1; }
-.hint { margin: 0 0 12px; }
 .tag { margin-left: 6px; }
 </style>

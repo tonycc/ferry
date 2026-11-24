@@ -12,7 +12,7 @@ export const VISIBILITY_HINT: Record<Visibility, string> = {
   company: "公司所有同事都能打开",
 };
 
-type TagType = "success" | "warning" | "danger" | "info" | "primary";
+export type TagType = "success" | "warning" | "danger" | "info" | "primary";
 
 export const STATE: Record<ReleaseState, [string, TagType]> = {
   PENDING: ["排队中", "info"],

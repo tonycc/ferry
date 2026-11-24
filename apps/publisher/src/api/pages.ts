@@ -3,15 +3,28 @@
  * 页面不引用任何外部资源;所有请求发往同一来源,浏览器会带上 Origin 和 cookie。
  */
 
+// 和控制台(apps/console/src/styles.css)用同一套颜色、字号和圆角;页面只有一列,body 本身就是居中的卡片
 const STYLE = `
-  body { font-family: system-ui, -apple-system, "PingFang SC", sans-serif; max-width: 560px; margin: 48px auto; padding: 0 16px; color: #1f2328; }
-  h1 { font-size: 22px; } label { display: block; margin: 16px 0 6px; }
-  input { width: 100%; padding: 8px 10px; font-size: 16px; box-sizing: border-box; }
-  button { margin-top: 12px; padding: 8px 16px; font-size: 15px; cursor: pointer; }
-  .hint { color: #59636e; font-size: 14px; } .error { color: #cf222e; } .ok { color: #1a7f37; }
-  code { background: #f6f8fa; padding: 2px 6px; word-break: break-all; }
-  pre { background: #f6f8fa; padding: 10px; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; } td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid #d1d9e0; font-size: 14px; }
+  html { background: #F9FAFB; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.6; color: #374151;
+    max-width: 440px; margin: 10vh auto 48px; padding: 32px; background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px; box-sizing: border-box; }
+  h1 { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #111827; }
+  h1::before { content: "F"; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: #111827; color: #fff; font-size: 15px; }
+  h2 { font-size: 16px; color: #111827; margin: 24px 0 8px; }
+  label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 500; color: #374151; }
+  input { width: 100%; height: 38px; padding: 0 12px; font-size: 14px; font-family: inherit; color: #111827; box-sizing: border-box;
+    border: 1px solid #D1D5DB; border-radius: 8px; outline: none; transition: border-color .15s, box-shadow .15s; }
+  input:focus { border-color: #2563EB; box-shadow: 0 0 0 3px #DBEAFE; }
+  button { width: 100%; height: 38px; margin-top: 20px; padding: 0 18px; font-size: 14px; font-family: inherit; font-weight: 500; cursor: pointer;
+    color: #fff; background: #2563EB; border: 0; border-radius: 8px; }
+  button:hover { background: #1D4ED8; } button:disabled { opacity: .6; cursor: default; }
+  .hint { color: #6B7280; font-size: 13px; } .error { color: #DC2626; } .ok { color: #15803D; }
+  #msg:empty { display: none; }
+  code { background: #F3F4F6; padding: 1px 5px; border-radius: 4px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
+  pre { background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 8px; padding: 10px 12px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; } td, th { text-align: left; padding: 8px 4px; border-bottom: 1px solid #E5E7EB; font-size: 13px; }
+  th { color: #6B7280; font-weight: 600; }
+  @media (max-width: 480px) { body { margin: 0; min-height: 100vh; border: 0; border-radius: 0; padding: 24px 16px; } }
 `;
 
 const POST = `

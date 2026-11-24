@@ -2,6 +2,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, type AppDetail, type ReleaseSummary, type ReleaseView, type SecretView, type Visibility } from "../api";
+import StatusTag from "../components/StatusTag.vue";
 import { appStatus, STATE, time, VISIBILITY, VISIBILITY_HINT } from "../labels";
 import { secretNameProblem } from "@ferry/manifest/secrets";
 
@@ -229,31 +230,30 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-loading="loading">
-    <div class="page-title">
-      <h2>
-        <router-link to="/apps" class="back">我的应用</router-link> / {{ name }}
-        <el-tag v-if="app" :type="appStatus(app)[1]" class="status" disable-transitions>{{ appStatus(app)[0] }}</el-tag>
-      </h2>
-      <div v-if="app" class="actions">
-        <el-button v-if="reachable" tag="a" :href="app.url" target="_blank" rel="noopener" type="primary">打开应用</el-button>
-        <el-button :disabled="!canRollback || !!acting" :loading="acting === 'rollback'" @click="rollback">回到上一个版本</el-button>
-        <el-button :disabled="!canUnpublish || !!acting" :loading="acting === 'unpublish'" type="danger" plain @click="unpublish">
-          {{ acting === "unpublish" ? "正在下线" : "下线" }}
-        </el-button>
-      </div>
-    </div>
-
+  <section v-loading="loading" class="ops-page">
     <template v-if="app">
-      <el-alert v-if="app.disabled" type="error" :closable="false" show-icon class="alert"
+      <el-alert v-if="app.disabled" type="error" :closable="false" show-icon
         title="应用已被管理员停用:同事无法访问,也不能发布。请联系平台管理员。"
         :description="app.disabledReason ? `原因:${app.disabledReason}` : undefined" />
-      <el-alert v-else-if="app.unpublished" type="info" :closable="false" show-icon class="alert"
+      <el-alert v-else-if="app.unpublished" type="info" :closable="false" show-icon
         title="应用已下线,数据保留。让 agent 用同一个应用名重新发布即可恢复。"
         description="长期不用的已下线应用,平台管理员可能会彻底删除,删除后数据无法恢复。" />
-      <el-alert v-if="running" type="info" :closable="false" show-icon class="alert" title="有一次发布正在进行,页面会自动刷新。" />
+      <el-alert v-if="running" type="info" :closable="false" show-icon title="有一次发布正在进行,页面会自动刷新。" />
 
-      <el-card shadow="never" class="card">
+      <div class="content-panel">
+        <div class="panel-toolbar">
+          <div class="heading">
+            <span class="panel-title">基本信息</span>
+            <StatusTag :type="appStatus(app)[1]">{{ appStatus(app)[0] }}</StatusTag>
+          </div>
+          <div class="actions">
+            <el-button v-if="reachable" tag="a" :href="app.url" target="_blank" rel="noopener" type="primary">打开应用</el-button>
+            <el-button :disabled="!canRollback || !!acting" :loading="acting === 'rollback'" @click="rollback">回到上一个版本</el-button>
+            <el-button :disabled="!canUnpublish || !!acting" :loading="acting === 'unpublish'" type="danger" plain @click="unpublish">
+              {{ acting === "unpublish" ? "正在下线" : "下线" }}
+            </el-button>
+          </div>
+        </div>
         <el-descriptions :column="narrow ? 1 : 2" border>
           <el-descriptions-item label="访问地址" :span="narrow ? 1 : 2">
             <a v-if="reachable" :href="app.url" target="_blank" rel="noopener">{{ app.url }}</a>
@@ -276,12 +276,12 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="数据库">{{ app.database === "postgres" ? "PostgreSQL" : app.database ? "无" : "—" }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ time(app.createdAt) }}</el-descriptions-item>
         </el-descriptions>
-      </el-card>
+      </div>
 
-      <el-card shadow="never" class="card">
+      <div class="content-panel tabs-panel">
         <el-tabs v-model="tab">
           <el-tab-pane label="发布历史" name="releases">
-            <el-table :data="app.releases" row-key="releaseId" @expand-change="expand">
+            <el-table :data="app.releases" class="data-table" row-key="releaseId" @expand-change="expand">
               <el-table-column type="expand">
                 <template #default="{ row }">
                   <div class="expand">
@@ -302,8 +302,8 @@ onBeforeUnmount(() => {
               </el-table-column>
               <el-table-column label="结果" width="190">
                 <template #default="{ row }">
-                  <el-tag :type="STATE[row.state as keyof typeof STATE][1]" disable-transitions>{{ STATE[row.state as keyof typeof STATE][0] }}</el-tag>
-                  <el-tag v-if="row.live" type="success" effect="plain" class="live" disable-transitions>线上版本</el-tag>
+                  <StatusTag :type="STATE[row.state as keyof typeof STATE][1]">{{ STATE[row.state as keyof typeof STATE][0] }}</StatusTag>
+                  <StatusTag v-if="row.live" type="success" plain class="live">线上版本</StatusTag>
                 </template>
               </el-table-column>
               <el-table-column label="用时" width="100">
@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
             </el-table>
           </el-tab-pane>
           <el-tab-pane label="密钥" name="secrets">
-            <p class="muted secret-intro">
+            <p class="panel-note secret-intro">
               应用要用的第三方密钥(大模型 API key、群机器人 webhook 等)填在这里,不要写进代码。
               应用里用 <code>process.env.名称</code> 读取。值保存后不再显示,只能替换或删除;
               <b>改动在下次发布或回滚后生效</b>(改完让 agent 再发布一次)。
@@ -324,7 +324,7 @@ onBeforeUnmount(() => {
             <div class="log-bar">
               <el-button type="primary" @click="openSecret()">添加密钥</el-button>
             </div>
-            <el-table :data="secrets" row-key="name">
+            <el-table :data="secrets" class="data-table" row-key="name">
               <el-table-column label="名称" min-width="200">
                 <template #default="{ row }"><code>{{ row.name }}</code></template>
               </el-table-column>
@@ -351,7 +351,7 @@ onBeforeUnmount(() => {
             <pre class="logs tall">{{ logs }}</pre>
           </el-tab-pane>
         </el-tabs>
-      </el-card>
+      </div>
     </template>
 
     <el-dialog v-model="secretDialog" :title="replacing ? `替换 ${secretForm.name}` : '添加密钥'" width="min(480px, 92vw)" @closed="secretForm = { name: '', value: '' }">
@@ -369,24 +369,21 @@ onBeforeUnmount(() => {
         <el-button type="primary" :loading="savingSecret" :disabled="!secretForm.name || !!secretNameError || !secretForm.value" @click="saveSecret">保存</el-button>
       </template>
     </el-dialog>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.back { color: var(--el-text-color-secondary); text-decoration: none; font-weight: normal; }
-.status { margin-left: 8px; vertical-align: middle; }
+.heading { display: flex; align-items: center; gap: 10px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.alert, .card { margin-bottom: 16px; }
+.actions .el-button + .el-button { margin-left: 0; }
+.tabs-panel { padding-top: 6px; }
 :deep(.el-descriptions__label) { white-space: nowrap; width: 88px; }
 .visibility { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .note { margin-top: 6px; }
 .live { margin-left: 6px; }
 .expand { padding: 0 16px; }
 .log-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.logs { background: #1e1e1e; color: #ddd; padding: 12px; border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 360px; overflow: auto; margin: 8px 0 0; }
-.secret-intro { margin: 0 0 12px; line-height: 1.6; }
+.logs { background: #111827; color: #E5E7EB; padding: 12px 14px; border-radius: var(--radius-button); font-family: "SF Mono", Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 360px; overflow: auto; margin: 8px 0 0; }
+.secret-intro { margin: 4px 0 14px; }
 .logs.tall { max-height: 560px; min-height: 120px; }
-@media (max-width: 640px) {
-  .page-title { flex-direction: column; align-items: flex-start; gap: 8px; }
-}
 </style>
