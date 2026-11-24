@@ -78,6 +78,13 @@
       "when": 1795426208761,
       "tag": "0010_upload_manifest",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795510163283,
+      "tag": "0011_setup_wizard",
+      "breakpoints": true
     }
   ]
 }

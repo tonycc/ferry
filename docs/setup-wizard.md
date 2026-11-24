@@ -60,7 +60,8 @@
   - 私钥和证书匹配;
   - 证书链完整(带中间证书),能用系统信任的根证书验证通过;
   - 剩余有效期,少于 30 天时警告。
-- 安装:通过 Dokploy 的证书管理接口上传(Dokploy 自己把文件和 Traefik 的 TLS 配置写进它的目录,Traefik 自动加载,不用重启)。
+- 安装:通过 Dokploy 的证书管理接口上传(Dokploy 自己把文件和 Traefik 的 TLS 配置写进它的目录)。Traefik 不会自己发现新证书,
+  上传后用 `settings.updateTraefikFile` 把 Ferry 的 `ferry-gateway.yml` 原样重写一次触发重新加载,不用重启(见 [dokploy-findings.md](dokploy-findings.md))。
   Ferry 不直接写服务器上的文件。保存 Dokploy 返回的证书 ID、证书的到期时间和覆盖的域名,替换证书和到期提醒要用。
 - 验证:从服务器用 `https://ferry.example.com/api/setup/ping` 实际握手一次,校验证书(不跳过校验)。
 
@@ -138,7 +139,7 @@ Ferry 启动时判断是否已初始化:
   应用域名下的未知应用返回“应用不存在”,其他域名返回 404。
 - http 跳 https 的中间件保留,但只在初始化之后对 Ferry 自己的域名生效(第 2 步的 ping 要走 http)。
 
-需要验证:兜底路由和 Dokploy 给应用生成的路由同时存在时,Traefik 的优先级是否按预期;Traefik 默认的自签名证书能否用在 `https://IP`。
+已验证(2026-11-24,见 [dokploy-findings.md](dokploy-findings.md)):应用的 `Host(...)` 路由优先于兜底路由,没有应用的域名和服务器 IP 到兜底,`/authz` 不接;`https://IP` 用 Traefik 默认的自签名证书。
 
 ### 设置码
 
@@ -148,7 +149,9 @@ Ferry 启动时判断是否已初始化:
   忘了时人也可以这样查。完成初始化后删除这个文件。
 - 输对后发一个只用于向导的会话 cookie(HttpOnly、Secure、SameSite=Strict,2 小时)。
 - 连续输错 5 次锁定 10 分钟。重启 Ferry 不换设置码,完成初始化后作废。
-- 向导的每个修改请求都检查会话和来源(和控制台一样的来源检查)。
+- 向导的每个修改请求都检查会话和来源。向导会用服务器 IP 和正式域名两种地址打开,不能用按 `PUBLIC_URL` 算出的来源列表,
+  改为要求 `Origin` 和请求的 `Host` 一致(同源)。
+- 输错次数记在内存里,整个实例共用一个计数;重启 Ferry 会清零(12 位设置码约 59 位随机,不影响安全)。
 
 ## 安全
 
@@ -188,7 +191,7 @@ Ferry 启动时判断是否已初始化:
 
 | PR | 内容 |
 |---|---|
-| 1 | 验证:Dokploy 证书接口能否用 API key 调用、兜底路由的优先级、Traefik 自签名证书访问 `https://IP`。`instance_settings` 表、环境变量优先的配置读取、未初始化模式、设置码 |
+| 1 | ✅ 验证:Dokploy 证书接口能否用 API key 调用、兜底路由的优先级、Traefik 自签名证书访问 `https://IP`。`instance_settings` 表、环境变量优先的配置读取、未初始化模式、设置码(含输入设置码开向导会话的接口 `/api/setup/status`、`/api/setup/code`) |
 | 2 | 向导第 1 到 4 步:设置码页、域名和 DNS 检测、证书上传检查和安装、重启后交接到正式地址;compose 改成两条兜底路由,`PUBLIC_URL` 改成可选,去掉 `FERRY_HOST` |
 | 3 | 向导第 5 到 7 步;控制台的证书页和到期提醒 |
 | 4 | 安装命令 `deploy/install.sh`,在 Linux 虚拟机里从零跑通;更新 deploy/README.md |
