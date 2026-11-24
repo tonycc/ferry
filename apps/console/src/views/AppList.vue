@@ -4,6 +4,8 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, type AppView } from "../api";
 import StatusTag from "../components/StatusTag.vue";
+import TableFooter from "../components/TableFooter.vue";
+import { useLocalPagination } from "../composables/useLocalPagination";
 import { appStatus, VISIBILITY } from "../labels";
 
 const router = useRouter();
@@ -13,6 +15,8 @@ const loading = ref(true);
 const sorted = computed(() =>
   [...apps.value].sort((a, b) => appStatus(a)[2] - appStatus(b)[2] || a.name.localeCompare(b.name)),
 );
+
+const { currentPage, pageSize, total, pagedItems } = useLocalPagination(sorted);
 
 onMounted(async () => {
   try {
@@ -30,12 +34,11 @@ onMounted(async () => {
     <div class="content-panel">
       <div class="panel-toolbar">
         <div class="panel-title">全部应用</div>
-        <span v-if="!loading" class="status-note">共 {{ apps.length }} 个</span>
       </div>
       <el-table
         v-loading="loading"
         class="data-table"
-        :data="sorted"
+        :data="pagedItems"
         row-class-name="clickable"
         @row-click="(row: AppView) => router.push(`/apps/${row.name}`)"
       >
@@ -65,6 +68,7 @@ onMounted(async () => {
           </div>
         </template>
       </el-table>
+      <TableFooter v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" unit="个应用" />
     </div>
   </section>
 </template>

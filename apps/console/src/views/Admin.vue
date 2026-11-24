@@ -3,6 +3,8 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, ref } from "vue";
 import { api, ApiError, type AdminAppView } from "../api";
 import StatusTag from "../components/StatusTag.vue";
+import TableFooter from "../components/TableFooter.vue";
+import { useLocalPagination } from "../composables/useLocalPagination";
 import { appStatus, time, VISIBILITY } from "../labels";
 
 const apps = ref<AdminAppView[]>([]);
@@ -22,6 +24,8 @@ const shown = computed(() => {
     .filter((a) => !q || [a.name, a.ownerName, ...a.departmentNames].some((t) => t.toLowerCase().includes(q)))
     .sort((a, b) => appStatus(a)[2] - appStatus(b)[2] || a.name.localeCompare(b.name));
 });
+
+const { currentPage, pageSize, total, pagedItems } = useLocalPagination(shown, [filter]);
 
 async function load() {
   try {
@@ -119,9 +123,8 @@ onMounted(load);
         <div class="filter-bar">
           <el-input v-model="filter" clearable placeholder="按应用名、负责人或部门筛选" style="width: 280px" />
         </div>
-        <span class="status-note">共 {{ apps.length }} 个应用<template v-if="filter.trim()">,显示 {{ shown.length }} 个</template></span>
       </div>
-      <el-table v-loading="loading" class="data-table" :data="shown" :empty-text="loading ? ' ' : '没有应用'">
+      <el-table v-loading="loading" class="data-table" :data="pagedItems" :empty-text="loading ? ' ' : '没有应用'">
         <el-table-column label="应用" min-width="150">
           <template #default="{ row }">
             <div class="stack-cell">
@@ -170,6 +173,13 @@ onMounted(load);
           </template>
         </el-table-column>
       </el-table>
+      <TableFooter
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        :total="total"
+        unit="个应用"
+        :summary="filter.trim() ? `筛选出 ${total} 个,共 ${apps.length} 个应用` : undefined"
+      />
     </div>
   </section>
 </template>
