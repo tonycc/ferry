@@ -394,13 +394,29 @@ export class DokployPlatform implements DeployPlatform {
       return;
     }
     const gated = gateway.every((m) => existing.middlewares?.includes(m));
-    if (existing.port === input.port && gated) return;
+    if (existing.port === input.port && gated && (await this.routeWritten(input.appId, input.host))) return;
+    // 域名记录不对,或者记录对但 Traefik 的路由文件没了:都原样提交一次,Dokploy 会重写路由文件
     await this.client.mutate("domain.update", {
       ...desired,
       domainId: existing.domainId,
       path: existing.path ?? "/",
       middlewares: [...new Set([...(existing.middlewares ?? []), ...gateway])],
     });
+  }
+
+  /**
+   * 应用的 Traefik 路由文件(dynamic/<appName>.yml)在不在、有没有路由这个域名。
+   * Dokploy 只在建、改域名和部署时写这个文件;Docker Desktop 重启会清空它所在的虚拟机目录,
+   * 域名记录还在、文件却没了,访问应用就是 404。读不到(接口出错、旧版 Dokploy)时当作没问题,不因此改域名
+   */
+  private async routeWritten(appId: string, host: string): Promise<boolean> {
+    let config: string | null;
+    try {
+      config = await this.client.query<string | null>("application.readTraefikConfig", { applicationId: appId });
+    } catch {
+      return true;
+    }
+    return typeof config === "string" && config.includes(`Host(\`${host}\`)`);
   }
 
   /**
