@@ -2,30 +2,43 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, ref } from "vue";
 import { api, ApiError, type AdminAppView } from "../api";
+import AppAvatar from "../components/AppAvatar.vue";
+import StatCards, { type StatKey } from "../components/StatCards.vue";
 import StatusTag from "../components/StatusTag.vue";
 import TableFooter from "../components/TableFooter.vue";
+import VisibilityChip from "../components/VisibilityChip.vue";
 import { useLocalPagination } from "../composables/useLocalPagination";
-import { appStatus, time, VISIBILITY } from "../labels";
+import { appStatKey, appStatus, time } from "../labels";
 
 const apps = ref<AdminAppView[]>([]);
 const loading = ref(true);
 const forbidden = ref(false);
 const filter = ref("");
+/** 点统计卡片只看这一种状态的应用,再点一次取消 */
+const stat = ref<StatKey>();
 /** 正在删除的应用;删除要停数据库、删数据卷,可能要十几秒 */
 const deleting = ref<string>();
 /** 正在停用或恢复的应用:恢复要等部署平台把服务启动起来,也要十几秒 */
 const acting = ref<{ name: string; action: "disable" | "enable" }>();
 const busy = computed(() => !!deleting.value || !!acting.value);
 
+const counts = computed(() => {
+  const result: Record<StatKey, number> = { live: 0, pending: 0, offline: 0, disabled: 0 };
+  for (const app of apps.value) result[appStatKey(app)]++;
+  return result;
+});
+
 /** 停用的排最前,然后是在线、未上线,已下线的放最后 */
 const shown = computed(() => {
   const q = filter.value.trim().toLowerCase();
   return apps.value
+    .filter((a) => !stat.value || appStatKey(a) === stat.value)
     .filter((a) => !q || [a.name, a.ownerName, ...a.departmentNames].some((t) => t.toLowerCase().includes(q)))
     .sort((a, b) => appStatus(a)[2] - appStatus(b)[2] || a.name.localeCompare(b.name));
 });
 
-const { currentPage, pageSize, total, pagedItems } = useLocalPagination(shown, [filter]);
+const { currentPage, pageSize, total, pagedItems } = useLocalPagination(shown, [filter, stat]);
+const filtering = computed(() => !!filter.value.trim() || !!stat.value);
 
 async function load() {
   try {
@@ -118,18 +131,22 @@ onMounted(load);
 <template>
   <section class="ops-page">
     <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
-    <div v-else class="content-panel">
+    <StatCards v-if="!forbidden && apps.length > 0" :counts="counts" :selected="stat" @select="(k) => (stat = k)" />
+    <div v-if="!forbidden" class="content-panel">
       <div class="panel-toolbar">
         <div class="filter-bar">
           <el-input v-model="filter" clearable placeholder="按应用名、负责人或部门筛选" style="width: 280px" />
         </div>
       </div>
       <el-table v-loading="loading" class="data-table" :data="pagedItems" :empty-text="loading ? ' ' : '没有应用'">
-        <el-table-column label="应用" min-width="150">
+        <el-table-column label="应用" min-width="190">
           <template #default="{ row }">
-            <div class="stack-cell">
-              <a class="app-name" :href="row.url" target="_blank" rel="noopener">{{ row.name }}</a>
-              <router-link class="status-note" :to="{ path: '/audit', query: { app: row.name } }">操作记录</router-link>
+            <div class="app-cell">
+              <AppAvatar :name="row.name" :muted="!row.live || row.disabled || row.unpublished" />
+              <div class="stack-cell">
+                <a class="app-cell-name" :href="row.url" target="_blank" rel="noopener">{{ row.name }}</a>
+                <router-link class="status-note" :to="{ path: '/audit', query: { app: row.name } }">操作记录</router-link>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -137,8 +154,8 @@ onMounted(load);
         <el-table-column label="负责人部门" min-width="140">
           <template #default="{ row }">{{ row.departmentNames.join("、") || "—" }}</template>
         </el-table-column>
-        <el-table-column label="谁能看" width="90">
-          <template #default="{ row }">{{ VISIBILITY[row.visibility as keyof typeof VISIBILITY] }}</template>
+        <el-table-column label="谁能看" width="110">
+          <template #default="{ row }"><VisibilityChip :value="row.visibility" /></template>
         </el-table-column>
         <el-table-column label="状态" min-width="140">
           <template #default="{ row }">
@@ -178,12 +195,8 @@ onMounted(load);
         v-model:page-size="pageSize"
         :total="total"
         unit="个应用"
-        :summary="filter.trim() ? `筛选出 ${total} 个,共 ${apps.length} 个应用` : undefined"
+        :summary="filtering ? `筛选出 ${total} 个,共 ${apps.length} 个应用` : undefined"
       />
     </div>
   </section>
 </template>
-
-<style scoped>
-.app-name { color: var(--color-text-heading); font-weight: var(--font-weight-title); }
-</style>

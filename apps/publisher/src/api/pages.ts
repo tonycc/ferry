@@ -3,29 +3,36 @@
  * 页面不引用任何外部资源;所有请求发往同一来源,浏览器会带上 Origin 和 cookie。
  */
 
-// 和控制台(apps/console/src/styles.css)用同一套颜色、字号和圆角;页面只有一列,body 本身就是居中的卡片。
-// 登录网关的报错页(gateway/gateway.ts)也用它
+// 和控制台(apps/console/src/styles.css)用同一套品牌色(靛蓝到紫的渐变)、字号和圆角;
+// 页面只有一列,body 本身就是居中的半透明卡片,背后是几团淡色渐变。登录网关的报错页(gateway/gateway.ts)也用它
 export const PAGE_STYLE = `
-  html { background: #F9FAFB; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.6; color: #374151;
-    max-width: 440px; margin: 10vh auto 48px; padding: 32px; background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px; box-sizing: border-box; }
-  h1 { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 20px; font-weight: 700; color: #111827; }
-  h1::before { content: "F"; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: #111827; color: #fff; font-size: 15px; }
-  h2 { font-size: 16px; color: #111827; margin: 24px 0 8px; }
-  label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 500; color: #374151; }
-  input { width: 100%; height: 38px; padding: 0 12px; font-size: 14px; font-family: inherit; color: #111827; box-sizing: border-box;
-    border: 1px solid #D1D5DB; border-radius: 8px; outline: none; transition: border-color .15s, box-shadow .15s; }
-  input:focus { border-color: #2563EB; box-shadow: 0 0 0 3px #DBEAFE; }
-  button { width: 100%; height: 38px; margin-top: 20px; padding: 0 18px; font-size: 14px; font-family: inherit; font-weight: 500; cursor: pointer;
-    color: #fff; background: #2563EB; border: 0; border-radius: 8px; }
-  button:hover { background: #1D4ED8; } button:disabled { opacity: .6; cursor: default; }
-  .hint { color: #6B7280; font-size: 13px; } .error { color: #DC2626; } .ok { color: #15803D; }
+  html { min-height: 100%; background:
+    radial-gradient(800px 500px at 12% 10%, rgba(99,102,241,.18), transparent 60%),
+    radial-gradient(700px 500px at 90% 20%, rgba(168,85,247,.16), transparent 60%),
+    radial-gradient(800px 600px at 50% 110%, rgba(14,165,233,.14), transparent 60%), #F8FAFC; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.6; color: #334155;
+    -webkit-font-smoothing: antialiased; max-width: 420px; margin: 12vh auto 48px; padding: 36px; box-sizing: border-box;
+    background: rgba(255,255,255,.85); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border: 1px solid rgba(226,232,240,.9); border-radius: 20px;
+    box-shadow: 0 30px 60px -30px rgba(30,27,75,.35); }
+  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: #0F172A; }
+  h1::before { content: ""; display: block; width: 44px; height: 44px; margin-bottom: 20px; border-radius: 13px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 17c1.5 1 3 1 4.5 0s3-1 4.5 0 3 1 4.5 0 3-1 4.5 0'/%3E%3Cpath d='M5 13l1-5h12l1 5'/%3E%3Cpath d='M9 8V5h6v3'/%3E%3Cpath d='M4 13h16'/%3E%3C/svg%3E") center / 24px no-repeat, linear-gradient(135deg, #4F46E5, #7C3AED);
+    box-shadow: 0 10px 20px -8px rgba(79,70,229,.8); }
+  h2 { font-size: 16px; color: #0F172A; margin: 24px 0 8px; }
+  label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 600; color: #334155; }
+  input { width: 100%; height: 42px; padding: 0 12px; font-size: 14px; font-family: inherit; color: #0F172A; box-sizing: border-box; background: #fff;
+    border: 1px solid #CBD5E1; border-radius: 10px; outline: none; transition: border-color .15s, box-shadow .15s; }
+  input:focus { border-color: #6366F1; box-shadow: 0 0 0 4px #E0E7FF; }
+  button { width: 100%; height: 42px; margin-top: 22px; padding: 0 18px; font-size: 14px; font-family: inherit; font-weight: 600; cursor: pointer;
+    color: #fff; background: linear-gradient(135deg, #4F46E5, #7C3AED); border: 0; border-radius: 10px; box-shadow: 0 10px 22px -10px rgba(79,70,229,.9); }
+  button:hover { filter: brightness(1.06); } button:disabled { opacity: .6; cursor: default; filter: none; }
+  .hint { color: #475569; font-size: 13px; } .error { color: #B91C1C; } .ok { color: #047857; }
   #msg:empty { display: none; }
-  code { background: #F3F4F6; padding: 1px 5px; border-radius: 4px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
-  pre { background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 8px; padding: 10px 12px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; } td, th { text-align: left; padding: 8px 4px; border-bottom: 1px solid #E5E7EB; font-size: 13px; }
-  th { color: #6B7280; font-weight: 600; }
-  @media (max-width: 480px) { body { margin: 0; min-height: 100vh; border: 0; border-radius: 0; padding: 24px 16px; } }
+  code { background: #F1F5F9; padding: 1px 6px; border-radius: 5px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
+  pre { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 10px 12px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; } td, th { text-align: left; padding: 8px 4px; border-bottom: 1px solid #E2E8F0; font-size: 13px; }
+  th { color: #64748B; font-weight: 600; }
+  @media (max-width: 480px) { body { margin: 0; min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; padding: 32px 20px; } }
 `;
 
 const POST = `

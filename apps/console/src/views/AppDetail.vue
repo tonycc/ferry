@@ -2,6 +2,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, type AppDetail, type ReleaseSummary, type ReleaseView, type SecretView, type Visibility } from "../api";
+import AppAvatar from "../components/AppAvatar.vue";
 import StatusTag from "../components/StatusTag.vue";
 import TableFooter from "../components/TableFooter.vue";
 import { useLocalPagination } from "../composables/useLocalPagination";
@@ -253,6 +254,7 @@ onBeforeUnmount(() => {
       <div class="content-panel">
         <div class="panel-toolbar">
           <div class="heading">
+            <AppAvatar :name="app.name" :size="30" :muted="!reachable" />
             <span class="panel-title">基本信息</span>
             <StatusTag :type="appStatus(app)[1]">{{ appStatus(app)[0] }}</StatusTag>
           </div>
