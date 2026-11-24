@@ -267,6 +267,8 @@ export class DokployPlatform implements DeployPlatform {
   private readonly backupRoot: string;
   private readonly backupKeep: number;
   private readonly gatewayMiddleware: string | null;
+  /** 读 Traefik 路由文件失败时只提醒一次(见 routeWritten) */
+  private routeCheckWarned = false;
   private readonly appLimits: ResourceLimits | null;
   private readonly isolateApps: boolean;
   private readonly traefikContainer: string;
@@ -405,18 +407,25 @@ export class DokployPlatform implements DeployPlatform {
   }
 
   /**
-   * 应用的 Traefik 路由文件(dynamic/<appName>.yml)在不在、有没有路由这个域名。
+   * 应用的 Traefik 路由文件(dynamic/<appName>.yml)在不在、有没有路由这个域名、有没有挂登录网关。
    * Dokploy 只在建、改域名和部署时写这个文件;Docker Desktop 重启会清空它所在的虚拟机目录,
-   * 域名记录还在、文件却没了,访问应用就是 404。读不到(接口出错、旧版 Dokploy)时当作没问题,不因此改域名
+   * 域名记录还在、文件却没了,访问应用就是 404。有人在 Dokploy 界面里改了文件、去掉了网关,
+   * 应用就不用登录也能打开。读不到(接口出错、旧版 Dokploy)时当作没问题,不因此改域名,
+   * 也不每次都记错误日志:只在第一次读不到时提醒一次
    */
   private async routeWritten(appId: string, host: string): Promise<boolean> {
     let config: string | null;
     try {
-      config = await this.client.query<string | null>("application.readTraefikConfig", { applicationId: appId });
-    } catch {
+      config = await this.client.query<string | null>("application.readTraefikConfig", { applicationId: appId }, { quiet: true });
+    } catch (err) {
+      if (!this.routeCheckWarned) {
+        this.routeCheckWarned = true;
+        console.warn(`读不到应用的 Traefik 路由文件(${(err as Error).message}),跳过“路由文件丢了就补回来”的检查`);
+      }
       return true;
     }
-    return typeof config === "string" && config.includes(`Host(\`${host}\`)`);
+    if (typeof config !== "string" || !config.includes(`Host(\`${host}\`)`)) return false;
+    return !this.gatewayMiddleware || config.includes(this.gatewayMiddleware);
   }
 
   /**

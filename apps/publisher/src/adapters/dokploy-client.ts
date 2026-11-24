@@ -43,11 +43,14 @@ export class DokployClient {
     this.logError = options.logError ?? ((message) => console.error(message));
   }
 
-  /** 读接口(GET),参数放在查询串里 */
-  async query<T>(procedure: string, input: Record<string, string | number> = {}): Promise<T> {
+  /**
+   * 读接口(GET),参数放在查询串里。quiet:出错时只抛异常、不写错误日志,
+   * 给调用方会自己处理(比如有意忽略)错误的读取用
+   */
+  async query<T>(procedure: string, input: Record<string, string | number> = {}, options: { quiet?: boolean } = {}): Promise<T> {
     const params = new URLSearchParams(Object.entries(input).map(([k, v]) => [k, String(v)]));
     const qs = params.toString();
-    return this.send<T>(procedure, `${this.url(procedure)}${qs ? `?${qs}` : ""}`, { method: "GET" });
+    return this.send<T>(procedure, `${this.url(procedure)}${qs ? `?${qs}` : ""}`, { method: "GET" }, options.quiet);
   }
 
   /** 写接口(POST),参数放在 JSON 请求体里 */
@@ -68,14 +71,14 @@ export class DokployClient {
     return `${this.baseUrl}/api/${procedure}`;
   }
 
-  private async send<T>(procedure: string, url: string, init: RequestInit): Promise<T> {
+  private async send<T>(procedure: string, url: string, init: RequestInit, quiet = false): Promise<T> {
     const response = await this.fetchImpl(url, {
       ...init,
       headers: { ...(init.headers as Record<string, string> | undefined), "x-api-key": this.apiKey },
     });
     const text = await response.text();
     if (!response.ok) {
-      this.logError(`Dokploy ${procedure} 返回 ${response.status}: ${text.slice(0, 2000)}`);
+      if (!quiet) this.logError(`Dokploy ${procedure} 返回 ${response.status}: ${text.slice(0, 2000)}`);
       throw new DokployError(procedure, response.status);
     }
     return (text ? JSON.parse(text) : undefined) as T;

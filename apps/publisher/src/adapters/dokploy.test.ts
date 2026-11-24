@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DokployClient, DokployError } from "./dokploy-client";
 import { describeExitedContainer, DokployPlatform, formatEnv, lastStartLogs, parseEnv } from "./dokploy";
 
@@ -105,7 +105,8 @@ describe("DokployPlatform", () => {
       "domain.byApplicationId": () => domains,
       "domain.create": () => ({ domainId: "d-new" }),
       "domain.update": () => true,
-      "application.readTraefikConfig": () => "http:\n  routers:\n    r:\n      rule: Host(`ledger.apps.localhost`)\n",
+      "application.readTraefikConfig": () =>
+        "http:\n  routers:\n    r:\n      rule: Host(`ledger.apps.localhost`)\n      middlewares:\n        - ferry-gateway@file\n",
     });
     await platform.attachDomain({ appId: "a1", host: "crm.apps.localhost", port: 8080 });
     expect(called("domain.create")[0]?.input).toMatchObject({
@@ -137,10 +138,10 @@ describe("DokployPlatform", () => {
     expect(called("domain.update")[1]?.input).toMatchObject({ domainId: "d1", port: 8080 });
   });
 
-  it("attachDomain:域名记录一致但 Traefik 路由文件没了(或没路由这个域名)时原样再提交一次;读不到路由文件时不动", async () => {
+  it("attachDomain:域名记录一致但 Traefik 路由文件没了、没路由这个域名或没挂网关时原样再提交一次;读不到路由文件时不动、只提醒一次", async () => {
     const domain = { domainId: "d1", host: "ledger.apps.localhost", port: 3000, path: "/", middlewares: ["ferry-gateway@file"] };
     let config: unknown = null;
-    const { platform, called } = fakeDokploy({
+    const { platform, called, logged } = fakeDokploy({
       "domain.byApplicationId": () => [domain],
       "domain.update": () => true,
       "application.readTraefikConfig": () => config,
@@ -162,15 +163,25 @@ describe("DokployPlatform", () => {
     await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
     expect(called("domain.update")).toHaveLength(2);
 
-    // 文件正常:不动
+    // 路由了这个域名,但登录网关被去掉了:不补的话应用不用登录就能打开
     config = "http:\n  routers:\n    r:\n      rule: Host(`ledger.apps.localhost`)\n";
     await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
-    expect(called("domain.update")).toHaveLength(2);
+    expect(called("domain.update")).toHaveLength(3);
 
-    // 接口出错(如旧版 Dokploy 没有这个接口):当作没问题,不改域名
+    // 文件正常:不动
+    config = "http:\n  routers:\n    r:\n      rule: Host(`ledger.apps.localhost`)\n      middlewares:\n        - ferry-gateway@file\n";
+    await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
+    expect(called("domain.update")).toHaveLength(3);
+
+    // 接口出错(如旧版 Dokploy 没有这个接口):当作没问题,不改域名;不记错误日志,只提醒一次
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     config = new Response("not found", { status: 404 });
     await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
-    expect(called("domain.update")).toHaveLength(2);
+    await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
+    expect(called("domain.update")).toHaveLength(3);
+    expect(logged).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it("ensureGateway:写入网关配置,顺序是删身份头、问 /authz、删健康检查口令", async () => {
