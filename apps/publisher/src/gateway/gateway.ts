@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import type { Directory } from "../adapters/types";
+import { PAGE_STYLE } from "../api/pages";
 import { readCookies } from "../identity";
 import type { PublisherService } from "../service";
 
@@ -241,9 +242,10 @@ function redirect(location: string): GatewayResponse {
 }
 
 function page(status: number, message: string): GatewayResponse {
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Ferry</title></head>
-<body style="font-family: system-ui, sans-serif; max-width: 560px; margin: 64px auto; padding: 0 16px">
-<h1 style="font-size: 20px">${status === 403 ? "无法访问" : "出错了"}</h1><p>${escapeHtml(message)}</p></body></html>`;
+  const title = status === 403 ? "无法访问" : "出错了";
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} - Ferry</title><style>${PAGE_STYLE}</style></head>
+<body><h1>${title}</h1><p>${escapeHtml(message)}</p></body></html>`;
   return { status, headers: { "content-type": "text/html; charset=utf-8" }, body: html };
 }
 

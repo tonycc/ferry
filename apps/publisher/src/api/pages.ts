@@ -3,8 +3,9 @@
  * 页面不引用任何外部资源;所有请求发往同一来源,浏览器会带上 Origin 和 cookie。
  */
 
-// 和控制台(apps/console/src/styles.css)用同一套颜色、字号和圆角;页面只有一列,body 本身就是居中的卡片
-const STYLE = `
+// 和控制台(apps/console/src/styles.css)用同一套颜色、字号和圆角;页面只有一列,body 本身就是居中的卡片。
+// 登录网关的报错页(gateway/gateway.ts)也用它
+export const PAGE_STYLE = `
   html { background: #F9FAFB; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.6; color: #374151;
     max-width: 440px; margin: 10vh auto 48px; padding: 32px; background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px; box-sizing: border-box; }
@@ -38,7 +39,7 @@ const POST = `
 
 export const LOGIN_PAGE = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>登录 Ferry</title><style>${STYLE}</style></head>
+<title>登录 Ferry</title><style>${PAGE_STYLE}</style></head>
 <body>
 <h1>登录 Ferry</h1>
 <form id="login">
@@ -98,7 +99,7 @@ ${POST}
  */
 export const SETUP_PAGE = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>设置 Ferry</title><style>${STYLE}</style></head>
+<title>设置 Ferry</title><style>${PAGE_STYLE}</style></head>
 <body>
 <h1>设置 Ferry</h1>
 <form id="code" hidden>

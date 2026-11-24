@@ -3,6 +3,8 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
 import { api, ApiError, type AdminDepartment, type AdminOrg, type AdminUser } from "../api";
 import StatusTag from "../components/StatusTag.vue";
+import TableFooter from "../components/TableFooter.vue";
+import { useLocalPagination } from "../composables/useLocalPagination";
 import { me } from "../session";
 
 /**
@@ -60,6 +62,8 @@ const shown = computed(() => {
     .filter((u) => !q || [u.name, u.mobile ?? "", u.jobNumber ?? "", ...namesOf(u)].some((t) => t.toLowerCase().includes(q)))
     .sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name, "zh-CN"));
 });
+
+const { currentPage, pageSize, total, pagedItems } = useLocalPagination(shown, [status, filter]);
 
 async function load() {
   try {
@@ -236,7 +240,7 @@ onMounted(load);
         <el-button type="primary" :disabled="loading || departments.length === 0" @click="openCreate">新增人员</el-button>
       </div>
       <p class="panel-note">员工用手机号(或工号)和密码登录。新增后生成初始密码转交本人;忘记密码也在这里重新生成。部门在“部门”页维护。</p>
-      <el-table v-loading="loading" class="data-table" :data="shown" :empty-text="loading ? ' ' : status === 'inactive' ? '没有已离职的人' : '还没有人员'">
+      <el-table v-loading="loading" class="data-table" :data="pagedItems" :empty-text="loading ? ' ' : status === 'inactive' ? '没有已离职的人' : '还没有人员'">
         <el-table-column label="姓名" min-width="140">
           <template #default="{ row }">
             <span :class="{ muted: !row.active }">{{ row.name }}</span>
@@ -287,6 +291,7 @@ onMounted(load);
           </template>
         </el-table-column>
       </el-table>
+      <TableFooter v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" unit="人" />
     </div>
   </section>
 

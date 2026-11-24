@@ -141,6 +141,22 @@ code {
   padding: 10px 0;
 }
 
+/* 表格底部:总数 + 分页(TableFooter.vue) */
+.table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-bg-subtle);
+}
+.footer-total {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
 /* 表格里一格放多行:主信息 + 灰色补充说明 */
 .stack-cell {
   display: grid;

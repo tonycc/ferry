@@ -3,6 +3,8 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, ref } from "vue";
 import { api, type TokenView } from "../api";
 import StatusTag from "../components/StatusTag.vue";
+import TableFooter from "../components/TableFooter.vue";
+import { useLocalPagination } from "../composables/useLocalPagination";
 import { time } from "../labels";
 
 const tokens = ref<TokenView[]>([]);
@@ -26,6 +28,8 @@ const workbuddy = computed(() =>
 const json = computed(() =>
   JSON.stringify({ mcpServers: { ferry: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${created.value}` } } } }, null, 2),
 );
+
+const { currentPage, pageSize, total, pagedItems } = useLocalPagination(tokens);
 
 async function load() {
   tokens.value = await api.get<TokenView[]>("/api/tokens");
@@ -114,7 +118,7 @@ onMounted(() => load().catch((err: Error) => ElMessage.error(err.message)));
 
     <div class="content-panel">
       <div class="panel-toolbar"><div class="panel-title">我的令牌</div></div>
-      <el-table :data="tokens" class="data-table">
+      <el-table :data="pagedItems" class="data-table">
         <el-table-column prop="label" label="名称" min-width="200" />
         <el-table-column label="生成时间" width="190">
           <template #default="{ row }">{{ time(row.createdAt) }}</template>
@@ -132,6 +136,7 @@ onMounted(() => load().catch((err: Error) => ElMessage.error(err.message)));
         </el-table-column>
         <template #empty>还没有令牌</template>
       </el-table>
+      <TableFooter v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" unit="个令牌" />
     </div>
   </section>
 </template>

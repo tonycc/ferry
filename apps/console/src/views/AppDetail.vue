@@ -3,6 +3,8 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, type AppDetail, type ReleaseSummary, type ReleaseView, type SecretView, type Visibility } from "../api";
 import StatusTag from "../components/StatusTag.vue";
+import TableFooter from "../components/TableFooter.vue";
+import { useLocalPagination } from "../composables/useLocalPagination";
 import { appStatus, STATE, time, VISIBILITY, VISIBILITY_HINT } from "../labels";
 import { secretNameProblem } from "@ferry/manifest/secrets";
 
@@ -32,6 +34,10 @@ const narrowQuery = window.matchMedia("(max-width: 640px)");
 const narrow = ref(narrowQuery.matches);
 const onNarrow = (e: MediaQueryListEvent) => (narrow.value = e.matches);
 narrowQuery.addEventListener("change", onNarrow);
+
+/** 发布历史从新到旧,接口最多返回最近 50 条 */
+const releases = computed(() => app.value?.releases ?? []);
+const { currentPage: releasePage, pageSize: releasePageSize, total: releaseTotal, pagedItems: pagedReleases } = useLocalPagination(releases, [], 10);
 
 const running = computed(() => app.value?.releases.some((r) => !r.done) ?? false);
 const canRollback = computed(() => !!app.value && app.value.live && !app.value.disabled && !app.value.unpublished && !running.value);
@@ -281,7 +287,7 @@ onBeforeUnmount(() => {
       <div class="content-panel tabs-panel">
         <el-tabs v-model="tab">
           <el-tab-pane label="发布历史" name="releases">
-            <el-table :data="app.releases" class="data-table" row-key="releaseId" @expand-change="expand">
+            <el-table :data="pagedReleases" class="data-table" row-key="releaseId" @expand-change="expand">
               <el-table-column type="expand">
                 <template #default="{ row }">
                   <div class="expand">
@@ -314,6 +320,7 @@ onBeforeUnmount(() => {
               </el-table-column>
               <template #empty>还没有发布过</template>
             </el-table>
+            <TableFooter v-model:current-page="releasePage" v-model:page-size="releasePageSize" :total="releaseTotal" unit="次发布" :page-sizes="[10, 20, 50]" />
           </el-tab-pane>
           <el-tab-pane label="密钥" name="secrets">
             <p class="panel-note secret-intro">
