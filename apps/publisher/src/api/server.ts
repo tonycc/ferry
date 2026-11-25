@@ -7,10 +7,12 @@ import { HTTP_STATUS, UserError } from "../errors";
 import type { IdentityResolver } from "../identity";
 import { createMcpServer } from "../mcp/server";
 import type { PublisherService } from "../service";
+import type { CertificateManager } from "../setup/certificate-manager";
 import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { registerAuthRoutes, type AuthRouteOptions } from "./auth-routes";
 import { registerConsole } from "./console";
+import { registerCertificateRoutes } from "./certificate-routes";
 import { type HostFilterOptions, registerHostFilter } from "./host-filter";
 import { registerSetupGate, registerSetupRoutes, type SetupRouteOptions } from "./setup-routes";
 import type { Gateway } from "../gateway/gateway";
@@ -42,6 +44,8 @@ export interface ServerOptions {
   setup?: SetupRouteOptions;
   /** 按请求的域名分流(Ferry 在 Traefik 上是兜底路由);不传时不过滤 */
   hosts?: Omit<HostFilterOptions, "initialized">;
+  /** 控制台的“证书”页;不传时没有(本机开发没有正式地址) */
+  certificates?: CertificateManager;
 }
 
 export function buildServer(
@@ -179,6 +183,8 @@ export function buildServer(
   });
 
   // ---- 管理员接口:查看全部应用,随时停用或恢复任意应用 ----
+
+  if (options.certificates) registerCertificateRoutes(app, options.certificates, identity);
 
   app.get("/api/admin/apps", async (req) => service.listAllApps(await identity(req, "api")));
 

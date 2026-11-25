@@ -10,7 +10,7 @@ import * as tls from "node:tls";
 export type CheckState = "ok" | "bad" | "warn";
 
 export interface CheckItem {
-  key: "parse" | "domains" | "key" | "chain" | "expiry" | "install";
+  key: "parse" | "domains" | "key" | "chain" | "expiry" | "install" | "switch";
   state: CheckState;
   message: string;
 }

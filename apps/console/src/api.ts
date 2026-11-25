@@ -119,7 +119,8 @@ export type AuditAction =
   | "department.update"
   | "department.delete"
   | "setup.selfcheck"
-  | "setup.complete";
+  | "setup.complete"
+  | "certificate.install";
 
 /** 一条审计记录 */
 export interface AuditEvent {
@@ -183,4 +184,26 @@ export interface TokenView {
   createdAt: string;
   lastUsedAt?: string;
   revoked: boolean;
+}
+
+/** 证书页(只给平台管理员):现在的证书和到期情况 */
+export interface CertificateStatus {
+  ferryHost: string;
+  appsDomain: string;
+  https: boolean;
+  /** 地址写在服务器的 .env 里,Ferry 改不了 */
+  fixedByEnv: boolean;
+  certificate?: { notAfter: string; domains: string[] };
+  daysLeft?: number;
+  /** ok;expiring 不到 30 天;urgent 不到 7 天;expired 已过期;none 还没有证书 */
+  level: "ok" | "expiring" | "urgent" | "expired" | "none";
+  httpsSince?: string;
+}
+
+export interface CertificateInstallResult {
+  ok: boolean;
+  installed: boolean;
+  items: { key: string; state: "ok" | "bad" | "warn"; message: string }[];
+  /** 同时切到了 https,Ferry 正在重启 */
+  switchedTo?: string;
 }

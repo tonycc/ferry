@@ -305,6 +305,12 @@ for (const c of storeCases("ferry_test_wizard")) {
       expect(await wizard.complete()).toEqual({ publicUrl: "https://ferry.example.com" });
     });
 
+    it("控制台补装证书后切到 https:地址配置和切换时间都存下", async () => {
+      const at = new Date("2026-12-02T00:00:00Z");
+      await store.switchToHttps({ publicUrl: "https://ferry.example.com", appsDomain: "apps.example.com", appsUrlScheme: "https" }, at);
+      expect(await store.getSettings()).toMatchObject({ publicUrl: "https://ferry.example.com", appsUrlScheme: "https", httpsSince: at });
+    });
+
     it("撤销切换后 http 地址要重新确认", async () => {
       const { options } = network();
       const wizard = new SetupWizard(store, platform, options());

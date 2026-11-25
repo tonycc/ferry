@@ -1,0 +1,1 @@
+ALTER TABLE "instance_settings" ADD COLUMN "https_since" timestamp with time zone;

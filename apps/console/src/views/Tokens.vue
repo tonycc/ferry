@@ -14,6 +14,9 @@ const creating = ref(false);
 const created = ref<string>();
 
 const mcpUrl = `${location.origin}/mcp`;
+/** 最近 30 天里从 http 切到了 https:之前配好的 agent 还在用 http 的 MCP 地址,要改 */
+const httpsSince = ref<string>();
+const recentlySwitched = computed(() => !!httpsSince.value && Date.now() - Date.parse(httpsSince.value) < 30 * 24 * 3600_000);
 const cli = computed(
   () => `claude mcp add --transport http --scope user ferry ${mcpUrl} --header "Authorization: Bearer ${created.value}"`,
 );
@@ -78,11 +81,24 @@ async function copy(text: string) {
   }
 }
 
-onMounted(() => load().catch((err: Error) => ElMessage.error(err.message)));
+onMounted(() => {
+  load().catch((err: Error) => ElMessage.error(err.message));
+  // 本机开发没有正式地址时没有这个接口
+  api
+    .get<{ https: boolean; httpsSince?: string }>("/api/instance")
+    .then((info) => (httpsSince.value = info.https ? info.httpsSince : undefined))
+    .catch(() => {});
+});
 </script>
 
 <template>
   <section class="ops-page">
+    <el-alert v-if="recentlySwitched" type="warning" :closable="false" show-icon>
+      <template #title>
+        Ferry 在 {{ time(httpsSince!) }} 改用了 HTTPS。之前配好的 agent 要把 MCP 地址改成 <code>{{ mcpUrl }}</code>:
+        重新生成一个令牌,按下面的方式再配一次(会替换掉原来的配置)
+      </template>
+    </el-alert>
     <div class="content-panel">
       <div class="panel-toolbar"><div class="panel-title">生成令牌</div></div>
       <p class="panel-note">

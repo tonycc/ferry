@@ -5,8 +5,8 @@
 打开应用时跳转 Ferry 登录再回到应用、重启后数据和登录都在。**真实域名和证书、Linux 上的防火墙还没有在企业环境里验证**,见文末。
 
 > **现在按这份文档手动部署。** 以后的做法是一条安装命令加浏览器里的设置向导([docs/setup-wizard.md](../docs/setup-wizard.md))。
-> `.env` 里 `PUBLIC_URL` 留空就进向导。向导现在能走完,但第 3 步跳过证书(先用 HTTP)后,
-> 在控制台补装证书、切到 HTTPS 的页面还没有。向导也还没在真实服务器上完整走过。
+> `.env` 里 `PUBLIC_URL` 留空就进向导。向导现在能走完(先用 HTTP 的,之后在控制台“证书”页补装证书、切到 HTTPS),
+> 但还没在真实服务器上完整走过。
 > 所以目前仍建议在 `.env` 里填 `PUBLIC_URL`,按这份文档部署:填了 Ferry 就按已经初始化处理,不会进向导。
 
 | 文件 | 用途 |
@@ -105,11 +105,14 @@ APPS_URL_SCHEME=http
 
 这时员工的登录密码、agent 的令牌在内网里是明文传输的,只适合试用。以后换成 HTTPS:
 
-1. 按“准备”里的方法装好证书。
-2. 把上面两项改回 `https://ferry.公司域名` 和 `https`,运行 `docker compose up -d ferry`。之后 Ferry 会把 http 的访问跳到 https。
-3. **已经发布的应用要一个个改**:它们在 Dokploy 上的域名还是 http,Ferry 目前不会自动改。在 Dokploy 里打开每个应用的域名设置,
-   打开 HTTPS(证书选 None,用你装的那张)。之后新建的应用直接就是 https;已有的应用重新发布也不会自动改,要按这一步在 Dokploy 里改。
-4. 告诉员工:agent 的 MCP 地址从 `http://` 改成 `https://`(控制台“个人令牌”页的配置方法里是新地址)。
+1. 在控制台“证书”页上传证书(覆盖 `ferry.公司域名` 和 `*.应用域名后缀`),Ferry 检查后装进 Traefik,确认 Traefik 用上了这张。
+   (地址写在 `.env` 里时 Ferry 不会自己切换,页面上会提示下一步。)
+2. 把上面两项改回 `https://ferry.公司域名` 和 `https`,运行 `docker compose up -d ferry`。之后 Ferry 会把 http 的访问跳到 https,
+   启动时把已经发布的应用在 Dokploy 上的域名也改成 https。
+3. 告诉员工:agent 的 MCP 地址从 `http://` 改成 `https://`(“个人令牌”页上会提示 30 天,配置方法里是新地址)。
+
+证书到期前 30 天起,控制台顶部给管理员提醒、日志里有告警,不到 7 天每天告警。换证书也在“证书”页上传新的。
+健康检查要从 Ferry 的容器里访问 Traefik 的 https 入口(默认 443 端口);Traefik 用别的端口时设 `HEALTHCHECK_TLS_PORT`。
 
 `GATEWAY_SECRET` 和 `SECRETS_KEY` 必须固定:不设置的话 compose 拒绝启动。`SECRETS_KEY` 丢了或换了,员工保存过的应用密钥全部解不开,
 把 `.env` 另外备份到安全的地方。

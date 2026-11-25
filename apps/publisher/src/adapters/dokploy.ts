@@ -413,10 +413,17 @@ export class DokployPlatform implements DeployPlatform {
   async installCertificate(input: { name: string; chain: string; privateKey: string; id?: string }): Promise<string> {
     // 注意:这两个接口的返回内容里带着私钥原文,不能写进日志
     const body = { name: input.name, certificateData: input.chain, privateKey: input.privateKey };
-    if (input.id) {
+    // 没有记录(比如向导里跳过了证书,或者上次记下的已经不在了):同名的那张就是之前装的,原地更新,
+    // 免得 Dokploy 里留下两张覆盖同样域名的证书,Traefik 出示哪张不确定
+    const sameName = async () =>
+      (await this.client.query<{ certificateId: string; name: string }[]>("certificates.all", {}, { quiet: true })).find(
+        (c) => c.name === input.name,
+      )?.certificateId;
+    const id = input.id ?? (await sameName().catch(() => undefined));
+    if (id) {
       try {
-        await this.client.mutate("certificates.update", { ...body, certificateId: input.id }, { quiet: true });
-        return input.id;
+        await this.client.mutate("certificates.update", { ...body, certificateId: id }, { quiet: true });
+        return id;
       } catch (err) {
         // 记下的那张已经不在了(在 Dokploy 上删了,或者 /etc/dokploy 被清空):新建一张,别让人卡在这一步
         if (!isNotFound(err)) throw err;

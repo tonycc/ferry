@@ -54,6 +54,8 @@ export const AUDIT_ACTIONS = [
   "setup.selfcheck",
   /** 设置向导第 7 步完成初始化;detail.publicUrl 是正式地址 */
   "setup.complete",
+  /** 管理员在控制台装证书(替换或补装);detail.notAfter、detail.domains,detail.switchedToHttps 表示同时切到了 https */
+  "certificate.install",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
