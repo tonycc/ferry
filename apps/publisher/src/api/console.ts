@@ -23,6 +23,11 @@ const TYPES: Record<string, string> = {
  * 在 /console/ 下提供控制台。assets/ 下的文件名带内容哈希,可以长期缓存;
  * 其他路径都是前端路由,返回 index.html(不缓存,发布新版控制台后立即生效)。
  */
+/** 设置向导的页面(控制台构建出来的 setup.html);还没构建时返回 undefined */
+export async function readSetupPage(dir: string = DEFAULT_CONSOLE_DIR): Promise<string | undefined> {
+  return readFile(join(resolve(dir), "setup.html"), "utf8").catch(() => undefined);
+}
+
 export function registerConsole(app: FastifyInstance, dir: string = DEFAULT_CONSOLE_DIR): void {
   const root = resolve(dir);
 
@@ -32,8 +37,8 @@ export function registerConsole(app: FastifyInstance, dir: string = DEFAULT_CONS
     const rel = req.params["*"];
     if (rel.startsWith("assets/")) {
       const file = resolve(root, rel);
-      // 不允许用 ../ 读到构建目录以外的文件
-      if (!file.startsWith(root + sep)) return reply.status(404).send();
+      // 只给 assets/ 里的文件:不允许用 ../ 读到别处(未初始化时这里对所有人开放,给设置向导的页面用)
+      if (!file.startsWith(join(root, "assets") + sep)) return reply.status(404).send();
       const body = await readFile(file).catch(() => undefined);
       if (!body) return reply.status(404).send();
       return reply

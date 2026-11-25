@@ -4,6 +4,7 @@ import { UserError } from "../errors";
 import { suggestServerIp } from "../setup/domain";
 import { SETUP_COOKIE, type SetupService } from "../setup/service";
 import type { SetupWizard } from "../setup/wizard";
+import { readSetupPage } from "./console";
 import { SETUP_PAGE } from "./pages";
 
 export interface SetupRouteOptions {
@@ -14,6 +15,8 @@ export interface SetupRouteOptions {
   wizard?: SetupWizard;
   /** 本进程的标识,/api/setup/ping 返回它 */
   instanceId?: string;
+  /** 控制台的构建目录:向导页面是其中的 setup.html。没构建时用服务器直出的简单页面(只有设置码这一步) */
+  consoleDir?: string;
 }
 
 const codeBody = z.object({ code: z.string().max(100) });
@@ -24,11 +27,18 @@ const domainBody = z.object({
   serverIp: z.string().max(45),
 });
 /** PEM 文本;证书链一般几 KB */
-const certificateBody = z.object({ certificate: z.string().max(64 * 1024), privateKey: z.string().max(16 * 1024) });
+const certificateBody = z.object({
+  certificate: z.string().max(64 * 1024, "证书文件太大(超过 64 KB):请确认选的是 .pem 或 .crt 证书文件"),
+  privateKey: z.string().max(16 * 1024, "私钥文件太大(超过 16 KB):请确认选的是 .key 私钥文件"),
+});
 const handoffBody = z.object({ token: z.string().max(200) });
 
-/** 未初始化时还能访问的路由(按 Fastify 匹配到的路由模式判断,不看原始地址,免得 /api/setup/../ 之类绕过) */
-function allowedBeforeSetup(route: string | undefined): boolean {
+/**
+ * 未初始化时还能访问的路由(按 Fastify 匹配到的路由模式判断,不看原始地址,免得 /api/setup/../ 之类绕过)。
+ * 控制台只开放 /console/assets/ 下的静态文件(向导页面的脚本和样式),页面本身和接口都不开放
+ */
+function allowedBeforeSetup(route: string | undefined, params: unknown): boolean {
+  if (route === "/console/*") return String((params as Record<string, unknown>)["*"] ?? "").startsWith("assets/");
   return route === "/healthz" || route === "/setup" || (route?.startsWith("/api/setup/") ?? false);
 }
 
@@ -48,7 +58,7 @@ export function registerSetupGate(app: FastifyInstance, options: SetupRouteOptio
       if (isSetupRoute(route)) return reply.status(404).send({ error: "not_found", message: "Ferry 已经完成初始化" });
       return;
     }
-    if (allowedBeforeSetup(route)) return;
+    if (allowedBeforeSetup(route, req.params)) return;
     // 打开 Ferry 的首页就进向导,和初始化后进控制台一样
     if (route === "/") return reply.redirect("/setup");
     return reply
@@ -73,7 +83,11 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
   // 第 4 步从服务器 IP 跳到正式地址时地址里带着交接令牌(/setup?handoff=…)。GET 只返回页面、不用掉令牌:
   // 链接预览、浏览器预取这类抢先访问不会把一次性的令牌用掉;页面去掉地址栏里的令牌,再用同源 POST 兑换
   app.get("/setup", async (_req, reply) =>
-    reply.type("text/html; charset=utf-8").header("cache-control", "no-store").header("referrer-policy", "no-referrer").send(SETUP_PAGE),
+    reply
+      .type("text/html; charset=utf-8")
+      .header("cache-control", "no-store")
+      .header("referrer-policy", "no-referrer")
+      .send((await readSetupPage(options.consoleDir)) ?? SETUP_PAGE),
   );
 
   // 第 2 步经 Traefik 请求它、第 4 步在浏览器里请求它,确认到的是这台服务器上的这个 Ferry。不需要会话,只返回一个随机标识

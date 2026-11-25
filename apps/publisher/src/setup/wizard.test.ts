@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -258,6 +258,41 @@ describe("设置向导的接口", () => {
     const res = await app.inject({ method: "POST", url: "/api/setup/code", headers, payload: { code } });
     return String(res.headers["set-cookie"]).split(";")[0]!;
   }
+
+  it("向导页面:控制台构建过就用 setup.html,否则用服务器直出的简单页面;未初始化时只开放 /console/assets/ 下的文件", async () => {
+    let { app } = server();
+    expect((await app.inject({ method: "GET", url: "/setup" })).body).toContain("设置码");
+
+    await writeFile(join(dir, "setup.html"), "<!doctype html><title>wizard</title>");
+    await writeFile(join(dir, "index.html"), "<!doctype html><title>console</title>");
+    await mkdir(join(dir, "assets"));
+    await writeFile(join(dir, "assets", "setup-abc.js"), "console.log(1)");
+    ({ app } = server());
+    const page = await app.inject({ method: "GET", url: "/setup" });
+    expect(page.body).toContain("<title>wizard</title>");
+    expect(page.headers["referrer-policy"]).toBe("no-referrer");
+    expect((await app.inject({ method: "GET", url: "/console/assets/setup-abc.js" })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/console/assets/nope.js" })).statusCode).toBe(404);
+    for (const url of ["/console/", "/console/apps", "/console/assets/../index.html", "/console/assets/%2e%2e/index.html"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode, url).not.toBe(200);
+      expect(res.body, url).not.toContain("<title>console</title>");
+    }
+  });
+
+  it("上传的文件太大:给出中文说明,不是 zod 的原始报错", async () => {
+    const { app } = server();
+    const cookie = await login(app);
+    await app.inject({ method: "POST", url: "/api/setup/domain", headers: { ...headers, cookie }, payload: INPUT });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/certificate",
+      headers: { ...headers, cookie },
+      payload: { certificate: "x".repeat(70 * 1024), privateKey: KEY },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toBe("证书文件太大(超过 64 KB):请确认选的是 .pem 或 .crt 证书文件");
+  });
 
   it("请求日志里去掉交接令牌", () => {
     expect(redactUrl("/setup?handoff=abc123")).toBe("/setup?handoff=<redacted>");
