@@ -145,7 +145,7 @@ const agentUrl = config.AGENT_URL ?? ferryUrl;
 if (instance.initialized && !instance.publicUrl && !config.AGENT_URL) {
   console.warn(
     `未设置 PUBLIC_URL:上传地址和控制台地址用 ${ferryUrl},只有本机直接运行的 agent 能访问上传地址。` +
-      "agent 在 Docker 容器里时,设 AGENT_URL 为它访问 Ferry 用的地址(如 http://host.docker.internal:8080);不要改 PUBLIC_URL,浏览器登录要用它",
+      "agent 在 Docker 容器里时,设 AGENT_URL 为它访问 Ferry 用的地址(如 http://host.docker.internal:8081);不要改 PUBLIC_URL,浏览器登录要用它",
   );
 }
 

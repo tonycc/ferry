@@ -106,7 +106,7 @@ pnpm dev
 不设置 `DATABASE_URL` 时用内存存储,重启后数据丢失。数据库迁移在服务启动时自动执行;
 修改 `apps/publisher/src/db/schema.ts` 后,用 `pnpm --filter @ferry/publisher db:generate` 生成新的迁移文件。
 
-服务监听 `http://127.0.0.1:8080`,MCP 入口是 `POST /mcp`。默认全部使用假实现,发布会立刻成功。
+服务监听 `http://127.0.0.1:8081`,MCP 入口是 `POST /mcp`。默认全部使用假实现,发布会立刻成功。
 管理员的用户 ID 通过环境变量 `ADMIN_USERS` 指定(逗号分隔)。管理员登录后打开 `/admin` 可以查看全部应用、停用和恢复;
 接口在 `/api/admin/apps` 下。
 每个应用和它的数据库默认最多用 1 核 CPU、512 MB 内存(`APP_CPU_LIMIT`、`APP_MEMORY_LIMIT_MB`、`DB_CPU_LIMIT`、`DB_MEMORY_LIMIT_MB`,设为 0 不限制),
@@ -121,7 +121,7 @@ pnpm dev
 pnpm --filter @ferry/console build
 ```
 
-改控制台时可以用开发服务器(http://localhost:5173/console/,接口转给本机 8080 端口的 Ferry;
+改控制台时可以用开发服务器(http://localhost:5173/console/,接口转给本机 8081 端口的 Ferry;
 Ferry 的 `ALLOWED_ORIGINS` 要加上 `http://localhost:5173`,否则修改类操作会被拒绝):
 
 ```bash
@@ -162,7 +162,7 @@ pnpm typecheck
 
 ### 登录和身份
 
-- **网页**:打开 http://127.0.0.1:8080/login ,用手机号和密码登录。初始密码由管理员在控制台“人员”页(http://127.0.0.1:8080/console/users)生成,
+- **网页**:打开 http://127.0.0.1:8081/login ,用手机号和密码登录。初始密码由管理员在控制台“人员”页(http://127.0.0.1:8081/console/users)生成,
   第一次登录后要改成自己的密码。第一个管理员还进不了控制台,用命令行给自己设初始密码(需要 `DATABASE_URL`):
 
   ```bash
@@ -171,7 +171,7 @@ pnpm typecheck
 
   这条命令在组织架构是空的时候顺便建好最上级部门(`--org <公司名>`,默认“公司”)。之后的人员和部门都由管理员在控制台“人员”“部门”页维护,
   忘记密码的人也在“人员”页重新生成初始密码。不设 `DATABASE_URL`(内存存储)时,Ferry 启动时建一个管理员(手机号 13800000000),初始密码打印在日志里。
-  登录后在控制台的“个人令牌”(http://127.0.0.1:8080/console/tokens)生成个人令牌。
+  登录后在控制台的“个人令牌”(http://127.0.0.1:8081/console/tokens)生成个人令牌。
 - **agent**:把个人令牌配进 agent 的 MCP 配置,请求头 `Authorization: Bearer fry_...`。MCP 只认个人令牌。
 - **开发用请求头**:`DEV_AUTH=true` 时,没带凭据的请求可以用 `x-ferry-user` 自称是谁,方便调试;默认关闭。
 - 所属部门一律从组织架构查(控制台“人员”“部门”页维护,改了立即生效)。控制台新建的人和部门 ID 以 `local:` 开头;
@@ -194,7 +194,7 @@ pnpm typecheck
 下面这条模拟 agent,经 MCP 把模板应用发布为 `ledger-demo`,成功后访问 http://ledger-demo.apps.localhost:
 
 ```bash
-FERRY_TOKEN=fry_你的个人令牌 python3 -I scripts/mcp-publish.py http://127.0.0.1:8080 packages/templates/node-postgres ledger-demo /tmp
+FERRY_TOKEN=fry_你的个人令牌 python3 -I scripts/mcp-publish.py http://127.0.0.1:8081 packages/templates/node-postgres ledger-demo /tmp
 ```
 
 ## 建议的下一步

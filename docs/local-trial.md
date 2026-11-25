@@ -10,8 +10,8 @@ M2 的验收标准:**试用员工不经指导完成发布;同事登录后能访�
 
 - 本机 Dokploy 在运行(http://localhost:3000 能打开)。
 - `pnpm dev` 在运行,并且 `.env` 里有 `FERRY_PLATFORM=dokploy`、`APPS_DOMAIN=apps.localhost`、`APPS_URL_SCHEME=http`、
-  `NOTIFY_VIA=log`、`SECRETS_KEY`。Ferry 地址是 http://127.0.0.1:8080 。
-  agent 跑在 Docker 容器里时,`.env` 里还要设 `AGENT_URL=http://host.docker.internal:8080`,否则它拿到的上传地址是 127.0.0.1,在容器里访问不到。
+  `NOTIFY_VIA=log`、`SECRETS_KEY`。Ferry 地址是 http://127.0.0.1:8081 。
+  agent 跑在 Docker 容器里时,`.env` 里还要设 `AGENT_URL=http://host.docker.internal:8081`,否则它拿到的上传地址是 127.0.0.1,在容器里访问不到。
   不要为此改 `PUBLIC_URL`:浏览器登录和打开应用时的跳转都按 `PUBLIC_URL` 走。
 - 管理员能登录:本机数据库里已经有下面的角色,Admin 没有密码时运行 `pnpm set-password 13800000005`。
   全新的数据库里还没有人:运行 `pnpm set-password <手机号> --name <姓名>` 建第一个管理员(同时建好最上级部门),
@@ -26,7 +26,7 @@ M2 的验收标准:**试用员工不经指导完成发布;同事登录后能访�
 
 ```bash
 mkdir -p ~/ferry-trial/dave && cd ~/ferry-trial/dave
-agy mcp add --header "Authorization: Bearer <Dave 的令牌>" ferry http://127.0.0.1:8080/mcp
+agy mcp add --header "Authorization: Bearer <Dave 的令牌>" ferry http://127.0.0.1:8081/mcp
 agy mcp list
 ```
 
@@ -59,7 +59,7 @@ Bob(财务部)能看,Carol(销售部)不能看;反过来 Bob 的本部门应用,
 
 ### 2. Dave 第一次登录、领令牌、配 agent
 
-在 Dave 的浏览器窗口打开 http://127.0.0.1:8080/console/tokens ,用初始密码登录,按要求改密码,
+在 Dave 的浏览器窗口打开 http://127.0.0.1:8081/console/tokens ,用初始密码登录,按要求改密码,
 生成令牌,按上面“准备”里的方法在 `~/ferry-trial/dave` 配好 MCP。员工能看的资料只有 [agent-onboarding.md](agent-onboarding.md)。
 
 - 预期:改完密码直接进入令牌页;`agy mcp list` 显示 ferry。

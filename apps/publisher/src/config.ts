@@ -12,7 +12,7 @@ function httpUrl(name: string) {
 }
 
 const envSchema = z.object({
-  PORT: z.coerce.number().int().default(8080),
+  PORT: z.coerce.number().int().default(8081),
   /** 监听地址。Traefik 要能访问到 /authz;本机 Docker Desktop 里的容器能访问到 127.0.0.1 */
   HOST: z.string().default("127.0.0.1"),
   /** Traefik 访问 Ferry 的 /authz 用的地址。默认是 Docker Desktop 里容器访问本机的地址 */
@@ -47,7 +47,7 @@ const envSchema = z.object({
   PUBLIC_URL: httpUrl("PUBLIC_URL"),
   /**
    * 只给 agent 用的上传地址前缀,不设时同 PUBLIC_URL。agent 和浏览器访问 Ferry 的地址不一样时才需要,
-   * 比如 agent 跑在 Docker 容器里(http://host.docker.internal:8080),而浏览器用 http://127.0.0.1:8080。
+   * 比如 agent 跑在 Docker 容器里(http://host.docker.internal:8081),而浏览器用 http://127.0.0.1:8081。
    * 不要为此去改 PUBLIC_URL:登录允许的来源、打开应用时的登录跳转都按 PUBLIC_URL 走
    */
   AGENT_URL: httpUrl("AGENT_URL"),

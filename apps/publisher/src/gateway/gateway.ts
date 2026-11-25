@@ -37,7 +37,7 @@ export const HEALTH_HEADER = "x-ferry-health";
 export interface GatewayConfig {
   /** 签 cookie、算健康检查口令用的密钥 */
   secret: string;
-  /** Ferry 对外地址,如 http://127.0.0.1:8080 */
+  /** Ferry 对外地址,如 http://127.0.0.1:8081 */
   ferryUrl: string;
   /** 应用地址的协议 */
   appsScheme: "http" | "https";
