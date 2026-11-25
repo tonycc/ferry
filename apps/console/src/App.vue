@@ -65,6 +65,9 @@ const certificateNotice = computed(() => {
   if (c.level === "urgent" || c.level === "expiring") {
     return { type: c.level === "urgent" ? ("error" as const) : ("warning" as const), text: `HTTPS 证书还有 ${c.daysLeft} 天过期:请提前上传新证书` };
   }
+  if (!c.https && c.certificate && c.fixedByEnv) {
+    return { type: "info" as const, text: "证书已经装好,但地址写在服务器的 .env 里:把 PUBLIC_URL、APPS_URL_SCHEME 改成 https 后重启 Ferry" };
+  }
   if (!c.https) return { type: "info" as const, text: "还没启用 HTTPS:上传证书后 Ferry 和应用都改用 https" };
   return undefined;
 });

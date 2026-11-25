@@ -329,7 +329,8 @@ if ((instance.initialized || instance.switched) && config.FERRY_PLATFORM === "do
 }
 
 // 证书到期提醒:启动一分钟后查一次,之后每天一次(不到 30 天提醒一次,不到 7 天每天都提醒)
-if (certificates && instance.initialized && config.FERRY_PLATFORM === "dokploy") {
+// 向导切换地址之后就开始(完成向导不会重启,这时不开始的话要等下次重启)
+if (certificates && (instance.initialized || instance.switched) && config.FERRY_PLATFORM === "dokploy") {
   const remind = () =>
     void certificates.remind((m) => alerts.send(m)).catch((err: Error) => server.log.error(`检查证书到期失败: ${err.message}`));
   setTimeout(remind, 60_000).unref();

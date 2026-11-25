@@ -61,20 +61,28 @@ async function install() {
   }
 }
 
-/** Ferry 按 https 重启:等十几秒,能打开 https 地址后跳过去(要重新登录时会先到登录页) */
+/**
+ * Ferry 按 https 重启:等它重新起来后跳到 https 地址(要重新登录时会先到登录页)。
+ * 查的是当前地址的 /healthz(同源、能读结果;切换后 http 也照样回答它,不跳转):
+ * 先看到一次连不上或者不正常(旧进程退出了),或者已经过了 3 秒(旧进程回完话 0.5 秒就退出),再正常才算起来了。
+ * 不能查 https 地址:跨域只能 no-cors,Traefik 在 Ferry 重启期间回的 502 也算“请求成功”
+ */
 async function waitAndGo(url: string) {
   switching.value = url;
-  await new Promise((r) => setTimeout(r, 5000));
-  for (let i = 0; i < 40; i++) {
-    try {
-      await fetch(`${url}/healthz`, { mode: "no-cors", cache: "no-store", signal: AbortSignal.timeout(5000) });
+  const start = Date.now();
+  let sawDown = false;
+  while (Date.now() - start < 120_000) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const ok = await fetch("/healthz", { cache: "no-store", signal: AbortSignal.timeout(5000) })
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (!ok) sawDown = true;
+    else if (sawDown || Date.now() - start >= 3000) {
       location.href = `${url}/console/certificate`;
       return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 3000));
     }
   }
-  ElMessage.error(`等了两分钟还打不开 ${url}:请查看 Ferry 的日志,处理后手动打开`);
+  ElMessage.error(`等了两分钟 Ferry 还没起来:请查看 Ferry 的日志,处理后手动打开 ${url}`);
 }
 </script>
 
