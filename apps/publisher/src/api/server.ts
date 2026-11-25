@@ -79,8 +79,9 @@ export function buildServer(
 
   // 要在其他路由之前,未初始化时的拦截才作用到全部路由
   if (options.setup) {
-    registerSetupGate(app, options.setup);
-    registerSetupRoutes(app, options.setup);
+    const setup = { consoleDir: options.consoleDir, ...options.setup };
+    registerSetupGate(app, setup);
+    registerSetupRoutes(app, setup);
   }
 
   app.get("/healthz", async () => ({ ok: true }));
