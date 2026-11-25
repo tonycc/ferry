@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DeployPlatform } from "../adapters/types";
+import { checkNewPassword } from "../auth/password";
 import { UserError } from "../errors";
 import { type CertificateCheck, type CheckItem, checkCertificate, covers } from "./certificate";
 import { checkDomain, type DomainCheck, type DomainDeps, type DomainInput } from "./domain";
@@ -69,6 +70,8 @@ export interface CertificateResult extends CertificateCheck {
 export class SetupWizard {
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
+  /** 第 5 步排队执行:同时提交两次(两个标签页)时,第二次要等第一次存下管理员后再判断,不能建出两个 */
+  private adminQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly store: SetupStore,
@@ -220,10 +223,18 @@ export class SetupWizard {
    * 向导会话不能用来多建管理员
    */
   async createAdmin(input: AdminInput): Promise<{ name: string; orgName: string; created: boolean }> {
+    const run = this.adminQueue.then(() => this.createAdminNow(input));
+    this.adminQueue = run.catch(() => {});
+    return run;
+  }
+
+  private async createAdminNow(input: AdminInput): Promise<{ name: string; orgName: string; created: boolean }> {
     await this.requireSwitched();
     const existing = (await this.wizard()).admin;
     if (existing) return { name: existing.name, orgName: existing.orgName, created: false };
     if (!this.options.createAdmin) throw new UserError("not_found", "这一步还没有开放");
+    // 先检查密码:建人之后才发现密码不合规,会留下一个没有密码、向导也没记下的管理员
+    checkNewPassword(input.password);
     const { userId } = await this.options.createAdmin(input);
     const admin = { userId, name: input.name, orgName: input.orgName };
     await this.store.saveWizard({ ...(await this.wizard()), admin });

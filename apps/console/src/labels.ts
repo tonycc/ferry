@@ -68,22 +68,22 @@ export const AUDIT_ACTION: Record<AuditAction, string> = {
   "user.reactivate": "恢复在职",
   "user.admin": "设置管理员",
   "department.create": "新建部门",
-  "setup.selfcheck": "初始化自检",
-  "setup.complete": "完成初始化",
   "department.update": "修改部门",
   "department.delete": "删除部门",
+  "setup.selfcheck": "初始化自检",
+  "setup.complete": "完成初始化",
 };
 
 const PERSON_FIELD: Record<string, string> = { name: "姓名", mobile: "手机号", jobNumber: "工号", departmentIds: "部门" };
 
 const shortVersion = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
 
-/** 审计记录的细节,写成一句话 */
 /** 不是在控制台上做的操作:标出是命令行还是设置向导 */
 function via(d: Record<string, unknown>): string {
   return d.via === "cli" ? "(命令行)" : d.via === "setup" ? "(设置向导)" : "";
 }
 
+/** 审计记录的细节,写成一句话 */
 export function auditDetail(e: AuditEvent): string {
   const d = e.detail;
   switch (e.action) {

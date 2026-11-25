@@ -246,7 +246,16 @@ for (const c of storeCases("ferry_test_wizard")) {
       expect((await wizard.status()).httpConfirmed).toBe(true);
 
       await expect(wizard.skipSelfCheck()).rejects.toThrow(/先设置公司和管理员/);
-      expect(await wizard.createAdmin(ADMIN)).toEqual({ name: "张三", orgName: "示例公司", created: true });
+      // 密码不合规:在建人之前就拒绝
+      await expect(wizard.createAdmin({ ...ADMIN, password: "12345678" })).rejects.toThrow(/不能全是数字/);
+      expect(created).toHaveLength(0);
+      // 同时提交两次:只建一个
+      const [first, second] = await Promise.all([
+        wizard.createAdmin(ADMIN),
+        wizard.createAdmin({ ...ADMIN, name: "李四", mobile: "13800000002" }),
+      ]);
+      expect(first).toEqual({ name: "张三", orgName: "示例公司", created: true });
+      expect(second).toEqual({ name: "张三", orgName: "示例公司", created: false });
       // 再提交(哪怕换了人)只返回已建好的
       expect(await wizard.createAdmin({ ...ADMIN, name: "李四", mobile: "13800000002" })).toEqual({
         name: "张三",
