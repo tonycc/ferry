@@ -706,8 +706,9 @@ export class PublisherService {
   }
 
   /**
-   * 服务启动时调用:确保每个在线应用的域名都挂着登录网关、指向当前端口。
-   * 网关上线之前建的域名没有挂网关,不处理的话这些应用会一直不用登录就能访问。返回检查过的应用数
+   * 服务启动时调用:确保每个在线应用的域名都挂着登录网关、指向当前端口,路由配置也在。
+   * 网关上线之前建的域名没有挂网关,不处理的话这些应用会一直不用登录就能访问;
+   * Docker Desktop 重启会清空 Traefik 的路由文件,不补回来应用就打不开。返回检查过的应用数
    */
   async ensureDomains(onError: (appName: string, err: Error) => void = () => {}): Promise<{ checked: number; failed: number }> {
     let checked = 0;
