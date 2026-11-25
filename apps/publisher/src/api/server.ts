@@ -11,6 +11,7 @@ import type { Directory } from "../adapters/types";
 import type { AuthService } from "../auth/service";
 import { registerAuthRoutes, type AuthRouteOptions } from "./auth-routes";
 import { registerConsole } from "./console";
+import { type HostFilterOptions, registerHostFilter } from "./host-filter";
 import { registerSetupGate, registerSetupRoutes, type SetupRouteOptions } from "./setup-routes";
 import type { Gateway } from "../gateway/gateway";
 import type { Organization } from "../org/service";
@@ -39,6 +40,8 @@ export interface ServerOptions {
   gateway?: Gateway;
   /** 设置向导和未初始化模式;不传时视为已初始化(测试和旧的调用方式) */
   setup?: SetupRouteOptions;
+  /** 按请求的域名分流(Ferry 在 Traefik 上是兜底路由);不传时不过滤 */
+  hosts?: Omit<HostFilterOptions, "initialized">;
 }
 
 export function buildServer(
@@ -82,7 +85,14 @@ export function buildServer(
     return reply.status(500).send({ error: "internal_error", message: "服务内部错误" });
   });
 
-  // 要在其他路由之前,未初始化时的拦截才作用到全部路由
+  // 要在其他路由之前,未初始化时的拦截、按域名的分流才作用到全部路由
+  if (options.hosts) {
+    registerHostFilter(app, {
+      appExists: async (hostname) => (await service.gatewayApp(hostname)) !== undefined,
+      ...options.hosts,
+      initialized: options.setup?.initialized ?? (() => true),
+    });
+  }
   if (options.setup) {
     const setup = { consoleDir: options.consoleDir, ...options.setup };
     registerSetupGate(app, setup);

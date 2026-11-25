@@ -143,7 +143,7 @@ Ferry 启动时判断是否已初始化:
   `websecure` 上一个,`tls: true`,没有匹配的证书时用 Traefik 默认的自签名证书;`web` 上一个,不带 tls。
   员工应用的路由都是具体的 `Host(...)`,优先级更高,不受影响;没有被任何应用认领的域名(包括服务器 IP)都到 Ferry。
 - Ferry 自己按请求的域名分流:未初始化时(包括第 4 步重启后、第 7 步完成前)任何域名和 IP 都只认 `/setup`;初始化后,`PUBLIC_URL` 的域名照常服务,
-  应用域名下的未知应用返回“应用不存在”,其他域名返回 404。
+  应用域名下的未知应用返回“应用不存在”(应用在线但协议不对时跳到应用地址),其他域名返回 404。
 - http 跳 https 的中间件保留,但只在初始化完成**并且装了证书**之后,对 Ferry 自己的域名生效(第 2 步的 ping 要走 http;
   跳过证书时没有可用的证书,跳过去只会看到证书警告)。
 
@@ -177,9 +177,10 @@ Ferry 启动时判断是否已初始化:
 ## 和现有部署的兼容
 
 - `.env` 里已经有 `PUBLIC_URL` 和 `APPS_DOMAIN` 的部署,启动即为已初始化,向导不出现,行为和现在一样。
-- compose 现在 `PUBLIC_URL` 和 `FERRY_HOST` 都是必填(`${…:?…}`)。不改的话,安装命令不写 `PUBLIC_URL` 时 compose 不启动;
-  写了又会被判定为已初始化,向导不出现。所以要一起改:`PUBLIC_URL` 改成可选(`${PUBLIC_URL:-}`,空值按没设处理),
-  路由从 `Host(${FERRY_HOST})` 改成兜底路由后 `FERRY_HOST` 不再需要。已部署的服务器 `.env` 里两个都有,升级时不用改。
+- compose 原来 `PUBLIC_URL` 和 `FERRY_HOST` 都是必填,安装命令不写 `PUBLIC_URL` 时 compose 不启动,写了又会被判定为已初始化。
+  已经改了(PR 2c):`PUBLIC_URL` 是可选的(`${PUBLIC_URL:-}`,空值按没设处理),路由改成兜底路由,`FERRY_HOST`、`FERRY_ENTRYPOINT`、
+  `FERRY_TLS` 不再需要;http 跳 https 也从 Traefik 中间件挪到 Ferry 里(只对自己的域名、只在用 https 时)。
+  已部署的服务器 `.env` 里这几项留着也没有影响。
   compose 里 `HOST: 0.0.0.0`,不会因为“本机监听”被当成已初始化。
 - `set-password` 命令保留,用于忘记密码等情况。
 

@@ -60,8 +60,8 @@ COPY --from=build /app/apps/console/dist apps/console/dist
 COPY --from=build /app/packages/manifest/src packages/manifest/src
 COPY --from=build /app/packages/templates packages/templates
 COPY --from=build /app/tsconfig.base.json tsconfig.base.json
-# 代码包目录:命名卷第一次挂上来时沿用这里的属主,不然第一次上传就没有写权限
-RUN mkdir -p /data/archives && chown -R node:node /data
+# 代码包目录和设置码目录:命名卷第一次挂上来时沿用这里的属主,不然第一次写就没有权限
+RUN mkdir -p /data/archives /data/state && chown -R node:node /data
 USER node
 WORKDIR /app/apps/publisher
 EXPOSE 8080

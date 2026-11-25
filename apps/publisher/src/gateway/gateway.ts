@@ -241,6 +241,11 @@ function redirect(location: string): GatewayResponse {
   return { status: 302, headers: { location }, body: "" };
 }
 
+/** 网关的报错页(无法访问 / 出错了),Ferry 自己的兜底路由收到不认识的应用域名时也用它 */
+export function errorPage(status: number, message: string): GatewayResponse {
+  return page(status, message);
+}
+
 function page(status: number, message: string): GatewayResponse {
   const title = status === 403 ? "无法访问" : "出错了";
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

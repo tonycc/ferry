@@ -24,7 +24,8 @@ services:
     env_file: .env
     environment:
       HOST: 0.0.0.0
-      PUBLIC_URL: ${PUBLIC_URL:?请在 deploy/.env 里设置 PUBLIC_URL(浏览器和 agent 访问 Ferry 的完整地址)}
+      # 浏览器和 agent 访问 Ferry 的完整地址。留空就进设置向导(docs/setup-wizard.md),在浏览器里设置域名和证书
+      PUBLIC_URL: ${PUBLIC_URL:-}
       PORT: "8080"
       FERRY_PLATFORM: dokploy
       DATABASE_URL: postgres://ferry:${POSTGRES_PASSWORD:?请在 deploy/.env 里设置 POSTGRES_PASSWORD}@postgres:5432/ferry
@@ -35,10 +36,13 @@ services:
       GATEWAY_AUTH_URL: http://ferry-publisher:8080/authz
       HEALTHCHECK_GATEWAY: http://dokploy-traefik:80
       ARCHIVE_DIR: /data/archives
+      # 设置码的明文只在这个文件里(不进日志);安装命令和管理员用 docker compose exec ferry cat 读它
+      SETUP_CODE_FILE: /data/state/setup-code
       NOTIFY_VIA: log
       DEV_AUTH: "false"
     volumes:
       - archives:/data/archives
+      - state:/data/state
     networks:
       internal: {}
       dokploy-network:
@@ -48,24 +52,23 @@ services:
         condition: service_healthy
     logging: *logging
     labels:
-      # Ferry 自己的域名(登录页、控制台、MCP、上传)经 Dokploy 的 Traefik 转过来。
-      # 不挂登录网关;/authz 只给 Traefik 在内部调用,不对外开放(免得外面伪造转发头来调它)
+      # Ferry 是 Dokploy 的 Traefik 上的兜底路由(docs/setup-wizard.md“Ferry 自己的路由”):员工应用的 Host(...) 路由优先级更高,
+      # 没有被应用认领的域名和服务器 IP 都到 Ferry。Ferry 自己按域名分流:未初始化时只开放设置向导;
+      # 初始化后只服务自己的域名(用 https 时把 http 跳到 https),应用域名下没有的应用返回“应用不存在”,其他域名 404。
+      # 不挂登录网关;/authz 只给 Traefik 在内部调用,兜底路由不接(免得外面伪造转发头来调它)。
+      # 一个路由不能同时在 web 上走明文、在 websecure 上走 TLS,所以分成两个
       traefik.enable: "true"
       traefik.docker.network: dokploy-network
-      traefik.http.routers.ferry.rule: Host(`${FERRY_HOST:?请在 deploy/.env 里设置 FERRY_HOST}`) && !PathPrefix(`/authz`)
-      traefik.http.routers.ferry.entrypoints: ${FERRY_ENTRYPOINT:-websecure}
-      traefik.http.routers.ferry.tls: ${FERRY_TLS:-true}
-      traefik.http.routers.ferry.priority: "100"
+      traefik.http.routers.ferry.rule: PathPrefix(`/`) && !PathPrefix(`/authz`)
+      traefik.http.routers.ferry.entrypoints: websecure
+      traefik.http.routers.ferry.tls: "true"
+      traefik.http.routers.ferry.priority: "1"
       traefik.http.routers.ferry.service: ferry
-      traefik.http.services.ferry.loadbalancer.server.port: "8080"
-      # http 访问跳到 https。优先级比上面低:本机只用 http(FERRY_ENTRYPOINT=web)时,上面的路由先匹配,不会跳转
-      traefik.http.routers.ferry-http.rule: Host(`${FERRY_HOST}`)
+      traefik.http.routers.ferry-http.rule: PathPrefix(`/`) && !PathPrefix(`/authz`)
       traefik.http.routers.ferry-http.entrypoints: web
       traefik.http.routers.ferry-http.priority: "1"
-      traefik.http.routers.ferry-http.middlewares: ferry-https
       traefik.http.routers.ferry-http.service: ferry
-      traefik.http.middlewares.ferry-https.redirectscheme.scheme: https
-      traefik.http.middlewares.ferry-https.redirectscheme.permanent: "true"
+      traefik.http.services.ferry.loadbalancer.server.port: "8080"
 
   postgres:
     image: postgres:17-alpine
@@ -92,4 +95,6 @@ networks:
 
 volumes:
   archives:
+  # 设置码文件;容器重建后还在
+  state:
   pgdata:
