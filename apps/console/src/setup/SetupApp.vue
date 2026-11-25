@@ -14,7 +14,7 @@ import CheckResult from "./CheckResult.vue";
 import Icon from "./Icon.vue";
 
 /**
- * 设置向导(docs/setup-wizard.md,界面按 docs/mockups/setup-wizard.html 的原型)。
+ * 设置向导(docs/setup-wizard.md)。
  * 现在在哪一步由 /api/setup/status 算出来,刷新页面、Ferry 重启后都能接着做。
  */
 

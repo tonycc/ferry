@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 设置向导用的线条图标(和原型 docs/mockups/setup-wizard.html 一样) */
+/** 设置向导用的线条图标 */
 defineProps<{ name: keyof typeof PATHS }>();
 </script>
 
