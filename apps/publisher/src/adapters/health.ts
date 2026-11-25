@@ -15,6 +15,8 @@ export interface HttpHealthCheckerOptions {
   requestTimeoutMs?: number;
   /** 每个应用的健康检查额外带的请求头(登录网关的健康检查口令) */
   extraHeaders?: (host: string) => Record<string, string>;
+  /** https 入口的端口(同一台机器),默认 443;测试用 */
+  tlsPort?: number;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -31,6 +33,7 @@ export class HttpHealthChecker implements HealthChecker {
   private readonly intervalMs: number;
   private readonly requestTimeoutMs: number;
   private readonly extraHeaders: (host: string) => Record<string, string>;
+  private readonly tlsPort: number | undefined;
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(options: HttpHealthCheckerOptions) {
@@ -40,6 +43,7 @@ export class HttpHealthChecker implements HealthChecker {
     this.intervalMs = options.intervalMs ?? 2000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 5000;
     this.extraHeaders = options.extraHeaders ?? (() => ({}));
+    this.tlsPort = options.tlsPort;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
@@ -53,11 +57,22 @@ export class HttpHealthChecker implements HealthChecker {
     }
   }
 
-  /** 返回状态码;连不上或超时返回 0 */
+  /**
+   * 返回状态码;连不上或超时返回 0。
+   * 应用用 https 时,Dokploy 给 http 入口的路由只挂“跳到 https”,登录网关和应用都在 https 入口上:
+   * 跳到同一个域名的 https 地址时,改走 https 入口再请求一次(同样带口令)
+   */
   private async get(host: string, path: string): Promise<number> {
-    const res = await probeGateway(this.gateway, host, path, { headers: this.extraHeaders(host), timeoutMs: this.requestTimeoutMs });
+    const options = { headers: this.extraHeaders(host), timeoutMs: this.requestTimeoutMs, tlsPort: this.tlsPort };
+    const res = await probeGateway(this.gateway, host, path, options);
+    if (isHttpsRedirect(res, host)) return (await probeGateway(this.gateway, host, path, { ...options, tls: true })).status;
     return res.status;
   }
+}
+
+/** 跳到同一个域名的 https 地址(Dokploy 给 https 应用的 http 路由只做这个) */
+export function isHttpsRedirect(res: { status: number; location?: string }, host: string): boolean {
+  return res.status >= 300 && res.status < 400 && (res.location?.toLowerCase().startsWith(`https://${host.toLowerCase()}/`) ?? false);
 }
 
 /**
@@ -70,7 +85,7 @@ export function probeGateway(
   gateway: URL,
   host: string,
   path: string,
-  options: { headers?: Record<string, string>; timeoutMs?: number; tls?: boolean } = {},
+  options: { headers?: Record<string, string>; timeoutMs?: number; tls?: boolean; tlsPort?: number } = {},
 ): Promise<{ status: number; location?: string }> {
   return new Promise((resolve) => {
     const common = {
@@ -81,7 +96,7 @@ export function probeGateway(
     };
     const send = options.tls
       ? (cb: (res: IncomingMessage) => void) =>
-          httpsRequest({ ...common, port: 443, servername: host, rejectUnauthorized: false }, cb)
+          httpsRequest({ ...common, port: options.tlsPort ?? 443, servername: host, rejectUnauthorized: false }, cb)
       : (cb: (res: IncomingMessage) => void) => request({ ...common, port: gateway.port || 80 }, cb);
     const req = send(
       (res) => {

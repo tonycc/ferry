@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { HttpHealthChecker } from "./health";
@@ -40,5 +43,40 @@ describe("HttpHealthChecker", () => {
   it("入口连不上时判为不健康(状态码 0),不抛错", async () => {
     const checker = new HttpHealthChecker({ gateway: "http://127.0.0.1:1", intervalMs: 10, timeoutMs: 50 });
     expect(await checker.check("ledger.apps.localhost", "healthz")).toEqual({ ok: false, status: 0 });
+  });
+
+  it("https 应用:http 入口跳到同一域名的 https 时,改走 https 入口再查一次,同样带口令", async () => {
+    const fixtures = join(__dirname, "../setup/fixtures");
+    const seen: { host?: string; token?: string; sni?: string }[] = [];
+    const tls = createHttpsServer(
+      { cert: readFileSync(join(fixtures, "chain.pem")), key: readFileSync(join(fixtures, "leaf.key")) },
+      (req, res) => {
+        seen.push({ host: req.headers.host, token: String(req.headers["x-token"]), sni: (req.socket as { servername?: string }).servername });
+        res.writeHead(200).end();
+      },
+    );
+    await new Promise<void>((resolve) => tls.listen(0, "127.0.0.1", resolve));
+    server = createServer((req, res) => res.writeHead(308, { location: `https://${req.headers.host}${req.url}` }).end());
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    try {
+      const checker = new HttpHealthChecker({
+        gateway: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        tlsPort: (tls.address() as AddressInfo).port,
+        extraHeaders: () => ({ "x-token": "t1" }),
+        intervalMs: 0,
+        timeoutMs: 1000,
+      });
+      expect(await checker.check("ledger.apps.example.com", "/healthz")).toEqual({ ok: true });
+      expect(seen).toEqual([{ host: "ledger.apps.example.com", token: "t1", sni: "ledger.apps.example.com" }]);
+    } finally {
+      tls.close();
+    }
+  });
+
+  it("跳到别的地址不算:判为不健康", async () => {
+    server = createServer((_req, res) => res.writeHead(302, { location: "https://other.example.com/" }).end());
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const checker = new HttpHealthChecker({ gateway: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, intervalMs: 0, timeoutMs: 50 });
+    expect(await checker.check("ledger.apps.example.com", "/healthz")).toEqual({ ok: false, status: 302 });
   });
 });

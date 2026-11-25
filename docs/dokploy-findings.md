@@ -346,3 +346,14 @@ Dokploy 默认的 `traefik.yml` 在 `websecure` 上全局设了 `certResolver: l
 这次验证时发现 Docker Desktop 重启过,虚拟机里的 `/etc/dokploy` 被重新生成:应用的路由文件、`ferry-gateway.yml` 都没了,
 `traefik.yml` 又回到 `api.insecure: true`,所有应用 404(`setup-local.sh` 开头已提示过)。恢复:重新运行 `infra/dokploy/setup-local.sh`,
 启动 Ferry(会重写 `ferry-gateway.yml`),再把应用各重新发布一次让 Dokploy 写回路由文件。Linux 服务器上没有这个问题。
+
+### https 域名在 Traefik 上的样子(2026-11-25,读 Dokploy v0.31.3 的 `utils/traefik/domain.js` 并实测)
+
+- 域名 `https: true` 时 Dokploy 写两个路由:`web` 上的只挂 `redirect-to-https`(其他中间件都不挂),`websecure` 上的挂登录网关等中间件。
+  所以 Ferry 经 80 端口做的健康检查和自检会先拿到 3xx:Ferry 看到跳到同一个域名的 https 时,改走 443 再请求一次(按域名发 SNI,不校验证书)。
+- `certificateType: "none"` 时 `websecure` 路由不带 `tls`,靠入口上的 TLS 设置接住 TLS 连接,证书按 SNI 从已加载的证书里选(装的公司证书)。
+  Dokploy 默认的 `traefik.yml` 在 `websecure` 入口上设了 `certResolver: letsencrypt`:实测 Traefik 会去给应用域名申请 Let's Encrypt 证书,
+  内网申请不到,日志里报 `Unable to obtain ACME certificate`,不影响使用。安装命令(阶段 4)去掉这个 resolver 时要保留入口上的 `http.tls: {}`,
+  否则 `websecure` 上的应用路由不再接 TLS 连接。
+- 实测:`APPS_URL_SCHEME=https` 的隔离实例跑设置向导的自检,测试应用发布、健康检查、未登录跳转登录页、删除都通过。
+
