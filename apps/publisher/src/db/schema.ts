@@ -175,6 +175,8 @@ export const instanceSettings = pgTable(
     certificate: jsonb("certificate"),
     setupCodeHash: text("setup_code_hash"),
     setupCompletedAt: timestamp("setup_completed_at", { withTimezone: true }),
+    /** 向导进度:第 2 步的域名、是否跳过证书、交接令牌的哈希(setup/store.ts 的 WizardState) */
+    wizardState: jsonb("wizard_state"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("instance_settings_single_row", sql`${t.id} = 1`)],

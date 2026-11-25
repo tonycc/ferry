@@ -104,7 +104,11 @@ export class SetupService {
       throw new UserError("unauthenticated", "设置码不对");
     }
     mine.failures = 0;
+    return this.openSession();
+  }
 
+  /** 开一个向导会话,返回 cookie 里放的令牌。输对设置码、或者在正式地址上用交接令牌换会话时调用 */
+  async openSession(): Promise<{ token: string; expiresAt: Date }> {
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(this.now().getTime() + this.sessionTtlMs);
     await this.store.deleteExpiredSessions(this.now());

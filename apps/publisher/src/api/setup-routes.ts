@@ -1,16 +1,30 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { UserError } from "../errors";
+import { suggestServerIp } from "../setup/domain";
 import { SETUP_COOKIE, type SetupService } from "../setup/service";
+import type { SetupWizard } from "../setup/wizard";
 import { SETUP_PAGE } from "./pages";
 
 export interface SetupRouteOptions {
   service: SetupService;
   /** 现在是否已完成初始化。完成后向导的接口一律 404 */
   initialized: () => boolean;
+  /** 第 2 到 4 步。没有时(测试)只有设置码这一步 */
+  wizard?: SetupWizard;
+  /** 本进程的标识,/api/setup/ping 返回它 */
+  instanceId?: string;
 }
 
 const codeBody = z.object({ code: z.string().max(100) });
+const domainBody = z.object({
+  domain: z.string().max(253),
+  ferrySub: z.string().max(63),
+  appsSub: z.string().max(63),
+  serverIp: z.string().max(45),
+});
+/** PEM 文本;证书链一般几 KB */
+const certificateBody = z.object({ certificate: z.string().max(64 * 1024), privateKey: z.string().max(16 * 1024) });
 
 /** 未初始化时还能访问的路由(按 Fastify 匹配到的路由模式判断,不看原始地址,免得 /api/setup/../ 之类绕过) */
 function allowedBeforeSetup(route: string | undefined): boolean {
@@ -45,18 +59,8 @@ export function registerSetupGate(app: FastifyInstance, options: SetupRouteOptio
 export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOptions): void {
   const { service } = options;
 
-  app.get("/setup", async (_req, reply) => reply.type("text/html; charset=utf-8").header("cache-control", "no-store").send(SETUP_PAGE));
-
-  app.get("/api/setup/status", async (req) => ({
-    initialized: options.initialized(),
-    session: await service.hasSession(req.headers),
-  }));
-
-  app.post("/api/setup/code", async (req, reply) => {
-    requireSameHostOrigin(req);
-    const { code } = codeBody.parse(req.body);
-    const { token } = await service.verifyCode(code, clientIp(req));
-    const cookie = [
+  const sessionCookie = (req: FastifyRequest, token: string) =>
+    [
       `${SETUP_COOKIE}=${token}`,
       "Path=/",
       "HttpOnly",
@@ -64,8 +68,68 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
       `Max-Age=${service.sessionMaxAgeSeconds}`,
       ...(isHttps(req) ? ["Secure"] : []),
     ].join("; ");
-    return reply.header("set-cookie", cookie).send({ ok: true });
+
+  app.get<{ Querystring: { handoff?: string } }>("/setup", async (req, reply) => {
+    // 第 4 步从服务器 IP 跳到正式地址时带着交接令牌:换成这个地址上的向导会话,再去掉地址栏里的令牌
+    const handoff = typeof req.query.handoff === "string" ? req.query.handoff : undefined;
+    if (handoff && options.wizard) {
+      if (await options.wizard.redeemHandoff(handoff)) {
+        const { token } = await service.openSession();
+        reply.header("set-cookie", sessionCookie(req, token));
+      }
+      return reply.header("cache-control", "no-store").redirect("/setup");
+    }
+    return reply.type("text/html; charset=utf-8").header("cache-control", "no-store").send(SETUP_PAGE);
   });
+
+  // 第 2 步经 Traefik 请求它、第 4 步在浏览器里请求它,确认到的是这台服务器上的这个 Ferry。不需要会话,只返回一个随机标识
+  app.get("/api/setup/ping", async (_req, reply) =>
+    reply.header("access-control-allow-origin", "*").header("cache-control", "no-store").send({ instance: options.instanceId }),
+  );
+
+  app.get("/api/setup/status", async (req) => {
+    const session = await service.hasSession(req.headers);
+    return {
+      initialized: options.initialized(),
+      session,
+      // 向导进度只给有会话的人看
+      ...(session && options.wizard
+        ? { wizard: await options.wizard.status(), suggestedIp: suggestServerIp(req.headers.host) }
+        : {}),
+    };
+  });
+
+  app.post("/api/setup/code", async (req, reply) => {
+    requireSameHostOrigin(req);
+    const { code } = codeBody.parse(req.body);
+    const { token } = await service.verifyCode(code, clientIp(req));
+    return reply.header("set-cookie", sessionCookie(req, token)).send({ ok: true });
+  });
+
+  /** 第 2 到 4 步的修改请求:同源、带着向导会话 */
+  const guard = async (req: FastifyRequest): Promise<SetupWizard> => {
+    requireSameHostOrigin(req);
+    if (!(await service.hasSession(req.headers))) throw new UserError("unauthenticated", "向导会话已过期,请重新输入设置码");
+    if (!options.wizard) throw new UserError("not_found", "这一步还没有开放");
+    return options.wizard;
+  };
+
+  app.post("/api/setup/domain", async (req) => (await guard(req)).checkDomain(domainBody.parse(req.body)));
+
+  app.post("/api/setup/certificate", async (req) => {
+    const wizard = await guard(req);
+    const { certificate, privateKey } = certificateBody.parse(req.body);
+    return wizard.installCertificate(certificate, privateKey);
+  });
+
+  app.post("/api/setup/certificate/skip", async (req) => {
+    await (await guard(req)).skipCertificate();
+    return { ok: true };
+  });
+
+  app.post("/api/setup/switch", async (req) => (await guard(req)).switchAddress());
+
+  app.post("/api/setup/handoff", async (req) => ({ token: await (await guard(req)).issueHandoff() }));
 }
 
 /**

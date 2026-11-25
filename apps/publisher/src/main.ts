@@ -33,7 +33,9 @@ import { PostgresSetupStore } from "./db/postgres-setup-store";
 import { MemorySetupStore, type SetupStore } from "./setup/store";
 import { checkInstance, resolveInstance } from "./setup/instance";
 import { ensureSetupCode, removeSetupCodeFile } from "./setup/code";
+import { lookupIpv4, pingFerry } from "./setup/probe";
 import { SetupService } from "./setup/service";
+import { SetupWizard } from "./setup/wizard";
 
 const config = loadConfig();
 
@@ -206,6 +208,10 @@ const gateway = new Gateway(service, directory, {
   ticketTtlMs: 60_000,
   now: () => new Date(),
 });
+// Traefik 访问 /authz 的地址:写网关配置用,设置向导装证书后也用它重写一次网关配置来触发 Traefik 加载
+const authAddress = config.GATEWAY_AUTH_URL ?? `http://host.docker.internal:${config.PORT}/authz`;
+// 本进程的标识:设置向导的 /api/setup/ping 返回它,用来确认请求到的是这台服务器上的这个 Ferry
+const instanceId = randomBytes(16).toString("hex");
 const identity = createIdentity({ auth, directory, adminIds, devAuth: config.DEV_AUTH === "true", allowedOrigins });
 const server = buildServer(service, identity, {
   maxArchiveBytes: config.MAX_ARCHIVE_MB * 1024 * 1024,
@@ -216,14 +222,30 @@ const server = buildServer(service, identity, {
     organization,
     routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:" },
   },
-  setup: { service: new SetupService(setupStore), initialized: () => instance.initialized },
+  setup: {
+    service: new SetupService(setupStore),
+    initialized: () => instance.initialized,
+    instanceId,
+    wizard: instance.initialized
+      ? undefined
+      : new SetupWizard(setupStore, adapters.platform, {
+          instanceId,
+          authAddress,
+          dns: { lookup: lookupIpv4, ping: (host) => pingFerry("http", host) },
+          httpsPing: (host) => pingFerry("https", host),
+          restart: () => {
+            // 先把响应发出去再退出;容器里由 Docker 的 restart: unless-stopped 拉起来
+            console.warn("设置向导写入了正式地址,Ferry 退出以按新配置启动(本机 tsx watch 不会自动拉起,要手动重启)");
+            setTimeout(() => process.exit(0), 500).unref();
+          },
+        }),
+  },
 });
 await server.listen({ port: config.PORT, host: config.HOST });
 
 // 写入登录网关的 Traefik 配置,并让已有应用的域名都挂上网关。失败只记日志并定时重试,不让 Ferry 退出
 // 未初始化时不碰 Traefik 和已有应用:那时还没有正式域名,登录网关也不工作
 if (instance.initialized && config.FERRY_PLATFORM === "dokploy") {
-  const authAddress = config.GATEWAY_AUTH_URL ?? `http://host.docker.internal:${config.PORT}/authz`;
   await setupGateway(
     adapters.platform,
     service,

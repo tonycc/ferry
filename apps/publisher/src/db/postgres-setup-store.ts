@@ -1,6 +1,6 @@
 import { eq, lte } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import type { CertificateInfo, InstanceSettings, SetupStore } from "../setup/store";
+import type { CertificateInfo, InstanceAddress, InstanceSettings, SetupStore, WizardState } from "../setup/store";
 import * as schema from "./schema";
 
 const settingsTable = schema.instanceSettings;
@@ -23,7 +23,31 @@ export class PostgresSetupStore implements SetupStore {
       certificate,
       setupCodeHash: row.setupCodeHash ?? undefined,
       setupCompletedAt: row.setupCompletedAt ?? undefined,
+      wizard: readWizard(row.wizardState),
     };
+  }
+
+  /** 单行表:没有这一行就插入,有就更新 */
+  private async upsert(values: Partial<typeof settingsTable.$inferInsert>) {
+    const set = { ...values, updatedAt: new Date() };
+    await this.db.insert(settingsTable).values({ id: 1, ...set }).onConflictDoUpdate({ target: settingsTable.id, set });
+  }
+
+  async saveWizard(state: WizardState) {
+    const { handoff, ...rest } = state;
+    await this.upsert({
+      wizardState: { ...rest, ...(handoff ? { handoff: { tokenHash: handoff.tokenHash, expiresAt: handoff.expiresAt.toISOString() } } : {}) },
+    });
+  }
+
+  async setCertificate(certificate: CertificateInfo | undefined) {
+    await this.upsert({
+      certificate: certificate ? { id: certificate.id, notAfter: certificate.notAfter.toISOString(), domains: certificate.domains } : null,
+    });
+  }
+
+  async setAddress(address: InstanceAddress) {
+    await this.upsert(address);
   }
 
   async setSetupCodeHash(hash: string) {
@@ -45,4 +69,14 @@ export class PostgresSetupStore implements SetupStore {
   async deleteExpiredSessions(now: Date) {
     await this.db.delete(sessionsTable).where(lte(sessionsTable.expiresAt, now));
   }
+}
+
+function readWizard(value: unknown): WizardState | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as WizardState & { handoff?: { tokenHash: string; expiresAt: string | Date } };
+  return {
+    ...(raw.domain ? { domain: raw.domain } : {}),
+    ...(raw.certificateSkipped ? { certificateSkipped: true } : {}),
+    ...(raw.handoff ? { handoff: { tokenHash: raw.handoff.tokenHash, expiresAt: new Date(raw.handoff.expiresAt) } } : {}),
+  };
 }

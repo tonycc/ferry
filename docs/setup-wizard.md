@@ -45,7 +45,7 @@
 - 显示要加的记录:`ferry` → IP、`*.apps` → IP,类型 A;以及阿里云控制台的操作步骤和“DNS 重绑定保护”的说明。
 - 检测(都在服务器上做):
   1. 解析 `ferry.example.com` 和一个随机名字 `ferry-check-<随机>.apps.example.com`,都应该得到本机 IP。
-  2. 用这个域名经 Traefik 的 80 端口请求 Ferry 的 `/api/setup/ping?nonce=…`,返回同一个 nonce,证明解析到的就是这台服务器、Traefik 能转过来。
+  2. 用这个域名经 Traefik 的 80 端口请求 Ferry 的 `/api/setup/ping`,返回本进程启动时生成的随机标识,和自己的一致,证明解析到的就是这台服务器上的这个 Ferry、Traefik 能转过来。
 - 人自己的电脑:这一步还查不了。向导页面在 `https://IP` 上,不能请求 http 地址(浏览器拦截混合内容),
   正式证书也还没装,请求 https 会证书报错。所以只给出 `nslookup` 命令让人自己查,真正的检查放在第 4 步:能跳转到正式地址,就说明人的电脑能解析、能访问。
   第 4 步跳不过去时,页面列出可能的原因(还没生效、IP 不对、路由器拦截了内网地址、浏览器走了代理)。
@@ -209,7 +209,7 @@ Ferry 启动时判断是否已初始化:
 | PR | 内容 |
 |---|---|
 | 1 | ✅ 验证:Dokploy 证书接口能否用 API key 调用、兜底路由的优先级、Traefik 自签名证书访问 `https://IP`。`instance_settings` 表、环境变量优先的配置读取、未初始化模式、设置码(含输入设置码开向导会话的接口 `/api/setup/status`、`/api/setup/code`,和只有这一步的 `/setup` 页面;未初始化时首页跳到 `/setup`) |
-| 2 | 向导第 1 到 4 步:设置码页、域名和 DNS 检测、证书上传检查和安装(可跳过,先用 HTTP)、重启后交接到正式地址;compose 改成两条兜底路由,`PUBLIC_URL` 改成可选,去掉 `FERRY_HOST` |
+| 2 | 向导第 1 到 4 步:设置码页、域名和 DNS 检测、证书上传检查和安装(可跳过,先用 HTTP)、重启后交接到正式地址;compose 改成两条兜底路由,`PUBLIC_URL` 改成可选,去掉 `FERRY_HOST`。拆成三个 PR:2a 后端接口,2b 向导界面,2c compose 和部署文档 |
 | 3 | 向导第 5 到 7 步;控制台的证书页(替换、到期提醒,以及跳过证书后的补装和切到 HTTPS) |
 | 4 | 安装命令 `deploy/install.sh`,在 Linux 虚拟机里从零跑通;更新 deploy/README.md |
 

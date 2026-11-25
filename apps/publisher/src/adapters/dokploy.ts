@@ -406,6 +406,19 @@ export class DokployPlatform implements DeployPlatform {
     });
   }
 
+  async installCertificate(input: { name: string; chain: string; privateKey: string; id?: string }): Promise<string> {
+    // 注意:这两个接口的返回内容里带着私钥原文,不能写进日志
+    const body = { name: input.name, certificateData: input.chain, privateKey: input.privateKey };
+    if (input.id) {
+      await this.client.mutate("certificates.update", { ...body, certificateId: input.id });
+      return input.id;
+    }
+    const [org] = await this.client.query<{ id: string }[]>("organization.all");
+    if (!org) throw new Error("Dokploy 上没有组织,装不了证书");
+    const created = await this.client.mutate<{ certificateId: string }>("certificates.create", { ...body, organizationId: org.id });
+    return created.certificateId;
+  }
+
   /**
    * 应用的 Traefik 路由文件(dynamic/<appName>.yml)在不在、有没有路由这个域名、有没有挂登录网关。
    * Dokploy 只在建、改域名和部署时写这个文件;Docker Desktop 重启会清空它所在的虚拟机目录,

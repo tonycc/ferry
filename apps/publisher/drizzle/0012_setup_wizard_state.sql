@@ -1,0 +1,1 @@
+ALTER TABLE "instance_settings" ADD COLUMN "wizard_state" jsonb;
