@@ -1,5 +1,5 @@
 /*
- * 设置向导的样式(方案 A,和控制台、登录页一致)。来自 docs/mockups/setup-wizard.html 的原型,去掉了原型专用的地址栏和控制面板。
+ * 设置向导的样式(方案 A,和控制台、登录页一致)。
  */
 :root {
   --brand: #4F46E5; --brand-2: #7C3AED; --brand-soft: #EEF2FF; --grad: linear-gradient(135deg, var(--brand), var(--brand-2));
