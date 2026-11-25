@@ -4,6 +4,10 @@
 这套配置在本机(Mac + Docker Desktop + 本机 Dokploy)上完整验证过:用镜像启动、经 Traefik 登录、用个人令牌发布模板应用并上线、
 打开应用时跳转 Ferry 登录再回到应用、重启后数据和登录都在。**真实域名和证书、Linux 上的防火墙还没有在企业环境里验证**,见文末。
 
+> **现在按这份文档手动部署。** 以后的做法是一条安装命令加浏览器里的设置向导([docs/setup-wizard.md](../docs/setup-wizard.md)),
+> 向导还没做完:目前打开 `/setup` 只有输入设置码这一步。所以 `.env` 里一定要填 `PUBLIC_URL`,填了 Ferry 就按已经初始化处理,
+> 不会进向导;留空的话 compose 不启动。
+
 | 文件 | 用途 |
 |---|---|
 | `../Dockerfile` | Ferry 的镜像:发布服务、构建好的控制台、应用模板、固定版本的 gitleaks(按架构下载并校验) |
@@ -32,12 +36,24 @@
 
 ### 1. 准备
 
-- 一台 Linux 服务器(建议 4 核 8G 以上),装好 Docker,按 Dokploy 官方文档安装 Dokploy(本机用的是 v0.31.3)。
+- 一台 Linux 服务器(建议 4 核 8G 以上)。服务器的 80、443、3000 端口要空着(Traefik 和 Dokploy 用)。
+- 安装 Dokploy:用 root 运行官方安装脚本 `curl -sSL https://dokploy.com/install.sh | sh`。没有 Docker 时脚本会先装好 Docker
+  并初始化 Docker Swarm,不用单独装;已经装过 Docker 的,先升级到官方最新版。本机用的是 Dokploy v0.31.3,
+  脚本怎么固定版本以 Dokploy 官方文档为准。(本机用的 `infra/dokploy/setup-local.sh` 是给 Mac 的,服务器上不用它。)
+- 装好后用浏览器打开 `http://服务器IP:3000`,建 Dokploy 的管理员账号,再在个人设置里生成 API key(第 3 步要填)。
 - 内网 DNS:`*.apps.公司域名` 和 `ferry.公司域名` 都解析到这台服务器(P2)。Ferry 的域名不要放在应用域名下面。
-- 证书(P3):泛域名证书 `*.apps.公司域名` 和 `ferry.公司域名` 的证书。内网用不了 Let's Encrypt,
-  把证书放进 Traefik 读的目录(Dokploy 的 `/etc/dokploy/traefik/dynamic`,写一份 `tls.certificates` 配置),具体按 Traefik 文档。
-  Dokploy 的 `traefik.yml` 给 `websecure` 入口设了默认的 `certResolver: letsencrypt`,内网域名的 ACME 验证永远不会成功,
-  Traefik 会反复重试、刷日志(之后用你放的证书)。用内部证书时,把这个默认的 certResolver 从 `traefik.yml` 里去掉,重启 Traefik。
+- 证书(P3):要同时覆盖 `ferry.公司域名` 和 `*.apps.公司域名`(一张多域名证书,或者两张)。内网用不了 Traefik 自动申请的证书
+  (Let's Encrypt 要从公网访问到服务器;泛域名还要 DNS 验证,Ferry 不保存阿里云的凭据),所以由人申请后放到服务器上:
+  - 证书要带中间证书(下载时选 Nginx 格式,`.pem` 里一般有两段);私钥不能有密码。
+  - 在 Dokploy 管理页面的证书(Certificates)设置里添加:粘贴证书链和私钥。Dokploy 把它们写到
+    `/etc/dokploy/traefik/dynamic/certificates/` 下,**但 Traefik 不会自己加载**(见 `docs/dokploy-findings.md`),
+    添加后运行 `docker restart dokploy-traefik`。
+  - 检查:`openssl s_client -connect 服务器IP:443 -servername ferry.公司域名 </dev/null | openssl x509 -noout -subject -enddate`
+    显示的应该是你的证书,不是 `TRAEFIK DEFAULT CERT`。
+  - Dokploy 的 `traefik.yml` 给 `websecure` 入口设了默认的 `certResolver: letsencrypt`,内网域名的 ACME 验证永远不会成功,
+    Traefik 会反复重试、刷日志。把这个默认的 certResolver 从 `traefik.yml` 里去掉,重启 Traefik。
+  - 证书没有自动续期:记下到期时间,到期前按上面再换一次(人工申请的证书最长约 200 天)。
+  - **证书还没办下来**,可以先用 HTTP 部署,见下面“先用 HTTP”。
 - 关掉 Traefik 的管理接口:`/etc/dokploy/traefik/traefik.yml` 里 `api.insecure: false`,重启 Traefik(见 `docs/dokploy-findings.md`)。
 - 服务器不能访问外网时,先准备 npm 和镜像仓库的内部代理(任务 1.2),员工应用构建要用。
 
@@ -77,6 +93,25 @@ chmod 600 .env
 | `DOKPLOY_API_KEY` | Dokploy 管理页面 → 个人设置里生成 |
 | `POSTGRES_PASSWORD`、`GATEWAY_SECRET`、`SECRETS_KEY` | 各运行一次 `openssl rand -hex 32` |
 | `ADMIN_USERS` | 可以不填。固定的平台管理员(用户 ID,逗号分隔),控制台上不能取消;其余管理员在控制台“人员”页设置 |
+
+#### 先用 HTTP(证书还没办下来时)
+
+把这几项改成 http 的值,其他照填:
+
+```bash
+PUBLIC_URL=http://ferry.公司域名
+APPS_URL_SCHEME=http
+FERRY_ENTRYPOINT=web
+FERRY_TLS=false
+```
+
+这时员工的登录密码、agent 的令牌在内网里是明文传输的,只适合试用。以后换成 HTTPS:
+
+1. 按“准备”里的方法装好证书。
+2. 把上面四项改回 `https://ferry.公司域名`、`https`、`websecure`、`true`,运行 `docker compose up -d ferry`。
+3. **已经发布的应用要一个个改**:它们在 Dokploy 上的域名还是 http,Ferry 目前不会自动改。在 Dokploy 里打开每个应用的域名设置,
+   打开 HTTPS(证书选 None,用你装的那张)。之后新建的应用直接就是 https;已有的应用重新发布也不会自动改,要按这一步在 Dokploy 里改。
+4. 告诉员工:agent 的 MCP 地址从 `http://` 改成 `https://`(控制台“个人令牌”页的配置方法里是新地址)。
 
 `GATEWAY_SECRET` 和 `SECRETS_KEY` 必须固定:不设置的话 compose 拒绝启动。`SECRETS_KEY` 丢了或换了,员工保存过的应用密钥全部解不开,
 把 `.env` 另外备份到安全的地方。
@@ -162,5 +197,8 @@ docker compose up -d ferry
 ## 还没在企业环境验证的
 
 - 真实域名和证书:本机用的是 `http://ferry.localhost` 和 `*.apps.localhost`,没有走 https。
+  经 Dokploy 证书接口装证书、Traefik 用上它,在本机用测试证书验证过(设置向导 PR 36);用 Dokploy 管理页面添加证书没有走过。
+- 在全新的 Linux 服务器上用官方脚本安装 Dokploy(本机是 Mac,用的是 `infra/dokploy/setup-local.sh`)。
+- 先用 HTTP 再换 HTTPS 的整个过程。
 - Linux 上的防火墙规则(`firewall.example.sh`)。
 - 服务器能否访问外网、员工实际用的 agent 客户端能否连上 Ferry。
