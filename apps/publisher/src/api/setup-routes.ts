@@ -69,9 +69,9 @@ export function registerSetupGate(app: FastifyInstance, options: SetupRouteOptio
       if (isSetupRoute(route)) return reply.status(404).send({ error: "not_found", message: "Ferry 已经完成初始化" });
       return;
     }
-    if (options.switched?.() || allowedBeforeSetup(route, req.params)) return;
-    // 打开 Ferry 的首页就进向导,和初始化后进控制台一样
+    // 打开 Ferry 的首页就进向导,和初始化后进控制台一样。切换之后也是:向导完成前还没有能登录的管理员
     if (route === "/") return reply.redirect("/setup");
+    if (options.switched?.() || allowedBeforeSetup(route, req.params)) return;
     return reply
       .status(503)
       .send({ error: "not_initialized", message: "Ferry 还没有完成初始化,请管理员先用设置向导完成初始化" });

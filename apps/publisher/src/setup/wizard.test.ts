@@ -311,6 +311,7 @@ describe("设置向导的接口", () => {
     const app = buildServer(service, async () => ({ id: "u", departments: [], isAdmin: false }), {
       maxArchiveBytes: 1024,
       consoleDir: dir,
+      hosts: { publicUrl: "https://ferry.example.com", appsDomain: "apps.example.com" },
       setup: {
         service: new SetupService(store),
         initialized: () => phase.completed === true,
@@ -437,6 +438,10 @@ describe("设置向导的接口", () => {
     const phase = { switched: true, completed: false };
     const { app, wizard } = server(phase);
     expect((await app.inject({ method: "GET", url: "/api/apps", headers })).statusCode).toBe(200);
+    // 首页仍然进向导:完成前还没有能登录的管理员
+    const home = await app.inject({ method: "GET", url: "/", headers });
+    expect(home.statusCode).toBe(302);
+    expect(home.headers.location).toBe("/setup");
     phase.switched = false;
     expect((await app.inject({ method: "GET", url: "/api/apps", headers })).statusCode).toBe(503);
     phase.switched = true;
@@ -457,7 +462,14 @@ describe("设置向导的接口", () => {
     expect((await post("/api/setup/selfcheck/skip")).statusCode).toBe(200);
     expect((await post("/api/setup/complete")).json()).toEqual({ publicUrl: "https://ferry.example.com" });
     expect(phase.completed).toBe(true);
-    expect((await app.inject({ method: "GET", url: "/api/setup/status", headers })).statusCode).toBe(404);
-    expect((await post("/api/setup/complete")).statusCode).toBe(404);
+    // 完成后:正式地址上向导 404、首页进控制台;服务器 IP 开始按域名分流,也是 404
+    const formal = { host: "ferry.example.com", "x-forwarded-proto": "https" };
+    const status = await app.inject({ method: "GET", url: "/api/setup/status", headers: formal });
+    expect(status.statusCode).toBe(404);
+    expect(status.json().message).toContain("已经完成初始化");
+    expect((await app.inject({ method: "GET", url: "/", headers: formal })).headers.location).toBe("/console/");
+    const ip = await app.inject({ method: "GET", url: "/", headers });
+    expect(ip.statusCode).toBe(404);
+    expect(ip.json().message).toContain("不是 Ferry");
   });
 });
