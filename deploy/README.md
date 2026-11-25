@@ -84,7 +84,9 @@
   - 装证书有两种做法:Ferry 启动后在控制台“证书”页上传(Ferry 检查后装进 Traefik,推荐);或者现在就在 Dokploy 管理页面的
     证书(Certificates)设置里添加:粘贴证书链和私钥。Dokploy 把它们写到 `/etc/dokploy/traefik/dynamic/certificates/` 下,
     **但 Traefik 不会自己加载**(见 `docs/dokploy-findings.md`),添加后运行 `docker restart dokploy-traefik`。
-  - 检查:`openssl s_client -connect 服务器IP:443 -servername ferry.公司域名 </dev/null | openssl x509 -noout -subject -enddate`
+    两种做法只选一种:在 Dokploy 上加的证书和“证书”页装的名字不同,以后改用“证书”页时,先在 Dokploy 的证书设置里删掉原来那张,
+    不然两张证书覆盖同样的域名,Traefik 出示哪张不确定,“证书”页会提示“出示的还是另一张证书”。
+  - 证书装好之后检查(用“证书”页上传时页面会自己检查;还没装时这里看到的是 Traefik 的默认证书,不是出错):`openssl s_client -connect 服务器IP:443 -servername ferry.公司域名 </dev/null | openssl x509 -noout -subject -enddate`
     显示的应该是你的证书,不是 `TRAEFIK DEFAULT CERT`。
   - Dokploy 的 `traefik.yml` 给 `websecure` 入口设了默认的 `certResolver: letsencrypt`,内网域名的 ACME 验证永远不会成功,
     Traefik 会反复重试、刷日志。去掉它,但入口上的 `tls` 要留着:把
