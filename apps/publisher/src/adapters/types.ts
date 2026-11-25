@@ -38,6 +38,11 @@ export interface DeployPlatform {
   /** 写入登录网关的配置(Traefik 中间件),服务启动时调用。authAddress 是 Traefik 能访问到的 /authz 地址 */
   ensureGateway(input: { authAddress: string }): Promise<void>;
   /**
+   * 安装 TLS 证书(交给 Traefik,按 SNI 选用)。传了 id 时原地替换那一张,返回证书 ID。
+   * 装好后 Traefik 不会自己加载,调用方随后用 ensureGateway 重写一次网关配置触发加载(docs/dokploy-findings.md)
+   */
+  installCertificate(input: { name: string; chain: string; privateKey: string; id?: string }): Promise<string>;
+  /**
    * 写入环境变量。不传 keep 时合并写入:只更新传入的变量,保留已有的其他变量。
    * 传了 keep 时整体替换:结果只有 env 里的变量,外加已有变量中名称在 keep 里的
    * (发布时用它移除控制台上删掉的密钥:Ferry 是应用环境变量唯一的写入方)

@@ -85,6 +85,13 @@
       "when": 1795510163283,
       "tag": "0011_setup_wizard",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795570525429,
+      "tag": "0012_setup_wizard_state",
+      "breakpoints": true
     }
   ]
 }

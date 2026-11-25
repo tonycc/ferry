@@ -46,7 +46,20 @@ export function buildServer(
   identity: IdentityResolver,
   options: ServerOptions,
 ): FastifyInstance {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: {
+      serializers: {
+        // 请求日志里的地址去掉设置向导的交接令牌(/setup?handoff=…),令牌不进日志
+        req: (req) => ({
+          method: req.method,
+          url: redactUrl(req.url),
+          host: req.host,
+          remoteAddress: req.ip,
+          remotePort: req.socket?.remotePort,
+        }),
+      },
+    },
+  });
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof UserError) {
@@ -200,4 +213,9 @@ export function buildServer(
   });
 
   return app;
+}
+
+/** 日志里的地址:去掉查询串里的交接令牌 */
+export function redactUrl(url: string): string {
+  return url.replace(/([?&]handoff=)[^&#]*/g, "$1<redacted>");
 }

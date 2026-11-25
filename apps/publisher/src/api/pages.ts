@@ -125,7 +125,13 @@ ${POST}
   const $ = (id) => document.getElementById(id);
   const msg = (text, cls) => { $("msg").textContent = text; $("msg").className = cls || ""; };
   const show = (session) => { $("code").hidden = session; $("next").hidden = !session; if (!session) $("value").focus(); };
-  fetch("/api/setup/status").then((r) => r.json()).then((s) => show(Boolean(s.session))).catch(() => show(false));
+  const status = () => fetch("/api/setup/status").then((r) => r.json()).then((s) => show(Boolean(s.session))).catch(() => show(false));
+  // 从服务器 IP 交接过来:先去掉地址栏里的令牌,再用同源 POST 换成这个地址上的向导会话
+  const handoff = new URLSearchParams(location.search).get("handoff");
+  if (handoff) {
+    history.replaceState(null, "", "/setup");
+    post("/api/setup/handoff/redeem", { token: handoff }).catch((err) => msg(err.message, "error")).finally(status);
+  } else status();
   $("code").addEventListener("submit", async (e) => {
     e.preventDefault(); msg("");
     try {

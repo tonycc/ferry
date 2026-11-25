@@ -53,13 +53,14 @@ export class DokployClient {
     return this.send<T>(procedure, `${this.url(procedure)}${qs ? `?${qs}` : ""}`, { method: "GET" }, options.quiet);
   }
 
-  /** 写接口(POST),参数放在 JSON 请求体里 */
-  async mutate<T>(procedure: string, input: unknown = {}): Promise<T> {
-    return this.send<T>(procedure, this.url(procedure), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    });
+  /** 写接口(POST),参数放在 JSON 请求体里。quiet 同 query */
+  async mutate<T>(procedure: string, input: unknown = {}, options: { quiet?: boolean } = {}): Promise<T> {
+    return this.send<T>(
+      procedure,
+      this.url(procedure),
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) },
+      options.quiet,
+    );
   }
 
   /** 表单上传(POST multipart)。不设 content-type,由 fetch 自动加上带分隔符的值 */

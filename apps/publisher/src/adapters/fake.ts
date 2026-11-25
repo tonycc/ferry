@@ -87,6 +87,15 @@ export class FakePlatform implements DeployPlatform {
     this.domains.set(input.host, input.port);
   }
 
+  /** 装过的证书:ID → 证书链 */
+  certificates = new Map<string, string>();
+  async installCertificate(input: { name: string; chain: string; privateKey: string; id?: string }): Promise<string> {
+    const id = input.id ?? this.id("cert");
+    this.certificates.set(id, input.chain);
+    this.calls.push(`installCertificate:${input.name}`);
+    return id;
+  }
+
   async ensureGateway(input: { authAddress: string }): Promise<void> {
     this.gatewayAddress = input.authAddress;
   }
