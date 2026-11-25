@@ -242,6 +242,8 @@ interface DokployDomain {
   port: number | null;
   path: string | null;
   middlewares: string[] | null;
+  https?: boolean;
+  certificateType?: string;
 }
 
 /** Ferry 写进 Traefik 的登录网关中间件,挂在每个应用的域名上 */
@@ -396,7 +398,9 @@ export class DokployPlatform implements DeployPlatform {
       return;
     }
     const gated = gateway.every((m) => existing.middlewares?.includes(m));
-    if (existing.port === input.port && gated && (await this.routeWritten(input.appId, input.host))) return;
+    // 协议和证书类型也要对上:从 http 切到 https(控制台补装证书)后重启时,在这里把已有应用的域名一起改过来
+    const scheme = (existing.https ?? false) === this.https && (existing.certificateType ?? "none") === this.certificateType;
+    if (existing.port === input.port && gated && scheme && (await this.routeWritten(input.appId, input.host))) return;
     // 域名记录不对,或者记录对但 Traefik 的路由文件没了:都原样提交一次,Dokploy 会重写路由文件
     await this.client.mutate("domain.update", {
       ...desired,

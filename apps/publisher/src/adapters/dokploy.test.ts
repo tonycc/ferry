@@ -136,6 +136,13 @@ describe("DokployPlatform", () => {
     domains = [{ domainId: "d1", host: "ledger.apps.localhost", port: 3000, path: "/", middlewares: ["ferry-gateway@file"] }];
     await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 8080 });
     expect(called("domain.update")[1]?.input).toMatchObject({ domainId: "d1", port: 8080 });
+
+    // 协议不一致(比如从 http 切到了 https,或者反过来):按现在的设置改过来
+    domains = [
+      { domainId: "d1", host: "ledger.apps.localhost", port: 3000, path: "/", middlewares: ["ferry-gateway@file"], https: true, certificateType: "none" },
+    ];
+    await platform.attachDomain({ appId: "a1", host: "ledger.apps.localhost", port: 3000 });
+    expect(called("domain.update")[2]?.input).toMatchObject({ domainId: "d1", https: false, certificateType: "none" });
   });
 
   it("attachDomain:域名记录一致但 Traefik 路由文件没了、没路由这个域名或没挂网关时原样再提交一次;读不到路由文件时不动、只提醒一次", async () => {

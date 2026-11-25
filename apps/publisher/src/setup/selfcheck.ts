@@ -1,3 +1,4 @@
+import { isHttpsRedirect } from "../adapters/health";
 import { UserError } from "../errors";
 import type { User } from "../identity";
 import type { PublisherService } from "../service";
@@ -175,7 +176,7 @@ export class SelfCheck {
     const host = `${SELFCHECK_APP}.${this.deps.appsDomain}`;
     let res = await this.deps.probe(host, "/");
     // 应用用 https 时,http 入口先跳到 https 的同一个地址:改走 https 入口再看一次
-    if (res.status >= 300 && res.status < 400 && res.location?.startsWith(`https://${host}/`)) {
+    if (isHttpsRedirect(res, host)) {
       res = await this.deps.probe(host, "/", { tls: true });
     }
     const login = new URL("/auth/app", this.deps.publicUrl).toString();
