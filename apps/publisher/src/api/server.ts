@@ -87,7 +87,11 @@ export function buildServer(
 
   // 要在其他路由之前,未初始化时的拦截、按域名的分流才作用到全部路由
   if (options.hosts) {
-    registerHostFilter(app, { ...options.hosts, initialized: options.setup?.initialized ?? (() => true) });
+    registerHostFilter(app, {
+      appExists: async (hostname) => (await service.gatewayApp(hostname)) !== undefined,
+      ...options.hosts,
+      initialized: options.setup?.initialized ?? (() => true),
+    });
   }
   if (options.setup) {
     const setup = { consoleDir: options.consoleDir, ...options.setup };

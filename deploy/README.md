@@ -168,10 +168,13 @@ docker compose up -d ferry
 
 从 2026-11 下旬之前的版本升级时:compose 里 Ferry 的路由改成了兜底路由(`docker compose up -d` 时一起更新),
 `.env` 里的 `FERRY_HOST`、`FERRY_ENTRYPOINT`、`FERRY_TLS` 不再使用,可以删掉,留着也没有影响。
-之后用服务器 IP 或其他没配置的域名访问,Ferry 回 404;应用域名下不存在的应用回“应用不存在”。
+之后用服务器 IP 或其他没配置的域名访问,Ferry 回 404;应用域名下不存在的应用回“应用不存在”;
+应用只开了 http 却被用 https 打开时,跳到 http 的地址。
 
 **回退**:把 `FERRY_IMAGE` 改回旧标签再 `docker compose up -d ferry`。如果新版本加了数据库迁移,旧版本可能读不了新的表结构,
 这时要用升级前的备份恢复数据库(恢复会丢掉升级之后的记录)。
+回退到 2026-11 下旬之前的版本时,`docker-compose.yml` 也要换回那个版本的(`deploy/` 目录和镜像标签一起取),
+`.env` 里补回 `FERRY_HOST` 等变量:旧镜像不会按域名分流,配上新的兜底路由,服务器 IP 和任何没配置的域名都能打开它的登录页。
 
 **备份 Ferry 自己的数据**(3.4 只管员工应用的数据库,这里是 Ferry 的):
 

@@ -222,7 +222,12 @@ const server = buildServer(service, identity, {
     organization,
     routes: { allowedOrigins, secureCookie: publicUrl.protocol === "https:" },
   },
-  hosts: { publicUrl: instance.publicUrl, agentUrl: config.AGENT_URL, appsDomain: instance.appsDomain },
+  hosts: {
+    publicUrl: instance.publicUrl,
+    agentUrl: config.AGENT_URL,
+    appsDomain: instance.appsDomain,
+    appsScheme: instance.appsUrlScheme,
+  },
   setup: {
     service: new SetupService(setupStore),
     initialized: () => instance.initialized,

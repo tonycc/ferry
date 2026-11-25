@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { createFakeAdapters } from "../adapters/fake";
 import { PublisherService } from "../service";
+import { SetupService } from "../setup/service";
+import { MemorySetupStore } from "../setup/store";
 import { Engine } from "../workflow/engine";
 import { MemoryStore } from "../workflow/store";
 import { buildServer } from "./server";
 
-function server(options: { publicUrl?: string; agentUrl?: string; initialized?: boolean }) {
+interface Options {
+  publicUrl?: string;
+  agentUrl?: string;
+  appsScheme?: "http" | "https";
+  /** 不给时不挂设置向导(当作已初始化) */
+  initialized?: boolean;
+}
+
+function server(options: Options, workflow = new MemoryStore()) {
   const adapters = createFakeAdapters();
-  const workflow = new MemoryStore();
   const service = new PublisherService(workflow, new Engine(workflow, adapters, { maxFixAttempts: 3 }), adapters, {
     appsDomain: "apps.example.com",
     maxAppsPerUser: 5,
@@ -16,7 +25,15 @@ function server(options: { publicUrl?: string; agentUrl?: string; initialized?: 
   });
   const app = buildServer(service, async () => ({ id: "u", departments: [], isAdmin: false }), {
     maxArchiveBytes: 1024,
-    hosts: { publicUrl: options.publicUrl, agentUrl: options.agentUrl, appsDomain: "apps.example.com" },
+    hosts: {
+      publicUrl: options.publicUrl,
+      agentUrl: options.agentUrl,
+      appsDomain: "apps.example.com",
+      appsScheme: options.appsScheme,
+    },
+    ...(options.initialized === undefined
+      ? {}
+      : { setup: { service: new SetupService(new MemorySetupStore()), initialized: () => options.initialized ?? true } }),
   });
   app.log.level = "silent";
   return app;
@@ -57,6 +74,34 @@ describe("按域名分流(Ferry 是 Traefik 上的兜底路由)", () => {
     expect((await get(app, "/", { host: "ferry.example.com", "x-forwarded-proto": "http" })).statusCode).toBe(302);
     expect((await get(app, "/healthz", { host: "host.docker.internal:8080" })).statusCode).toBe(200);
     expect((await get(app, "/", { host: "host.docker.internal:8080" })).statusCode).toBe(302);
+  });
+
+  it("应用域名下的在线应用:协议和应用地址不一样时跳过去;一样时说暂时打不开;下线的当作不存在", async () => {
+    const workflow = new MemoryStore();
+    const base = { ownerId: "u", visibility: "company" as const, platform: {}, liveVersion: "v1", createdAt: new Date() };
+    await workflow.createApp({ ...base, name: "expense", host: "expense.apps.example.com" });
+    await workflow.createApp({ ...base, name: "old", host: "old.apps.example.com", unpublishedAt: new Date() });
+    const app = server({ publicUrl: "https://ferry.example.com", appsScheme: "http" }, workflow);
+
+    const https = await get(app, "/reports?y=2", { host: "Expense.apps.example.com", "x-forwarded-proto": "https" });
+    expect(https.statusCode).toBe(302);
+    expect(https.headers.location).toBe("http://expense.apps.example.com/reports?y=2");
+
+    const http = await get(app, "/", { host: "expense.apps.example.com", "x-forwarded-proto": "http" });
+    expect(http.statusCode).toBe(503);
+    expect(http.body).toContain("暂时打不开");
+
+    const old = await get(app, "/", { host: "old.apps.example.com", "x-forwarded-proto": "https" });
+    expect(old.statusCode).toBe(404);
+    expect(old.body).toContain("这个应用不存在或已下线");
+  });
+
+  it("未初始化时不按域名过滤:用服务器 IP 能打开设置向导", async () => {
+    const app = server({ publicUrl: "https://ferry.example.com", initialized: false });
+    const res = await get(app, "/", { host: "10.0.0.5", "x-forwarded-proto": "https" });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe("/setup");
+    expect((await get(app, "/setup", { host: "10.0.0.5" })).statusCode).toBe(200);
   });
 
   it("没有对外地址(本机开发)时不过滤", async () => {
