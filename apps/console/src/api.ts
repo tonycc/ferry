@@ -117,7 +117,9 @@ export type AuditAction =
   | "user.admin"
   | "department.create"
   | "department.update"
-  | "department.delete";
+  | "department.delete"
+  | "setup.selfcheck"
+  | "setup.complete";
 
 /** 一条审计记录 */
 export interface AuditEvent {

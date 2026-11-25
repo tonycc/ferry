@@ -223,6 +223,20 @@ export class AuthService {
     return password;
   }
 
+  /**
+   * 设置向导第 5 步:第一个管理员在向导页面上自己设置的密码,不是初始密码,登录后不用再改。规则和改密码一样。
+   * 这个人原有的登录会话全部作废
+   */
+  async setPasswordFromSetup(userId: string, password: string): Promise<void> {
+    if (!(await this.directory.isActive(userId))) throw new UserError("not_found", "组织架构里没有这个人,或者已离职");
+    checkNewPassword(password);
+    await this.setPassword(userId, password, false, undefined);
+    this.clearTickets(userId);
+    await this.store.deleteSessionsOf(userId);
+    const name = await this.directory.nameOf(userId);
+    await this.audit.record(undefined, "password.change", undefined, { userId, ...(name ? { name } : {}), via: "setup" });
+  }
+
   /** 人员页用:每个人的密码状态 */
   async passwordStatuses(): Promise<Map<string, PasswordStatus>> {
     const statuses = new Map<string, PasswordStatus>();

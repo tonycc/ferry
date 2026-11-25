@@ -54,6 +54,10 @@ export class PostgresSetupStore implements SetupStore {
     await this.upsert({ publicUrl: null, appsDomain: null, appsUrlScheme: null });
   }
 
+  async markCompleted(at: Date) {
+    await this.upsert({ setupCompletedAt: at });
+  }
+
   async setSetupCodeHash(hash: string) {
     await this.db
       .insert(settingsTable)
@@ -81,6 +85,9 @@ function readWizard(value: unknown): WizardState | undefined {
   return {
     ...(raw.domain ? { domain: raw.domain } : {}),
     ...(raw.certificateSkipped ? { certificateSkipped: true } : {}),
+    ...(raw.httpConfirmed ? { httpConfirmed: true } : {}),
+    ...(raw.admin ? { admin: raw.admin } : {}),
+    ...(raw.selfCheck === "passed" || raw.selfCheck === "skipped" ? { selfCheck: raw.selfCheck } : {}),
     ...(raw.handoff ? { handoff: { tokenHash: raw.handoff.tokenHash, expiresAt: new Date(raw.handoff.expiresAt) } } : {}),
   };
 }

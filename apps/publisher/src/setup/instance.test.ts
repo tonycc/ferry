@@ -38,6 +38,7 @@ describe("是否已初始化", () => {
     );
     expect(state).toEqual({
       initialized: true,
+      switched: false,
       publicUrl: "https://ferry.x.example",
       appsDomain: "apps.x.example",
       appsUrlScheme: "https",
@@ -48,6 +49,7 @@ describe("是否已初始化", () => {
   it("向导写了地址但还没完成(第 4 步重启后):用新地址,仍是未初始化", () => {
     const { state } = resolve({ HOST: "0.0.0.0", ...DB }, { publicUrl: "https://ferry.x.example", appsDomain: "apps.x.example" });
     expect(state.initialized).toBe(false);
+    expect(state.switched).toBe(true);
     expect(state.publicUrl).toBe("https://ferry.x.example");
     expect(state.appsDomain).toBe("apps.x.example");
   });

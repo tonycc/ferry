@@ -4,6 +4,11 @@ import type { InstanceSettings } from "./store";
 /** Ferry 这次启动用的地址配置,以及是否已经完成初始化 */
 export interface InstanceState {
   initialized: boolean;
+  /**
+   * 设置向导第 4 步已经写入了正式地址、第 7 步还没完成:Ferry 按正式地址完整运行(登录网关、后台任务),向导也照常开放。
+   * 已初始化时是 false
+   */
+  switched: boolean;
   /** 浏览器和 agent 访问 Ferry 的地址;没有时只能本机访问(http://127.0.0.1:<PORT>) */
   publicUrl?: string;
   appsDomain: string;
@@ -29,6 +34,7 @@ export function resolveInstance(env: NodeJS.ProcessEnv, config: Config, settings
     (isLoopbackHost(config.HOST) && config.SETUP_DEV !== "1");
   return {
     initialized,
+    switched: !initialized && settings.publicUrl !== undefined,
     publicUrl: config.PUBLIC_URL ?? settings.publicUrl,
     appsDomain: fromEnv("APPS_DOMAIN") ? config.APPS_DOMAIN : (settings.appsDomain ?? config.APPS_DOMAIN),
     appsUrlScheme: fromEnv("APPS_URL_SCHEME") ? config.APPS_URL_SCHEME : (settings.appsUrlScheme ?? config.APPS_URL_SCHEME),

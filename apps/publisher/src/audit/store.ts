@@ -50,6 +50,10 @@ export const AUDIT_ACTIONS = [
   /** 改名或调整上级部门;detail 里有改前改后的值 */
   "department.update",
   "department.delete",
+  /** 设置向导第 6 步自检:detail.skipped 为 true 表示跳过了 */
+  "setup.selfcheck",
+  /** 设置向导第 7 步完成初始化;detail.publicUrl 是正式地址 */
+  "setup.complete",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

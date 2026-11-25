@@ -25,6 +25,12 @@ export interface WizardState {
   certificateSkipped?: boolean;
   /** 第 4 步切到正式地址时发的交接令牌:只存哈希 */
   handoff?: { tokenHash: string; expiresAt: Date };
+  /** 跳过证书时,第 4 步重启后人确认了 http 的正式地址能打开 */
+  httpConfirmed?: boolean;
+  /** 第 5 步建好的管理员(只能建一次) */
+  admin?: { userId: string; name: string; orgName: string };
+  /** 第 6 步:自检通过或跳过了 */
+  selfCheck?: "passed" | "skipped";
 }
 
 /** 设置向导写入的本实例配置,没写过的项是 undefined */
@@ -61,6 +67,8 @@ export interface SetupStore {
   setAddress(address: InstanceAddress): Promise<void>;
   /** 撤销第 4 步写入的地址配置(正式地址打不开、要回去改域名时) */
   clearAddress(): Promise<void>;
+  /** 第 7 步:记下完成初始化的时间,之后启动不再进向导 */
+  markCompleted(at: Date): Promise<void>;
 }
 
 /** 测试和内存存储用。未初始化模式要求数据库(向导中途要重启),正式运行不会用到它 */
@@ -104,6 +112,10 @@ export class MemorySetupStore implements SetupStore {
     delete this.settings.publicUrl;
     delete this.settings.appsDomain;
     delete this.settings.appsUrlScheme;
+  }
+
+  async markCompleted(at: Date) {
+    this.settings.setupCompletedAt = at;
   }
 
   /** 只给测试用:模拟向导写入的配置 */
