@@ -94,4 +94,20 @@ describe("设置向导的自检", () => {
     expect(check.status().result).toBe("passed");
     expect(await store.getApp(SELFCHECK_APP)).toBeUndefined();
   });
+
+  it("只删留下的测试应用(跳过自检时用);正在自检时不做", async () => {
+    const { check, store } = setup();
+    await store.createApp({
+      name: SELFCHECK_APP,
+      ownerId: "ferry:selfcheck",
+      visibility: "self",
+      host: "ferry-selfcheck.apps.example.com",
+      platform: {},
+      liveVersion: "old",
+      createdAt: new Date(),
+    });
+    await check.cleanup();
+    expect(await store.getApp(SELFCHECK_APP)).toBeUndefined();
+    await check.cleanup();
+  });
 });

@@ -314,9 +314,20 @@ async function startSelfCheck() {
 async function watchSelfCheck() {
   if (watching) return;
   watching = true;
+  let failures = 0;
   try {
     for (;;) {
-      check.value = await setupApi.selfCheck().catch(() => check.value);
+      try {
+        check.value = await setupApi.selfCheck();
+        failures = 0;
+      } catch (err) {
+        // 向导会话过期、网络断了:连着几次查不到就停下,让人能重试或跳过
+        if (++failures >= 5) {
+          error.value = `查不到自检进度:${(err as Error).message}`;
+          if (check.value) check.value = { ...check.value, running: false };
+          break;
+        }
+      }
       if (!check.value?.running || view.value !== "selfcheck") break;
       await sleep(2000);
     }
@@ -599,6 +610,7 @@ const CODE_CMD = "sudo docker compose -f /opt/ferry/docker-compose.yml exec ferr
     <section v-else-if="view === 'selfcheck'">
       <h2>自检</h2>
       <p class="lead">发布一个测试应用,确认能上线、未登录会跳到登录页,然后删掉它。约需几分钟。</p>
+      <div v-if="check && !check.steps.length" class="note info"><Icon name="info" /><span>没有接 Dokploy,不能自检,只能跳过。</span></div>
       <div v-if="check?.steps.length" class="result" :class="check.result === 'passed' ? 'ok' : check.result === 'failed' ? 'bad' : ''">
         <div v-if="check.result" class="title"><Icon :name="check.result === 'passed' ? 'check' : 'x'" />{{ check.result === "passed" ? "一切正常" : "自检没通过" }}</div>
         <ul class="checks" :style="check.result ? '' : 'margin: 0'">
@@ -623,7 +635,7 @@ const CODE_CMD = "sudo docker compose -f /opt/ferry/docker-compose.yml exec ferr
         <button v-if="!check?.running && check?.result !== 'passed'" class="link" @click="confirmSkipCheck = true">跳过自检</button>
         <span class="spacer" />
         <button v-if="check?.result === 'passed'" class="btn pri" @click="go('done')">下一步 <Icon name="arrow" /></button>
-        <button v-else class="btn pri" :disabled="busy || check?.running" @click="startSelfCheck">
+        <button v-else-if="!check || check.steps.length" class="btn pri" :disabled="busy || check?.running" @click="startSelfCheck">
           {{ check?.running ? "正在自检……" : check?.result === "failed" ? "重试" : "开始自检" }}
         </button>
       </div>

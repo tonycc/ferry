@@ -100,6 +100,15 @@ export class SelfCheck {
     return { progress: this.status(), done };
   }
 
+  /**
+   * 只删掉留下的测试应用(Ferry 在自检途中重启后,发布会接着跑完,应用就留下了)。
+   * 人选择跳过自检时在后台调用;正在自检时不做,那次自己会删
+   */
+  async cleanup(): Promise<void> {
+    if (this.progress.running) return;
+    await this.removeApp();
+  }
+
   private async run(): Promise<boolean> {
     let passed = false;
     try {

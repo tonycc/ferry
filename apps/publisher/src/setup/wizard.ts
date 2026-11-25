@@ -255,6 +255,9 @@ export class SetupWizard {
     }).progress;
   }
 
+  /** 跳过自检时在后台删除留下的测试应用;只给测试等待用 */
+  cleanup?: Promise<void>;
+
   /** 第 6 步的进度;没有自检时是 undefined */
   selfCheckStatus(): SelfCheckProgress | undefined {
     return this.options.selfCheck?.status();
@@ -265,6 +268,10 @@ export class SetupWizard {
     await this.requireAdmin();
     await this.store.saveWizard({ ...(await this.wizard()), selfCheck: "skipped" });
     await this.options.audit?.("setup.selfcheck", { skipped: true });
+    // 之前的自检中途被打断时测试应用会留下:在后台删掉(可能要等它的发布结束),不让人等
+    this.cleanup = this.options.selfCheck
+      ?.cleanup()
+      .catch((err: Error) => console.error(`删除自检留下的测试应用失败(可以在控制台“全部应用”里删除): ${err.message}`));
   }
 
   /** 第 7 步:写入完成时间,向导永久关闭。返回正式地址(完成页上的“进入控制台”指向它,不是当前地址) */
