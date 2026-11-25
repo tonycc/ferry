@@ -6,7 +6,8 @@
 #   sudo FERRY_IMAGE=ferry:2026-11-26 ./install.sh
 #
 # 可选的环境变量:
-#   FERRY_IMAGE        要运行的 Ferry 镜像(必填;先 docker load 或能从镜像仓库拉到)
+#   FERRY_IMAGE        要运行的 Ferry 镜像(第一次必填;先 docker load 或能从镜像仓库拉到)。
+#                      重复运行时可以不给,用 .env 里的;给了不同的就写进 .env,换成这个镜像
 #   DOKPLOY_VERSION    Dokploy 版本,默认 v0.31.3(Ferry 是按这个版本验证的)
 #   ADVERTISE_ADDR     Docker Swarm 用的本机地址,默认取默认路由的出口地址
 #   SKIP_FIREWALL=1    不加防火墙规则(见下面 configure_firewall)
@@ -37,7 +38,9 @@ check_system() {
   [ "$(id -u)" = 0 ] || fail "请用 root 运行(sudo)"
   [ "$(uname -s)" = Linux ] || fail "只支持 Linux 服务器"
   [ -f "$DEPLOY_DIR/docker-compose.yml" ] || fail "找不到 $DEPLOY_DIR/docker-compose.yml:请在 deploy 目录里运行"
-  [ -n "${FERRY_IMAGE:-}" ] || fail "请设置 FERRY_IMAGE(如 FERRY_IMAGE=ferry:2026-11-26 ./install.sh)"
+  # 第一次运行要给镜像;重复运行时 .env 里已有,给了新的就换成新的(升级)
+  [ -n "${FERRY_IMAGE:-}" ] || { [ -f "$ENV_FILE" ] && [ -n "$(env_value FERRY_IMAGE)" ]; } ||
+    fail "请设置 FERRY_IMAGE(如 FERRY_IMAGE=ferry:2026-11-26 ./install.sh)"
   local missing=()
   for tool in curl openssl jq; do command -v "$tool" >/dev/null || missing+=("$tool"); done
   if [ ${#missing[@]} -gt 0 ]; then
@@ -71,6 +74,12 @@ install_docker() {
   curl -fsSL https://get.docker.com | sh
   systemctl enable --now docker
   docker_ready || fail "Docker 装好了但没有运行:systemctl status docker"
+}
+
+check_compose() {
+  # 系统软件源装的 Docker(如 docker.io)常常没有 compose 插件:提前发现,别等到最后启动 Ferry 才报错
+  docker compose version >/dev/null 2>&1 ||
+    fail "缺少 docker compose 插件:Debian/Ubuntu 运行 apt-get install docker-compose-plugin,其他系统见 Docker 官方文档"
 }
 
 setup_swarm() {
@@ -192,9 +201,17 @@ patch_traefik_yml() {
 
 start_traefik() {
   step "配置并启动 Traefik"
+  local before
+  before="$(cksum <"$TRAEFIK_YML")"
   patch_traefik_yml "$TRAEFIK_YML"
   if docker ps -a --format '{{.Names}}' | grep -qx dokploy-traefik; then
-    docker restart dokploy-traefik >/dev/null
+    # 重复运行时配置没变就不重启:重启期间所有应用都打不开
+    if [ "$before" != "$(cksum <"$TRAEFIK_YML")" ]; then
+      docker restart dokploy-traefik >/dev/null
+    else
+      docker start dokploy-traefik >/dev/null
+      echo "配置没变,不重启"
+    fi
   else
     docker run -d \
       --name dokploy-traefik \
@@ -217,6 +234,10 @@ write_env() {
   step "生成 Ferry 的配置 $ENV_FILE"
   if [ -f "$ENV_FILE" ]; then
     echo "已存在,不覆盖"
+    if [ -n "${FERRY_IMAGE:-}" ] && [ "$FERRY_IMAGE" != "$(env_value FERRY_IMAGE)" ]; then
+      sed -i "s|^FERRY_IMAGE=.*|FERRY_IMAGE=$FERRY_IMAGE|" "$ENV_FILE"
+      echo "镜像换成 $FERRY_IMAGE"
+    fi
     if [ -n "${DOKPLOY_API_KEY_NEW:-}" ] && [ -z "$(env_value DOKPLOY_API_KEY)" ]; then
       sed -i "s/^DOKPLOY_API_KEY=.*/DOKPLOY_API_KEY=$DOKPLOY_API_KEY_NEW/" "$ENV_FILE"
       grep -q '^DOKPLOY_API_KEY=' "$ENV_FILE" || echo "DOKPLOY_API_KEY=$DOKPLOY_API_KEY_NEW" >>"$ENV_FILE"
@@ -259,8 +280,12 @@ configure_firewall() {
     echo "SKIP_FIREWALL=1,跳过"
     return
   fi
-  "$DEPLOY_DIR/firewall.example.sh" >/dev/null
-  echo "已添加(重启后不保留,长期生效要用 iptables-persistent 保存)"
+  # 加不上只提醒,不中止:Ferry 已经起来了,后面还要打印设置码
+  if "$DEPLOY_DIR/firewall.example.sh" >/dev/null 2>&1; then
+    echo "已添加(重启后不保留,长期生效要用 iptables-persistent 保存)"
+  else
+    echo "没加上(可能没有 iptables,或者内核不支持 conntrack 匹配)。安装照常完成;请按 firewall.example.sh 里的说明手动处理" >&2
+  fi
 }
 
 finish() {
@@ -287,11 +312,13 @@ EOF
 main() {
   check_system
   install_docker
+  check_compose
   setup_swarm
   install_dokploy
   dokploy_api_key
-  start_traefik
+  # 拿到 API key 马上写进 .env:后面哪一步失败了,重新运行时 key 还在(Dokploy 管理员只能注册一次)
   write_env
+  start_traefik
   start_ferry
   configure_firewall
   finish

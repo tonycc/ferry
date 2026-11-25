@@ -59,7 +59,8 @@
    (登录信息写进 `dokploy-admin.txt`,只有 root 能读)、改 Traefik 的配置(关掉管理接口、去掉内网用不了的 Let's Encrypt)、
    生成 `.env`(随机的数据库密码、`GATEWAY_SECRET`、`SECRETS_KEY`,不写地址)、启动 Ferry、加上防火墙规则
    (不让容器经宿主机访问 Dokploy,同 `firewall.example.sh`;不要时设 `SKIP_FIREWALL=1`)。
-   最后打印设置向导的地址 `https://服务器IP/setup` 和设置码。可以重复运行:已经装好的部分跳过,已有的 `.env` 不覆盖。
+   最后打印设置向导的地址 `https://服务器IP/setup` 和设置码。可以重复运行:已经装好的部分跳过,已有的 `.env` 不覆盖
+   (再给一个新的 `FERRY_IMAGE` 就换成新镜像,可以用来升级;不给就用 `.env` 里的)。防火墙规则加不上时只提醒,不中止安装。
 4. 在浏览器里打开向导地址(证书警告点继续),按 7 步做完:设置码、域名和 DNS 检测、证书(可跳过)、切到正式地址、
    公司和管理员、自检、完成。
 5. **备份 `.env`**(`SECRETS_KEY` 丢了,员工保存过的应用密钥全部解不开),以及 `dokploy-admin.txt`。
