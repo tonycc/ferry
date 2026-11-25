@@ -71,11 +71,17 @@ if (config.DATABASE_URL) {
 // 地址配置:环境变量优先,其次是设置向导写进数据库的(docs/setup-wizard.md)。还没完成初始化时只开放设置向导
 const instance = resolveInstance(process.env, config, await setupStore.getSettings());
 checkInstance(instance, config);
+// 设置向导第 7 步完成后在本进程里变成 true:向导关闭、开始按域名分流(docs/setup-wizard.md“未初始化模式”)
+let completed = instance.initialized;
 if (instance.initialized) {
   await removeSetupCodeFile(config.SETUP_CODE_FILE);
 } else {
   await ensureSetupCode(setupStore, config.SETUP_CODE_FILE, (m) => console.warn(m));
-  console.warn("未完成初始化:只开放设置向导(/setup)和 /healthz,登录、控制台、MCP、上传、登录网关都暂停");
+  console.warn(
+    instance.switched
+      ? "已切到正式地址、设置向导还没完成:Ferry 照常运行,向导(/setup)也开放"
+      : "未完成初始化:只开放设置向导(/setup)和 /healthz,登录、控制台、MCP、上传、登录网关都暂停",
+  );
 }
 
 // 组织架构:权限判定读内存里的这一份,由 Organization 从数据库读出(人员和部门由管理员在控制台维护)
@@ -230,7 +236,8 @@ const server = buildServer(service, identity, {
   },
   setup: {
     service: new SetupService(setupStore),
-    initialized: () => instance.initialized,
+    initialized: () => completed,
+    switched: () => instance.switched && !completed,
     instanceId,
     wizard: instance.initialized
       ? undefined
@@ -239,6 +246,17 @@ const server = buildServer(service, identity, {
           authAddress,
           dns: { lookup: lookupIpv4, ping: (host) => pingFerry("http", host) },
           httpsPing: (host) => pingFerry("https", host),
+          createAdmin: async ({ orgName, name, mobile, password }) => {
+            const { userId } = await organization.bootstrapAdmin({ name, mobile, orgName, via: "setup" });
+            await auth.setPasswordFromSetup(userId, password);
+            return { userId };
+          },
+          audit: (action, detail) => audit.record(undefined, action, undefined, { ...detail, via: "setup" }),
+          onComplete: () => {
+            completed = true;
+            void removeSetupCodeFile(config.SETUP_CODE_FILE).catch((err: Error) => console.error(`删除设置码文件失败: ${err.message}`));
+            console.warn("设置向导已完成:向导关闭,开始按域名分流");
+          },
           restart: () => {
             // 先把响应发出去再退出;容器里由 Docker 的 restart: unless-stopped 拉起来
             console.warn("设置向导写入了正式地址,Ferry 退出以按新配置启动(本机 tsx watch 不会自动拉起,要手动重启)");
@@ -250,8 +268,9 @@ const server = buildServer(service, identity, {
 await server.listen({ port: config.PORT, host: config.HOST });
 
 // 写入登录网关的 Traefik 配置,并让已有应用的域名都挂上网关。失败只记日志并定时重试,不让 Ferry 退出
-// 未初始化时不碰 Traefik 和已有应用:那时还没有正式域名,登录网关也不工作
-if (instance.initialized && config.FERRY_PLATFORM === "dokploy") {
+// 还没切到正式地址时不碰 Traefik 和已有应用:那时还没有正式域名,登录网关也不工作。
+// 切换之后、向导完成之前就要做:第 6 步的自检要走登录网关
+if ((instance.initialized || instance.switched) && config.FERRY_PLATFORM === "dokploy") {
   await setupGateway(
     adapters.platform,
     service,
@@ -278,7 +297,7 @@ if (instance.initialized && config.FERRY_PLATFORM === "dokploy") {
 setInterval(() => void alerts.flush(), 60_000).unref();
 
 // 继续执行上次没跑完的发布(进程重启前正在进行的)
-const resumed = instance.initialized ? await service.resumeUnfinished() : [];
+const resumed = instance.initialized || instance.switched ? await service.resumeUnfinished() : [];
 if (resumed.length > 0) server.log.info({ releases: resumed }, `继续执行 ${resumed.length} 个未完成的发布`);
 
 /** 0 表示不限制;只限制其中一项时另一项不限 */

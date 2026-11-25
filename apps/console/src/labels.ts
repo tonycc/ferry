@@ -70,11 +70,18 @@ export const AUDIT_ACTION: Record<AuditAction, string> = {
   "department.create": "新建部门",
   "department.update": "修改部门",
   "department.delete": "删除部门",
+  "setup.selfcheck": "初始化自检",
+  "setup.complete": "完成初始化",
 };
 
 const PERSON_FIELD: Record<string, string> = { name: "姓名", mobile: "手机号", jobNumber: "工号", departmentIds: "部门" };
 
 const shortVersion = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
+
+/** 不是在控制台上做的操作:标出是命令行还是设置向导 */
+function via(d: Record<string, unknown>): string {
+  return d.via === "cli" ? "(命令行)" : d.via === "setup" ? "(设置向导)" : "";
+}
 
 /** 审计记录的细节,写成一句话 */
 export function auditDetail(e: AuditEvent): string {
@@ -103,11 +110,11 @@ export function auditDetail(e: AuditEvent): string {
     case "token.revoke":
       return `令牌“${String(d.label ?? "")}”`;
     case "password.reset":
-      return `给 ${String(d.name ?? d.userId ?? "")} 生成初始密码${d.via === "cli" ? "(命令行)" : ""}`;
+      return `给 ${String(d.name ?? d.userId ?? "")} 生成初始密码${via(d)}`;
     case "password.change":
-      return d.initial ? "首次登录,把初始密码改成自己的" : "";
+      return d.via === "setup" ? `${String(d.name ?? d.userId ?? "")} 在设置向导里设置了密码` : d.initial ? "首次登录,把初始密码改成自己的" : "";
     case "user.create":
-      return `${String(d.name ?? d.userId ?? "")}${d.isAdmin ? ",设为管理员" : ""}${d.via === "cli" ? "(命令行)" : ""}`;
+      return `${String(d.name ?? d.userId ?? "")}${d.isAdmin ? ",设为管理员" : ""}${via(d)}`;
     case "user.update": {
       const fields = Array.isArray(d.fields) ? d.fields.map((f) => PERSON_FIELD[String(f)] ?? String(f)) : [];
       return `${String(d.name ?? d.userId ?? "")}${fields.length ? `:改了${fields.join("、")}` : ""}`;
@@ -117,7 +124,11 @@ export function auditDetail(e: AuditEvent): string {
     case "user.reactivate":
       return String(d.name ?? d.userId ?? "");
     case "user.admin":
-      return `${d.isAdmin ? "把" : "取消"} ${String(d.name ?? d.userId ?? "")} ${d.isAdmin ? "设为管理员" : "的管理员身份"}${d.via === "cli" ? "(命令行)" : ""}`;
+      return `${d.isAdmin ? "把" : "取消"} ${String(d.name ?? d.userId ?? "")} ${d.isAdmin ? "设为管理员" : "的管理员身份"}${via(d)}`;
+    case "setup.selfcheck":
+      return d.skipped ? "跳过了自检" : "自检通过";
+    case "setup.complete":
+      return String(d.publicUrl ?? "");
     case "department.create":
     case "department.delete":
       return String(d.name ?? d.departmentId ?? "");

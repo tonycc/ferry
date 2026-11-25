@@ -93,6 +93,15 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
     }
   });
 
+  it("设置向导设置的密码:按改密码的规则检查,登录后直接拿到会话、不用再改", async () => {
+    const { auth } = setup(c.createAuth());
+    await expect(auth.setPasswordFromSetup("dingtalk:alice", "12345678")).rejects.toThrow(/不能全是数字/);
+    await expect(auth.setPasswordFromSetup("dingtalk:nobody", "alice-own-pass")).rejects.toThrow(/组织架构里没有这个人/);
+    await auth.setPasswordFromSetup("dingtalk:alice", "alice-own-pass");
+    expect((await auth.login("13800000001", "alice-own-pass")).kind).toBe("session");
+    expect((await auth.passwordStatuses()).get("dingtalk:alice")).toBe("set");
+  });
+
   it("改密码票据 10 分钟后过期", async () => {
     const { auth, time } = setup(storeCase.createAuth());
     const initial = await auth.resetPassword("dingtalk:admin", "dingtalk:alice");

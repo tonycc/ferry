@@ -1,12 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DeployPlatform } from "../adapters/types";
+import { checkNewPassword } from "../auth/password";
 import { UserError } from "../errors";
 import { type CertificateCheck, type CheckItem, checkCertificate, covers } from "./certificate";
 import { checkDomain, type DomainCheck, type DomainDeps, type DomainInput } from "./domain";
 import type { CertificateInfo, SetupStore, WizardDomain, WizardState } from "./store";
 
 /**
- * 设置向导第 2 到 4 步(docs/setup-wizard.md):检测域名、上传或跳过证书、切到正式地址。
+ * 设置向导第 2 到 7 步(docs/setup-wizard.md):检测域名、上传或跳过证书、切到正式地址;建管理员、自检、完成。
  * 调用方(路由)负责检查向导会话和请求来源;这里只管每一步的规则和顺序。
  */
 
@@ -26,8 +27,22 @@ export interface WizardOptions {
   verifyAttempts?: number;
   verifyIntervalMs?: number;
   handoffTtlMs?: number;
+  /** 第 5 步:在正在运行的组织架构里建第一个管理员(手机号已是在职的人时设为管理员),设置他填的密码 */
+  createAdmin?(input: AdminInput): Promise<{ userId: string }>;
+  /** 记审计日志 */
+  audit?(action: "setup.selfcheck" | "setup.complete", detail: Record<string, unknown>): Promise<void>;
+  /** 第 7 步写入完成时间后:本进程里关闭向导、开始按域名分流 */
+  onComplete?(): void;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
+}
+
+export interface AdminInput {
+  /** 公司名:最上级部门的名称 */
+  orgName: string;
+  name: string;
+  mobile: string;
+  password: string;
 }
 
 export interface WizardStatus {
@@ -39,6 +54,12 @@ export interface WizardStatus {
   certificateSkipped: boolean;
   /** 第 4 步写入的正式地址;有它说明已经切换过 */
   publicUrl?: string;
+  /** 跳过证书时,人确认了 http 的正式地址能打开 */
+  httpConfirmed: boolean;
+  /** 第 5 步建好的管理员 */
+  admin?: { name: string; orgName: string };
+  /** 第 6 步的结果 */
+  selfCheck?: "passed" | "skipped";
 }
 
 export interface CertificateResult extends CertificateCheck {
@@ -49,6 +70,8 @@ export interface CertificateResult extends CertificateCheck {
 export class SetupWizard {
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
+  /** 第 5 步排队执行:同时提交两次(两个标签页)时,第二次要等第一次存下管理员后再判断,不能建出两个 */
+  private adminQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly store: SetupStore,
@@ -67,6 +90,9 @@ export class SetupWizard {
       certificate: settings.certificate ? { notAfter: settings.certificate.notAfter, domains: settings.certificate.domains } : undefined,
       certificateSkipped: wizard.certificateSkipped === true,
       publicUrl: settings.publicUrl,
+      httpConfirmed: wizard.httpConfirmed === true,
+      admin: wizard.admin ? { name: wizard.admin.name, orgName: wizard.admin.orgName } : undefined,
+      selfCheck: wizard.selfCheck,
     };
   }
 
@@ -158,7 +184,7 @@ export class SetupWizard {
     const settings = await this.store.getSettings();
     if (!settings.publicUrl) throw new UserError("conflict", "还没有切到正式地址");
     await this.store.clearAddress();
-    const { handoff: _dropped, ...rest } = settings.wizard ?? {};
+    const { handoff: _dropped, httpConfirmed: _confirmed, ...rest } = settings.wizard ?? {};
     await this.store.saveWizard(rest);
     this.options.restart();
   }
@@ -183,6 +209,70 @@ export class SetupWizard {
     const { handoff: _used, ...rest } = wizard;
     await this.store.saveWizard(rest);
     return true;
+  }
+
+  /** 跳过证书时第 4 步重启后:人在新标签页里打开了 http 的正式地址,确认能打开。记下来,刷新页面不用再确认 */
+  async confirmHttp(): Promise<void> {
+    const settings = await this.store.getSettings();
+    if (!settings.publicUrl?.startsWith("http://")) throw new UserError("conflict", "没有切到 http 的正式地址,不需要确认");
+    await this.store.saveWizard({ ...(await this.wizard()), httpConfirmed: true });
+  }
+
+  /**
+   * 第 5 步:建公司(最上级部门)和第一个管理员,密码是他自己填的。只能做一次:建好后再提交只返回已建好的管理员,
+   * 向导会话不能用来多建管理员
+   */
+  async createAdmin(input: AdminInput): Promise<{ name: string; orgName: string; created: boolean }> {
+    const run = this.adminQueue.then(() => this.createAdminNow(input));
+    this.adminQueue = run.catch(() => {});
+    return run;
+  }
+
+  private async createAdminNow(input: AdminInput): Promise<{ name: string; orgName: string; created: boolean }> {
+    await this.requireSwitched();
+    const existing = (await this.wizard()).admin;
+    if (existing) return { name: existing.name, orgName: existing.orgName, created: false };
+    if (!this.options.createAdmin) throw new UserError("not_found", "这一步还没有开放");
+    // 先检查密码:建人之后才发现密码不合规,会留下一个没有密码、向导也没记下的管理员
+    checkNewPassword(input.password);
+    const { userId } = await this.options.createAdmin(input);
+    const admin = { userId, name: input.name, orgName: input.orgName };
+    await this.store.saveWizard({ ...(await this.wizard()), admin });
+    return { name: admin.name, orgName: admin.orgName, created: true };
+  }
+
+  /** 第 6 步选择跳过自检:记进审计日志 */
+  async skipSelfCheck(): Promise<void> {
+    await this.requireAdmin();
+    await this.store.saveWizard({ ...(await this.wizard()), selfCheck: "skipped" });
+    await this.options.audit?.("setup.selfcheck", { skipped: true });
+  }
+
+  /** 第 7 步:写入完成时间,向导永久关闭。返回正式地址(完成页上的“进入控制台”指向它,不是当前地址) */
+  async complete(): Promise<{ publicUrl: string }> {
+    const settings = await this.requireAdmin();
+    if (!settings.wizard?.selfCheck) throw new UserError("conflict", "请先完成自检,或者选择跳过");
+    const publicUrl = settings.publicUrl!;
+    await this.store.markCompleted(this.now());
+    await this.options.audit?.("setup.complete", { publicUrl });
+    this.options.onComplete?.();
+    return { publicUrl };
+  }
+
+  /** 第 5 到 7 步要先切到正式地址;跳过证书时还要人确认过 http 地址能打开 */
+  private async requireSwitched() {
+    const settings = await this.store.getSettings();
+    if (!settings.publicUrl) throw new UserError("conflict", "请先切到正式地址");
+    if (settings.publicUrl.startsWith("http://") && settings.wizard?.httpConfirmed !== true) {
+      throw new UserError("conflict", `请先确认 ${settings.publicUrl} 能打开`);
+    }
+    return settings;
+  }
+
+  private async requireAdmin() {
+    const settings = await this.requireSwitched();
+    if (!settings.wizard?.admin) throw new UserError("conflict", "请先设置公司和管理员");
+    return settings;
   }
 
   private async wizard(): Promise<WizardState> {

@@ -231,10 +231,17 @@ export class Organization {
   }
 
   /**
-   * 命令行用:建第一个管理员。组织架构还是空的时候先建最上级部门(orgName,默认“公司”);
+   * 命令行和设置向导用:建第一个管理员。组织架构还是空的时候先建最上级部门(orgName,默认“公司”);
    * 手机号已经属于某个在职的人时,只把他设为管理员。返回这个人的用户 ID
    */
-  async bootstrapAdmin(input: { name: string; mobile: string; orgName?: string }): Promise<{ userId: string; created: boolean }> {
+  async bootstrapAdmin(input: {
+    name: string;
+    mobile: string;
+    orgName?: string;
+    /** 审计日志里记的来源:命令行(默认)或设置向导 */
+    via?: "cli" | "setup";
+  }): Promise<{ userId: string; created: boolean }> {
+    const via = input.via ?? "cli";
     const userId = this.newId("user");
     const rootId = this.newId("department");
     let result!: { userId: string; created: boolean };
@@ -245,7 +252,7 @@ export class Organization {
         result = { userId: existing.id, created: false };
         if (existing.isAdmin) return undefined;
         existing.isAdmin = true;
-        return { action: "user.admin", detail: { userId: existing.id, name: existing.name, isAdmin: true, via: "cli" } };
+        return { action: "user.admin", detail: { userId: existing.id, name: existing.name, isAdmin: true, via } };
       }
       let root = org.departments.find((d) => d.parentId === null);
       if (!root) {
@@ -255,7 +262,7 @@ export class Organization {
       const user: OrgUser = { id: userId, active: true, isAdmin: true, ...person(org, { name: input.name, mobile, departmentIds: [root.id] }) };
       org.users.push(user);
       result = { userId, created: true };
-      return { action: "user.create", detail: { userId, name: user.name, isAdmin: true, via: "cli" } };
+      return { action: "user.create", detail: { userId, name: user.name, isAdmin: true, via } };
     });
     return result;
   }

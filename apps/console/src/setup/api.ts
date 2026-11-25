@@ -24,6 +24,9 @@ export interface SetupStatus {
     certificate?: { notAfter: string; domains: string[] };
     certificateSkipped: boolean;
     publicUrl?: string;
+    httpConfirmed: boolean;
+    admin?: { name: string; orgName: string };
+    selfCheck?: "passed" | "skipped";
   };
 }
 
@@ -75,6 +78,11 @@ export const setupApi = {
   undoSwitch: () => request<{ ok: true }>("POST", "/api/setup/switch/undo", {}),
   handoff: () => request<{ token: string }>("POST", "/api/setup/handoff", {}),
   redeem: (token: string) => request<{ ok: true }>("POST", "/api/setup/handoff/redeem", { token }),
+  confirmHttp: () => request<{ ok: true }>("POST", "/api/setup/switch/confirm", {}),
+  admin: (input: { orgName: string; name: string; mobile: string; password: string }) =>
+    request<{ name: string; orgName: string; created: boolean }>("POST", "/api/setup/admin", input),
+  skipSelfCheck: () => request<{ ok: true }>("POST", "/api/setup/selfcheck/skip", {}),
+  complete: () => request<{ publicUrl: string }>("POST", "/api/setup/complete", {}),
 };
 
 /**

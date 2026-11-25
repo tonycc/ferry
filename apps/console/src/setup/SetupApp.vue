@@ -14,11 +14,11 @@ import Icon from "./Icon.vue";
 
 /**
  * 设置向导(docs/setup-wizard.md,界面按 docs/mockups/setup-wizard.html 的原型)。
- * 这一版做第 1 到 4 步;第 5 到 7 步(公司和管理员、自检、完成)在阶段 3。
+ * 第 6 步的自检还没做(阶段 3b),现在只能跳过。
  * 现在在哪一步由 /api/setup/status 算出来,刷新页面、Ferry 重启后都能接着做。
  */
 
-type View = "loading" | "code" | "domain" | "certificate" | "switch" | "after" | "later";
+type View = "loading" | "code" | "domain" | "certificate" | "switch" | "after" | "admin" | "selfcheck" | "done";
 const STEPS = ["设置码", "域名", "证书", "切换地址", "管理员", "自检", "完成"];
 
 const view = ref<View>("loading");
@@ -26,7 +26,17 @@ const status = ref<SetupStatus>();
 const error = ref("");
 const busy = ref(false);
 
-const stepOf: Record<View, number> = { loading: 1, code: 1, domain: 2, certificate: 3, switch: 4, after: 4, later: 5 };
+const stepOf: Record<View, number> = {
+  loading: 1,
+  code: 1,
+  domain: 2,
+  certificate: 3,
+  switch: 4,
+  after: 4,
+  admin: 5,
+  selfcheck: 6,
+  done: 7,
+};
 const step = computed(() => stepOf[view.value]);
 const wizard = computed(() => status.value?.wizard);
 const skipped = computed(() => wizard.value?.certificateSkipped === true);
@@ -52,12 +62,21 @@ async function load() {
   if (!s.session) return go("code");
   const w = s.wizard;
   if (w?.publicUrl) {
-    // 已经切换过:在正式地址上是后面几步;还在服务器 IP 上,是第 4 步重启之后
-    return go(location.origin === new URL(w.publicUrl).origin ? "later" : "after");
+    // 已经切换过:在正式地址上(或者跳过证书、确认过 http 地址能打开)是后面几步;否则是第 4 步重启之后
+    const ready = location.origin === new URL(w.publicUrl).origin || (w.publicUrl.startsWith("http://") && w.httpConfirmed);
+    return go(ready ? laterStep() : "after");
   }
   if (w?.domain && (w.certificateSkipped || certificateCovers())) return go("switch");
   if (w?.domain) return go("certificate");
   go("domain");
+}
+
+/** 第 5 到 7 步做到哪了 */
+function laterStep(): View {
+  const w = wizard.value;
+  if (!w?.admin) return "admin";
+  if (!w.selfCheck) return "selfcheck";
+  return "done";
 }
 
 function go(next: View) {
@@ -240,12 +259,78 @@ async function undoSwitch() {
   }
 }
 
+/** 跳过证书时:人在新标签页里确认 http 的正式地址能打开。记到服务器上,刷新页面不用再确认 */
+async function confirmHttp() {
+  busy.value = true;
+  error.value = "";
+  try {
+    await setupApi.confirmHttp();
+    status.value = await setupApi.status();
+    go(laterStep());
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+// ---------- 第 5 步:公司和管理员 ----------
+const admin = reactive({ orgName: "", name: "", mobile: "", password: "", password2: "" });
+async function createAdmin() {
+  error.value = "";
+  if (admin.password.length < 8 || /^\d+$/.test(admin.password)) return void (error.value = "密码至少 8 位,不能全是数字");
+  if (admin.password !== admin.password2) return void (error.value = "两次输入的密码不一样");
+  busy.value = true;
+  try {
+    await setupApi.admin({ orgName: admin.orgName, name: admin.name, mobile: admin.mobile, password: admin.password });
+    admin.password = admin.password2 = "";
+    status.value = await setupApi.status();
+    go(laterStep());
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+// ---------- 第 6 步:自检 ----------
+const confirmSkipCheck = ref(false);
+async function skipSelfCheck() {
+  busy.value = true;
+  error.value = "";
+  try {
+    await setupApi.skipSelfCheck();
+    status.value = await setupApi.status();
+    confirmSkipCheck.value = false;
+    go("done");
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
+// ---------- 第 7 步:完成 ----------
+/** 点“进入控制台”时才写入完成:之后向导关闭,服务器 IP 上也打不开了,所以跳到正式地址(不是当前地址) */
+async function complete() {
+  busy.value = true;
+  error.value = "";
+  try {
+    const { publicUrl } = await setupApi.complete();
+    location.href = `${publicUrl}/`;
+  } catch (err) {
+    error.value = (err as Error).message;
+    busy.value = false;
+  }
+}
+
 // ---------- 小工具 ----------
 async function copy(text: string) {
   await navigator.clipboard?.writeText(text).catch(() => {});
 }
 const date = (iso?: string) => (iso ? iso.slice(0, 10) : "");
 const LOGS = "sudo docker compose -f /opt/ferry/docker-compose.yml logs ferry --tail 50";
+const BACKUP_CMD = "sudo cp /opt/ferry/.env ~/ferry-env-backup";
 const CODE_CMD = "sudo docker compose -f /opt/ferry/docker-compose.yml exec ferry cat /data/state/setup-code";
 </script>
 
@@ -457,21 +542,64 @@ const CODE_CMD = "sudo docker compose -f /opt/ferry/docker-compose.yml exec ferr
         <button v-if="phase === 'unreachable' || phase === 'confirm'" class="btn ghost" :disabled="busy" @click="undoSwitch">回到域名设置</button>
         <span class="spacer" />
         <button v-if="phase === 'unreachable' && !skipped" class="btn pri" @click="afterSwitch">再检查一次</button>
-        <button v-if="phase === 'confirm'" class="btn pri" @click="go('later')">能打开,继续 <Icon name="arrow" /></button>
-        <button v-if="phase === 'unreachable' && skipped" class="btn pri" @click="go('later')">已解决,继续</button>
+        <button v-if="phase === 'confirm'" class="btn pri" :disabled="busy" @click="confirmHttp">能打开,继续 <Icon name="arrow" /></button>
+        <button v-if="phase === 'unreachable' && skipped" class="btn pri" :disabled="busy" @click="confirmHttp">已解决,继续</button>
       </div>
       <p v-if="phase === 'confirm'" style="margin: 12px 0 0"><button class="link" @click="phase = 'unreachable'">打不开?</button></p>
     </section>
 
-    <!-- ===== 第 5 到 7 步(阶段 3) ===== -->
-    <section v-else-if="view === 'later'">
+    <!-- ===== 第 5 步:公司和管理员 ===== -->
+    <section v-else-if="view === 'admin'">
       <h2>公司和管理员</h2>
-      <p class="lead">地址和证书已经设置好。</p>
-      <dl class="summary">
-        <dt>Ferry</dt><dd>{{ officialUrl }}</dd>
+      <p class="lead">建立公司(最上级部门)和第一个平台管理员。</p>
+      <form @submit.prevent="createAdmin">
+        <label for="co">公司名称</label><input id="co" v-model="admin.orgName" type="text" placeholder="如:某某科技" maxlength="50" required>
+        <div class="grid2">
+          <div><label for="nm">管理员姓名</label><input id="nm" v-model="admin.name" type="text" maxlength="50" required></div>
+          <div><label for="ph">手机号 <small>用来登录</small></label><input id="ph" v-model="admin.mobile" type="tel" autocomplete="username" required></div>
+          <div><label for="pw">密码 <small>至少 8 位,不能全是数字</small></label><input id="pw" v-model="admin.password" type="password" autocomplete="new-password" required></div>
+          <div><label for="pw2">再输一次</label><input id="pw2" v-model="admin.password2" type="password" autocomplete="new-password" required></div>
+        </div>
+        <p v-if="error" class="msg bad">{{ error }}</p>
+        <div class="actions"><span class="spacer" /><button class="btn pri" type="submit" :disabled="busy">创建 <Icon name="arrow" /></button></div>
+      </form>
+    </section>
+
+    <!-- ===== 第 6 步:自检(阶段 3b 再做,现在只能跳过) ===== -->
+    <section v-else-if="view === 'selfcheck'">
+      <h2>自检</h2>
+      <p class="lead">发布一个测试应用,确认能上线、未登录会跳到登录页,然后删掉它。</p>
+      <div class="note info"><Icon name="info" /><span>自检还在开发中,这一版请先跳过。</span></div>
+      <CheckResult v-if="confirmSkipCheck" kind="warn" title="跳过自检?" :items="[{ key: 'a', state: 'warn', message: '跳过会记在审计日志里' }]">
+        <div class="actions" style="margin-top: 10px">
+          <button class="btn ghost" @click="confirmSkipCheck = false">取消</button>
+          <button class="btn pri" :disabled="busy" @click="skipSelfCheck">确定跳过</button>
+        </div>
+      </CheckResult>
+      <p v-if="error" class="msg bad">{{ error }}</p>
+      <div v-if="!confirmSkipCheck" class="actions" style="margin-top: 20px">
+        <span class="spacer" />
+        <button class="btn pri" @click="confirmSkipCheck = true">跳过自检</button>
+      </div>
+    </section>
+
+    <!-- ===== 第 7 步:完成 ===== -->
+    <section v-else-if="view === 'done'">
+      <div class="done-hero">
+        <div class="badge"><Icon name="check" /></div>
+        <h2>设置完成</h2>
+        <p class="lead" style="margin-bottom: 22px">点“进入控制台”后,这个向导会永久关闭。</p>
+      </div>
+      <div v-if="skipped" class="note warn" style="margin-bottom: 10px"><Icon name="alert" /><span><b>还没启用 HTTPS</b>:之后到控制台“证书”页上传证书。</span></div>
+      <div class="note warn"><Icon name="alert" /><span><b>请备份服务器上的 .env</b>:里面的 SECRETS_KEY 丢了,所有应用的密钥都无法解密。</span></div>
+      <div class="cmd"><pre>{{ BACKUP_CMD }}</pre><button type="button" class="copy" title="复制" @click="copy(BACKUP_CMD)"><Icon name="copy" /></button></div>
+      <dl class="summary" style="margin-top: 16px">
+        <dt>控制台</dt><dd>{{ officialUrl }}</dd>
+        <dt>管理员</dt><dd>{{ wizard?.admin?.name }} · {{ wizard?.admin?.orgName }}</dd>
         <dt>证书</dt><dd>{{ skipped ? "未启用 HTTPS" : `${date(wizard?.certificate?.notAfter)} 到期` }}</dd>
       </dl>
-      <div class="note info" style="margin-top: 16px"><Icon name="info" /><span>后面几步(公司和管理员、自检、完成)还在开发中。</span></div>
+      <p v-if="error" class="msg bad">{{ error }}</p>
+      <div class="actions"><span class="spacer" /><button class="btn pri" :disabled="busy" @click="complete">进入控制台 <Icon name="arrow" /></button></div>
     </section>
   </main>
 </template>

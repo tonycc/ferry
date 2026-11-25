@@ -12,7 +12,7 @@ import { MemoryStore } from "../workflow/store";
 import { ensureSetupCode } from "./code";
 import { SetupService } from "./service";
 import { MemorySetupStore, type SetupStore } from "./store";
-import { SetupWizard, type WizardOptions } from "./wizard";
+import { type AdminInput, SetupWizard, type WizardOptions } from "./wizard";
 
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
 const ROOT = fixture("root.pem");
@@ -219,6 +219,72 @@ for (const c of storeCases("ferry_test_wizard")) {
       await wizard.checkDomain({ ...INPUT, domain: "corp.example.com" });
       expect((await wizard.status()).certificateSkipped).toBe(false);
     });
+
+    it("第 5 到 7 步:跳过证书时要先确认 http 地址能打开;管理员只建一次;自检跳过记审计;完成后写入完成时间", async () => {
+      const { options } = network();
+      const created: AdminInput[] = [];
+      const audits: string[] = [];
+      let completed = 0;
+      const wizard = new SetupWizard(
+        store,
+        platform,
+        options({
+          createAdmin: async (input) => (created.push(input), { userId: "user-1" }),
+          audit: async (action, detail) => void audits.push(`${action}:${JSON.stringify(detail)}`),
+          onComplete: () => void completed++,
+        }),
+      );
+      const ADMIN = { orgName: "示例公司", name: "张三", mobile: "13800000001", password: "correct-horse" };
+      await expect(wizard.createAdmin(ADMIN)).rejects.toThrow(/先切到正式地址/);
+      await expect(wizard.confirmHttp()).rejects.toThrow(/不需要确认/);
+
+      await wizard.checkDomain(INPUT);
+      await wizard.skipCertificate();
+      await wizard.switchAddress();
+      await expect(wizard.createAdmin(ADMIN)).rejects.toThrow(/确认 http:\/\/ferry.example.com 能打开/);
+      await wizard.confirmHttp();
+      expect((await wizard.status()).httpConfirmed).toBe(true);
+
+      await expect(wizard.skipSelfCheck()).rejects.toThrow(/先设置公司和管理员/);
+      // 密码不合规:在建人之前就拒绝
+      await expect(wizard.createAdmin({ ...ADMIN, password: "12345678" })).rejects.toThrow(/不能全是数字/);
+      expect(created).toHaveLength(0);
+      // 同时提交两次:只建一个
+      const [first, second] = await Promise.all([
+        wizard.createAdmin(ADMIN),
+        wizard.createAdmin({ ...ADMIN, name: "李四", mobile: "13800000002" }),
+      ]);
+      expect(first).toEqual({ name: "张三", orgName: "示例公司", created: true });
+      expect(second).toEqual({ name: "张三", orgName: "示例公司", created: false });
+      // 再提交(哪怕换了人)只返回已建好的
+      expect(await wizard.createAdmin({ ...ADMIN, name: "李四", mobile: "13800000002" })).toEqual({
+        name: "张三",
+        orgName: "示例公司",
+        created: false,
+      });
+      expect(created).toHaveLength(1);
+      expect(JSON.stringify(await store.getSettings())).not.toContain("correct-horse");
+
+      await expect(wizard.complete()).rejects.toThrow(/先完成自检/);
+      await wizard.skipSelfCheck();
+      expect(await wizard.status()).toMatchObject({ admin: { name: "张三", orgName: "示例公司" }, selfCheck: "skipped" });
+      expect(await wizard.complete()).toEqual({ publicUrl: "http://ferry.example.com" });
+      expect((await store.getSettings()).setupCompletedAt).toEqual(new Date("2026-12-01T00:00:00Z"));
+      expect(completed).toBe(1);
+      expect(audits).toEqual(['setup.selfcheck:{"skipped":true}', 'setup.complete:{"publicUrl":"http://ferry.example.com"}']);
+    });
+
+    it("撤销切换后 http 地址要重新确认", async () => {
+      const { options } = network();
+      const wizard = new SetupWizard(store, platform, options());
+      await wizard.checkDomain(INPUT);
+      await wizard.skipCertificate();
+      await wizard.switchAddress();
+      await wizard.confirmHttp();
+      await wizard.undoSwitch();
+      await wizard.switchAddress();
+      expect((await wizard.status()).httpConfirmed).toBe(false);
+    });
   });
 }
 
@@ -234,7 +300,7 @@ describe("设置向导的接口", () => {
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
-  function server() {
+  function server(phase: { switched?: boolean; completed?: boolean } = {}) {
     const adapters = createFakeAdapters();
     const workflow = new MemoryStore();
     const service = new PublisherService(workflow, new Engine(workflow, adapters, { maxFixAttempts: 3 }), adapters, {
@@ -243,11 +309,25 @@ describe("设置向导的接口", () => {
       publicUrl: "http://ferry.test",
       uploadTtlMs: 60_000,
     });
-    const wizard = new SetupWizard(store, adapters.platform, network().options());
+    const wizard = new SetupWizard(
+      store,
+      adapters.platform,
+      network().options({
+        createAdmin: async () => ({ userId: "user-1" }),
+        onComplete: () => void (phase.completed = true),
+      }),
+    );
     const app = buildServer(service, async () => ({ id: "u", departments: [], isAdmin: false }), {
       maxArchiveBytes: 1024,
       consoleDir: dir,
-      setup: { service: new SetupService(store), initialized: () => false, wizard, instanceId: INSTANCE },
+      hosts: { publicUrl: "https://ferry.example.com", appsDomain: "apps.example.com" },
+      setup: {
+        service: new SetupService(store),
+        initialized: () => phase.completed === true,
+        switched: () => phase.switched === true && phase.completed !== true,
+        wizard,
+        instanceId: INSTANCE,
+      },
     });
     app.log.level = "silent";
     return { app, wizard };
@@ -322,7 +402,15 @@ describe("设置向导的接口", () => {
     const ok = await domain({ ...headers, cookie });
     expect(ok.statusCode).toBe(200);
     expect(ok.json().ok).toBe(true);
-    for (const url of ["/api/setup/certificate/skip", "/api/setup/switch", "/api/setup/handoff"]) {
+    for (const url of [
+      "/api/setup/certificate/skip",
+      "/api/setup/switch",
+      "/api/setup/handoff",
+      "/api/setup/switch/confirm",
+      "/api/setup/admin",
+      "/api/setup/selfcheck/skip",
+      "/api/setup/complete",
+    ]) {
       expect((await app.inject({ method: "POST", url, headers })).statusCode, url).toBe(401);
     }
   });
@@ -353,5 +441,44 @@ describe("设置向导的接口", () => {
     const status = await app.inject({ method: "GET", url: "/api/setup/status", headers: { ...formal, cookie: cookie.split(";")[0]! } });
     expect(status.json().session).toBe(true);
     expect((await redeem(formal, token)).statusCode).toBe(401);
+  });
+
+  it("切到正式地址后、完成前:Ferry 的其他接口照常,向导也开放;完成后向导 404", async () => {
+    const phase = { switched: true, completed: false };
+    const { app, wizard } = server(phase);
+    expect((await app.inject({ method: "GET", url: "/api/apps", headers })).statusCode).toBe(200);
+    // 首页仍然进向导:完成前还没有能登录的管理员
+    const home = await app.inject({ method: "GET", url: "/", headers });
+    expect(home.statusCode).toBe(302);
+    expect(home.headers.location).toBe("/setup");
+    phase.switched = false;
+    expect((await app.inject({ method: "GET", url: "/api/apps", headers })).statusCode).toBe(503);
+    phase.switched = true;
+
+    const cookie = await login(app);
+    await wizard.checkDomain(INPUT);
+    await wizard.installCertificate(CHAIN, KEY);
+    await wizard.switchAddress();
+    const post = (url: string, payload?: object) => app.inject({ method: "POST", url, headers: { ...headers, cookie }, payload });
+    const bad = await post("/api/setup/admin", { orgName: " ", name: "张三", mobile: "13800000001", password: "x" });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().message).toContain("请填写公司名");
+    expect((await post("/api/setup/admin", { orgName: "示例公司", name: "张三", mobile: "13800000001", password: "correct-horse" })).json()).toEqual({
+      name: "张三",
+      orgName: "示例公司",
+      created: true,
+    });
+    expect((await post("/api/setup/selfcheck/skip")).statusCode).toBe(200);
+    expect((await post("/api/setup/complete")).json()).toEqual({ publicUrl: "https://ferry.example.com" });
+    expect(phase.completed).toBe(true);
+    // 完成后:正式地址上向导 404、首页进控制台;服务器 IP 开始按域名分流,也是 404
+    const formal = { host: "ferry.example.com", "x-forwarded-proto": "https" };
+    const status = await app.inject({ method: "GET", url: "/api/setup/status", headers: formal });
+    expect(status.statusCode).toBe(404);
+    expect(status.json().message).toContain("已经完成初始化");
+    expect((await app.inject({ method: "GET", url: "/", headers: formal })).headers.location).toBe("/console/");
+    const ip = await app.inject({ method: "GET", url: "/", headers });
+    expect(ip.statusCode).toBe(404);
+    expect(ip.json().message).toContain("不是 Ferry");
   });
 });

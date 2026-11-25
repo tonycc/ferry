@@ -11,7 +11,12 @@ export interface SetupRouteOptions {
   service: SetupService;
   /** 现在是否已完成初始化。完成后向导的接口一律 404 */
   initialized: () => boolean;
-  /** 第 2 到 4 步。没有时(测试)只有设置码这一步 */
+  /**
+   * 是否已经切到正式地址(第 4 步之后,第 7 步之前):这时 Ferry 完整运行,向导也照常开放。
+   * 不给时当作没有切换
+   */
+  switched?: () => boolean;
+  /** 第 2 到 7 步。没有时(测试)只有设置码这一步 */
   wizard?: SetupWizard;
   /** 本进程的标识,/api/setup/ping 返回它 */
   instanceId?: string;
@@ -32,6 +37,12 @@ const certificateBody = z.object({
   privateKey: z.string().max(16 * 1024, "私钥文件太大(超过 16 KB):请确认选的是 .key 私钥文件"),
 });
 const handoffBody = z.object({ token: z.string().max(200) });
+const adminBody = z.object({
+  orgName: z.string().trim().min(1, "请填写公司名").max(50, "公司名最多 50 个字"),
+  name: z.string().trim().min(1, "请填写姓名").max(50, "姓名最多 50 个字"),
+  mobile: z.string().trim().min(1, "请填写手机号").max(20),
+  password: z.string().max(200),
+});
 
 /**
  * 未初始化时还能访问的路由(按 Fastify 匹配到的路由模式判断,不看原始地址,免得 /api/setup/../ 之类绕过)。
@@ -58,9 +69,9 @@ export function registerSetupGate(app: FastifyInstance, options: SetupRouteOptio
       if (isSetupRoute(route)) return reply.status(404).send({ error: "not_found", message: "Ferry 已经完成初始化" });
       return;
     }
-    if (allowedBeforeSetup(route, req.params)) return;
-    // 打开 Ferry 的首页就进向导,和初始化后进控制台一样
+    // 打开 Ferry 的首页就进向导,和初始化后进控制台一样。切换之后也是:向导完成前还没有能登录的管理员
     if (route === "/") return reply.redirect("/setup");
+    if (options.switched?.() || allowedBeforeSetup(route, req.params)) return;
     return reply
       .status(503)
       .send({ error: "not_initialized", message: "Ferry 还没有完成初始化,请管理员先用设置向导完成初始化" });
@@ -124,7 +135,7 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
     return reply.header("set-cookie", sessionCookie(req, token)).send({ ok: true });
   });
 
-  /** 第 2 到 4 步的修改请求:同源、带着向导会话 */
+  /** 第 2 到 7 步的修改请求:同源、带着向导会话 */
   const guard = async (req: FastifyRequest): Promise<SetupWizard> => {
     requireSameHostOrigin(req);
     if (!(await service.hasSession(req.headers))) throw new UserError("unauthenticated", "向导会话已过期,请重新输入设置码");
@@ -153,6 +164,20 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
   });
 
   app.post("/api/setup/handoff", async (req) => ({ token: await (await guard(req)).issueHandoff() }));
+
+  app.post("/api/setup/switch/confirm", async (req) => {
+    await (await guard(req)).confirmHttp();
+    return { ok: true };
+  });
+
+  app.post("/api/setup/admin", async (req) => (await guard(req)).createAdmin(adminBody.parse(req.body)));
+
+  app.post("/api/setup/selfcheck/skip", async (req) => {
+    await (await guard(req)).skipSelfCheck();
+    return { ok: true };
+  });
+
+  app.post("/api/setup/complete", async (req) => (await guard(req)).complete());
 }
 
 /**
