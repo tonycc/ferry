@@ -107,6 +107,8 @@ pnpm dev
 修改 `apps/publisher/src/db/schema.ts` 后,用 `pnpm --filter @ferry/publisher db:generate` 生成新的迁移文件。
 
 服务监听 `http://127.0.0.1:8081`,MCP 入口是 `POST /mcp`。默认全部使用假实现,发布会立刻成功。
+默认端口是 8081(8080 常被本机别的服务占用),用 `PORT` 可以改。以前默认是 8080:之前按 8080 配好的 agent,
+要把 MCP 地址改成 `http://127.0.0.1:8081/mcp`(或者在 `.env` 里设 `PORT=8080` 沿用旧端口)。
 管理员的用户 ID 通过环境变量 `ADMIN_USERS` 指定(逗号分隔)。管理员登录后打开 `/admin` 可以查看全部应用、停用和恢复;
 接口在 `/api/admin/apps` 下。
 每个应用和它的数据库默认最多用 1 核 CPU、512 MB 内存(`APP_CPU_LIMIT`、`APP_MEMORY_LIMIT_MB`、`DB_CPU_LIMIT`、`DB_MEMORY_LIMIT_MB`,设为 0 不限制),
