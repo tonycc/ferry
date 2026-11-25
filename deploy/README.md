@@ -4,9 +4,9 @@
 这套配置在本机(Mac + Docker Desktop + 本机 Dokploy)上完整验证过:用镜像启动、经 Traefik 登录、用个人令牌发布模板应用并上线、
 打开应用时跳转 Ferry 登录再回到应用、重启后数据和登录都在。**真实域名和证书、Linux 上的防火墙还没有在企业环境里验证**,见文末。
 
-> **现在按这份文档手动部署。** 以后的做法是一条安装命令加浏览器里的设置向导([docs/setup-wizard.md](../docs/setup-wizard.md)),
-> 向导还没做完:目前打开 `/setup` 只有输入设置码这一步。所以 `.env` 里一定要填 `PUBLIC_URL`,填了 Ferry 就按已经初始化处理,
-> 不会进向导;留空的话 compose 不启动。
+> **现在按这份文档手动部署。** 以后的做法是一条安装命令加浏览器里的设置向导([docs/setup-wizard.md](../docs/setup-wizard.md))。
+> `.env` 里 `PUBLIC_URL` 留空就进向导,但向导现在只做到第 4 步(域名、证书、切换地址),建公司和管理员的后面几步还没做,走不完。
+> 所以目前 `.env` 里一定要填 `PUBLIC_URL`:填了 Ferry 就按已经初始化处理,不会进向导。
 
 | 文件 | 用途 |
 |---|---|
@@ -87,9 +87,8 @@ chmod 600 .env
 | 配置 | 怎么填 |
 |---|---|
 | `FERRY_IMAGE` | 上一步的镜像名和标签(不要用 latest) |
-| `FERRY_HOST`、`PUBLIC_URL` | Ferry 的域名和完整地址(`https://ferry.公司域名`) |
+| `PUBLIC_URL` | Ferry 的完整地址(`https://ferry.公司域名`) |
 | `APPS_DOMAIN`、`APPS_URL_SCHEME` | 应用域名后缀、`https` |
-| `FERRY_ENTRYPOINT`、`FERRY_TLS` | 有证书时 `websecure`、`true` |
 | `DOKPLOY_API_KEY` | Dokploy 管理页面 → 个人设置里生成 |
 | `POSTGRES_PASSWORD`、`GATEWAY_SECRET`、`SECRETS_KEY` | 各运行一次 `openssl rand -hex 32` |
 | `ADMIN_USERS` | 可以不填。固定的平台管理员(用户 ID,逗号分隔),控制台上不能取消;其余管理员在控制台“人员”页设置 |
@@ -101,14 +100,12 @@ chmod 600 .env
 ```bash
 PUBLIC_URL=http://ferry.公司域名
 APPS_URL_SCHEME=http
-FERRY_ENTRYPOINT=web
-FERRY_TLS=false
 ```
 
 这时员工的登录密码、agent 的令牌在内网里是明文传输的,只适合试用。以后换成 HTTPS:
 
 1. 按“准备”里的方法装好证书。
-2. 把上面四项改回 `https://ferry.公司域名`、`https`、`websecure`、`true`,运行 `docker compose up -d ferry`。
+2. 把上面两项改回 `https://ferry.公司域名` 和 `https`,运行 `docker compose up -d ferry`。之后 Ferry 会把 http 的访问跳到 https。
 3. **已经发布的应用要一个个改**:它们在 Dokploy 上的域名还是 http,Ferry 目前不会自动改。在 Dokploy 里打开每个应用的域名设置,
    打开 HTTPS(证书选 None,用你装的那张)。之后新建的应用直接就是 https;已有的应用重新发布也不会自动改,要按这一步在 Dokploy 里改。
 4. 告诉员工:agent 的 MCP 地址从 `http://` 改成 `https://`(控制台“个人令牌”页的配置方法里是新地址)。
@@ -168,6 +165,10 @@ docker compose up -d ferry
 ```
 
 新版本启动时自动执行数据库迁移。升级前先按下面备份数据库。
+
+从 2026-11 下旬之前的版本升级时:compose 里 Ferry 的路由改成了兜底路由(`docker compose up -d` 时一起更新),
+`.env` 里的 `FERRY_HOST`、`FERRY_ENTRYPOINT`、`FERRY_TLS` 不再使用,可以删掉,留着也没有影响。
+之后用服务器 IP 或其他没配置的域名访问,Ferry 回 404;应用域名下不存在的应用回“应用不存在”。
 
 **回退**:把 `FERRY_IMAGE` 改回旧标签再 `docker compose up -d ferry`。如果新版本加了数据库迁移,旧版本可能读不了新的表结构,
 这时要用升级前的备份恢复数据库(恢复会丢掉升级之后的记录)。

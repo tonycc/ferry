@@ -177,9 +177,10 @@ Ferry 启动时判断是否已初始化:
 ## 和现有部署的兼容
 
 - `.env` 里已经有 `PUBLIC_URL` 和 `APPS_DOMAIN` 的部署,启动即为已初始化,向导不出现,行为和现在一样。
-- compose 现在 `PUBLIC_URL` 和 `FERRY_HOST` 都是必填(`${…:?…}`)。不改的话,安装命令不写 `PUBLIC_URL` 时 compose 不启动;
-  写了又会被判定为已初始化,向导不出现。所以要一起改:`PUBLIC_URL` 改成可选(`${PUBLIC_URL:-}`,空值按没设处理),
-  路由从 `Host(${FERRY_HOST})` 改成兜底路由后 `FERRY_HOST` 不再需要。已部署的服务器 `.env` 里两个都有,升级时不用改。
+- compose 原来 `PUBLIC_URL` 和 `FERRY_HOST` 都是必填,安装命令不写 `PUBLIC_URL` 时 compose 不启动,写了又会被判定为已初始化。
+  已经改了(PR 2c):`PUBLIC_URL` 是可选的(`${PUBLIC_URL:-}`,空值按没设处理),路由改成兜底路由,`FERRY_HOST`、`FERRY_ENTRYPOINT`、
+  `FERRY_TLS` 不再需要;http 跳 https 也从 Traefik 中间件挪到 Ferry 里(只对自己的域名、只在用 https 时)。
+  已部署的服务器 `.env` 里这几项留着也没有影响。
   compose 里 `HOST: 0.0.0.0`,不会因为“本机监听”被当成已初始化。
 - `set-password` 命令保留,用于忘记密码等情况。
 
