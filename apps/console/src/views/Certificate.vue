@@ -2,14 +2,14 @@
 import { CircleCheck, CircleClose, Warning } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
-import { api, ApiError, type CertificateInstallResult, type CertificateStatus } from "../api";
+import { api, ApiError, type CertificateInstallResult } from "../api";
+import { certificateStatus as status, loadCertificateStatus } from "../certificate";
 
 /**
  * 证书页(只给平台管理员,docs/setup-wizard.md“一并要做的”):现在的证书和到期情况;上传新证书替换;
  * 还在用 http 时,上传后自动切到 https(Ferry 重启,已有应用的域名一起改成 https)。
  */
 
-const status = ref<CertificateStatus>();
 /** 本机开发没有正式地址时没有证书页 */
 const unavailable = ref(false);
 const files = reactive<{ chain?: { name: string; text: string }; key?: { name: string; text: string } }>({});
@@ -20,7 +20,7 @@ const switching = ref("");
 
 async function load() {
   try {
-    status.value = await api.get<CertificateStatus>("/api/admin/certificate");
+    await loadCertificateStatus();
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) unavailable.value = true;
     else ElMessage.error((err as Error).message);

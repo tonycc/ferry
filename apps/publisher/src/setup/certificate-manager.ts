@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type { DeployPlatform } from "../adapters/types";
 import { type CertificateCheck, type CheckItem, checkCertificate } from "./certificate";
 import type { ServedCertificate } from "./served";
@@ -80,13 +81,16 @@ export class CertificateManager {
 
   async status(): Promise<CertificateStatus> {
     const settings = await this.options.store.getSettings();
-    const served = await this.options.served(this.ferryHost);
-    const certificate =
-      served && !served.traefikDefault
-        ? { notAfter: served.notAfter, domains: served.domains }
-        : settings.certificate
-          ? { notAfter: settings.certificate.notAfter, domains: settings.certificate.domains }
-          : undefined;
+    // Ferry 的域名和应用的泛域名可能是两张证书(手动部署时常见):都读,按先过期的那张算
+    const served = (
+      await Promise.all([this.ferryHost, `ferry-selfcheck.${this.options.appsDomain}`].map((host) => this.options.served(host)))
+    ).filter((c): c is ServedCertificate => !!c && !c.traefikDefault);
+    const earliest = [...served].sort((a, b) => a.notAfter.getTime() - b.notAfter.getTime())[0];
+    const certificate = earliest
+      ? { notAfter: earliest.notAfter, domains: [...new Set(served.flatMap((c) => c.domains))] }
+      : settings.certificate
+        ? { notAfter: settings.certificate.notAfter, domains: settings.certificate.domains }
+        : undefined;
     const daysLeft = certificate ? Math.floor((certificate.notAfter.getTime() - this.now().getTime()) / DAY) : undefined;
     const level: CertificateLevel =
       daysLeft === undefined ? "none" : daysLeft < 0 ? "expired" : daysLeft < 7 ? "urgent" : daysLeft < 30 ? "expiring" : "ok";
@@ -112,6 +116,13 @@ export class CertificateManager {
   }
 
   async install(actorId: string, chain: string, privateKey: string): Promise<InstallResult> {
+    if (isIP(this.ferryHost)) {
+      return {
+        ok: false,
+        installed: false,
+        items: [{ key: "domains", state: "bad", message: `Ferry 的地址是 IP(${this.ferryHost}):HTTPS 要用域名,先在 .env 里把 PUBLIC_URL 改成域名` }],
+      };
+    }
     const check = checkCertificate(chain, privateKey, { required: this.required, now: this.now(), trusted: this.options.trusted });
     if (!check.ok) return { ...check, installed: false };
 

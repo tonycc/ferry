@@ -3,7 +3,8 @@ import { ArrowDown, ArrowLeft, ArrowRight, Document, Files, Grid, Key, Lock, Men
 import { ElMessage } from "element-plus";
 import { type Component, computed, markRaw, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { api, type CertificateStatus } from "./api";
+import { api } from "./api";
+import { certificateStatus, loadCertificateStatus } from "./certificate";
 import FerryLogo from "./components/FerryLogo.vue";
 import { loadMe, me } from "./session";
 
@@ -57,9 +58,8 @@ const navOpen = ref(false);
 watch(() => route.fullPath, () => (navOpen.value = false));
 
 /** 给管理员的常驻提醒:证书快到期、已过期,或者还没启用 HTTPS。证书页上自己会显示,那里不重复 */
-const certificate = ref<CertificateStatus>();
 const certificateNotice = computed(() => {
-  const c = certificate.value;
+  const c = certificateStatus.value;
   if (!c || route.path === "/certificate") return undefined;
   if (c.level === "expired") return { type: "error" as const, text: `HTTPS 证书已经过期,Ferry 和所有应用都打不开了:请尽快上传新证书` };
   if (c.level === "urgent" || c.level === "expiring") {
@@ -75,7 +75,7 @@ const certificateNotice = computed(() => {
 onMounted(async () => {
   await loadMe().catch((err: Error) => ElMessage.error(err.message));
   // 本机开发没有正式地址时没有证书页(接口 404),不提醒
-  if (me.value?.isAdmin) certificate.value = await api.get<CertificateStatus>("/api/admin/certificate").catch(() => undefined);
+  if (me.value?.isAdmin) await loadCertificateStatus().catch(() => undefined);
 });
 
 const passwordOpen = ref(false);

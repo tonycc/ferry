@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { connect } from "node:tls";
 
 /** Traefik 对某个域名实际出示的证书 */
@@ -15,7 +16,9 @@ export interface ServedCertificate {
  */
 export function servedCertificate(gatewayHost: string, port: number, host: string, timeoutMs = 5000): Promise<ServedCertificate | undefined> {
   return new Promise((resolve) => {
-    const socket = connect({ host: gatewayHost, port, servername: host, rejectUnauthorized: false, timeout: timeoutMs }, () => {
+    // IP 不能做 SNI(Node 会警告,也不会发出去):不带 SNI,Traefik 出示的是它的默认证书
+    const sni = isIP(host) ? {} : { servername: host };
+    const socket = connect({ host: gatewayHost, port, ...sni, rejectUnauthorized: false, timeout: timeoutMs }, () => {
       const cert = socket.getPeerCertificate();
       socket.end();
       if (!cert || !cert.valid_to) return resolve(undefined);

@@ -17,7 +17,14 @@ const DOMAINS = ["ferry.example.com", "*.apps.example.com"];
 function setup(overrides: Partial<CertificateManagerOptions> = {}) {
   const store = new MemorySetupStore();
   const platform = new FakePlatform();
-  const state = { served: undefined as ServedCertificate | undefined, restarts: 0, audits: [] as string[], now: NOW };
+  const state = {
+    served: undefined as ServedCertificate | undefined,
+    /** 应用泛域名单独出示的证书;不给时和 Ferry 的域名一样 */
+    appsServed: undefined as ServedCertificate | undefined,
+    restarts: 0,
+    audits: [] as string[],
+    now: NOW,
+  };
   const manager = new CertificateManager({
     store,
     platform,
@@ -25,7 +32,7 @@ function setup(overrides: Partial<CertificateManagerOptions> = {}) {
     appsDomain: "apps.example.com",
     fixedByEnv: false,
     authAddress: "http://ferry-publisher:8080/authz",
-    served: async () => state.served,
+    served: async (host) => (host.startsWith("ferry-selfcheck.") ? (state.appsServed ?? state.served) : state.served),
     restart: () => void state.restarts++,
     audit: async (actor, detail) => void state.audits.push(`${actor}:${JSON.stringify(detail)}`),
     trusted: [ROOT],
@@ -111,6 +118,25 @@ describe("控制台的证书页", () => {
     expect(state.audits).toEqual([]);
   });
 
+  it("Ferry 的域名和应用泛域名是两张证书:按先过期的那张提醒", async () => {
+    const { manager, state } = setup({ publicUrl: "https://ferry.example.com", fixedByEnv: true });
+    state.served = { notAfter: new Date("2027-06-01T00:00:00Z"), domains: ["ferry.example.com"], traefikDefault: false };
+    state.appsServed = { notAfter: new Date("2026-12-11T00:00:00Z"), domains: ["*.apps.example.com"], traefikDefault: false };
+    expect(await manager.status()).toMatchObject({
+      level: "expiring",
+      daysLeft: 10,
+      certificate: { notAfter: new Date("2026-12-11T00:00:00Z"), domains: ["ferry.example.com", "*.apps.example.com"] },
+    });
+  });
+
+  it("Ferry 的地址是 IP:不装,提示要用域名", async () => {
+    const { manager, platform } = setup({ publicUrl: "http://10.0.0.5" });
+    const result = await manager.install("admin-1", CHAIN, KEY);
+    expect(result).toMatchObject({ ok: false, installed: false });
+    expect(result.items[0]?.message).toContain("HTTPS 要用域名");
+    expect(platform.calls).toEqual([]);
+  });
+
   it("证书不覆盖这两个域名:不装", async () => {
     const { manager, platform } = setup({ appsDomain: "apps.other.com" });
     const result = await manager.install("admin-1", CHAIN, KEY);
@@ -136,6 +162,15 @@ describe("读出 Traefik 出示的证书", () => {
       server.close();
     }
     expect(await servedCertificate("127.0.0.1", 1, "ferry.example.com", 500)).toBeUndefined();
+    // IP 不带 SNI 也能连上读出证书
+    const again = createServer({ cert: CHAIN, key: KEY }, (_req, res) => res.end());
+    await new Promise<void>((resolve) => again.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (again.address() as { port: number }).port;
+      expect((await servedCertificate("127.0.0.1", port, "10.0.0.5"))?.notAfter).toEqual(LEAF_END);
+    } finally {
+      again.close();
+    }
   });
 });
 
