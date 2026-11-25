@@ -24,6 +24,7 @@ export class PostgresSetupStore implements SetupStore {
       setupCodeHash: row.setupCodeHash ?? undefined,
       setupCompletedAt: row.setupCompletedAt ?? undefined,
       wizard: readWizard(row.wizardState),
+      httpsSince: row.httpsSince ?? undefined,
     };
   }
 
@@ -52,6 +53,10 @@ export class PostgresSetupStore implements SetupStore {
 
   async clearAddress() {
     await this.upsert({ publicUrl: null, appsDomain: null, appsUrlScheme: null });
+  }
+
+  async switchToHttps(address: InstanceAddress, at: Date) {
+    await this.upsert({ ...address, httpsSince: at });
   }
 
   async markCompleted(at: Date) {

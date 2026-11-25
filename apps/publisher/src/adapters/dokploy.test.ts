@@ -193,7 +193,9 @@ describe("DokployPlatform", () => {
 
   it("installCertificate:没有 ID 时新建(组织从 organization.all 取);有 ID 时原地更新;那张已经不在了就新建,不记错误日志", async () => {
     let updateMissing = false;
+    let existing: { certificateId: string; name: string }[] = [];
     const { platform, called, logged } = fakeDokploy({
+      "certificates.all": () => existing,
       "organization.all": () => [{ id: "org1" }],
       "certificates.create": () => ({ certificateId: "c-new", privateKey: "echoed" }),
       "certificates.update": () =>
@@ -211,6 +213,13 @@ describe("DokployPlatform", () => {
     expect(await platform.installCertificate({ ...input, id: "gone" })).toBe("c-new");
     expect(called("certificates.create")).toHaveLength(2);
     expect(logged).toEqual([]);
+
+    // 没有 ID,但 Dokploy 里已有同名的(向导跳过证书后在控制台补装,或者记录丢了):原地更新,不再多建一张
+    updateMissing = false;
+    existing = [{ certificateId: "c-old", name: "other" }, { certificateId: "c-same", name: "ferry-example.com" }];
+    expect(await platform.installCertificate(input)).toBe("c-same");
+    expect(called("certificates.update").at(-1)?.input).toMatchObject({ certificateId: "c-same" });
+    expect(called("certificates.create")).toHaveLength(2);
   });
 
   it("ensureGateway:写入网关配置,顺序是删身份头、问 /authz、删健康检查口令", async () => {

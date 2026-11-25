@@ -42,6 +42,8 @@ export interface InstanceSettings {
   setupCodeHash?: string;
   setupCompletedAt?: Date;
   wizard?: WizardState;
+  /** 在控制台补装证书、从 http 切到 https 的时间 */
+  httpsSince?: Date;
 }
 
 /** 第 4 步写入、重启后生效的地址配置 */
@@ -69,6 +71,8 @@ export interface SetupStore {
   clearAddress(): Promise<void>;
   /** 第 7 步:记下完成初始化的时间,之后启动不再进向导 */
   markCompleted(at: Date): Promise<void>;
+  /** 控制台补装证书后切到 https:写入 https 的地址配置和切换时间,Ferry 重启后生效 */
+  switchToHttps(address: InstanceAddress, at: Date): Promise<void>;
 }
 
 /** 测试和内存存储用。未初始化模式要求数据库(向导中途要重启),正式运行不会用到它 */
@@ -116,6 +120,10 @@ export class MemorySetupStore implements SetupStore {
 
   async markCompleted(at: Date) {
     this.settings.setupCompletedAt = at;
+  }
+
+  async switchToHttps(address: InstanceAddress, at: Date) {
+    this.settings = { ...this.settings, ...address, httpsSince: at };
   }
 
   /** 只给测试用:模拟向导写入的配置 */

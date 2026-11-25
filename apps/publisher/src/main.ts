@@ -35,7 +35,9 @@ import { checkInstance, resolveInstance } from "./setup/instance";
 import { ensureSetupCode, removeSetupCodeFile } from "./setup/code";
 import { lookupIpv4, pingFerry } from "./setup/probe";
 import { SetupService } from "./setup/service";
+import { CertificateManager } from "./setup/certificate-manager";
 import { SelfCheck } from "./setup/selfcheck";
+import { servedCertificate } from "./setup/served";
 import { SetupWizard } from "./setup/wizard";
 
 const config = loadConfig();
@@ -221,7 +223,31 @@ const authAddress = config.GATEWAY_AUTH_URL ?? `http://host.docker.internal:${co
 // 本进程的标识:设置向导的 /api/setup/ping 返回它,用来确认请求到的是这台服务器上的这个 Ferry
 const instanceId = randomBytes(16).toString("hex");
 const identity = createIdentity({ auth, directory, adminIds, devAuth: config.DEV_AUTH === "true", allowedOrigins });
+/** 按新的地址配置重启:先把响应发出去再退出,容器里由 Docker 的 restart: unless-stopped 拉起来 */
+function restart(reason: string): void {
+  console.warn(`${reason},Ferry 退出以按新配置启动(本机 tsx watch 不会自动拉起,要手动重启)`);
+  setTimeout(() => process.exit(0), 500).unref();
+}
+
+// 控制台的“证书”页:有正式地址时才有。Traefik 实际出示的证书只在接了 Dokploy 时能读
+const tlsGateway = new URL(config.HEALTHCHECK_GATEWAY).hostname;
+const certificates = instance.publicUrl
+  ? new CertificateManager({
+      store: setupStore,
+      platform: adapters.platform,
+      publicUrl: instance.publicUrl,
+      appsDomain: instance.appsDomain,
+      fixedByEnv: ["PUBLIC_URL", "APPS_URL_SCHEME"].some((name) => (process.env[name]?.trim() ?? "") !== ""),
+      authAddress,
+      served: (host) =>
+        config.FERRY_PLATFORM === "dokploy" ? servedCertificate(tlsGateway, config.HEALTHCHECK_TLS_PORT, host) : Promise.resolve(undefined),
+      restart: () => restart("在控制台装好证书、切到了 https"),
+      audit: (actorId, detail) => audit.record(actorId, "certificate.install", undefined, detail),
+    })
+  : undefined;
+
 const server = buildServer(service, identity, {
+  certificates,
   maxArchiveBytes: config.MAX_ARCHIVE_MB * 1024 * 1024,
   gateway,
   auth: {
@@ -270,11 +296,7 @@ const server = buildServer(service, identity, {
             void removeSetupCodeFile(config.SETUP_CODE_FILE).catch((err: Error) => console.error(`删除设置码文件失败: ${err.message}`));
             console.warn("设置向导已完成:向导关闭,开始按域名分流");
           },
-          restart: () => {
-            // 先把响应发出去再退出;容器里由 Docker 的 restart: unless-stopped 拉起来
-            console.warn("设置向导写入了正式地址,Ferry 退出以按新配置启动(本机 tsx watch 不会自动拉起,要手动重启)");
-            setTimeout(() => process.exit(0), 500).unref();
-          },
+          restart: () => restart("设置向导写入了正式地址"),
         }),
   },
 });
@@ -304,6 +326,15 @@ if ((instance.initialized || instance.switched) && config.FERRY_PLATFORM === "do
         return alerts.jobStatus("把网关接入应用网络", `${err.message}(应用可能都无法访问)`);
       });
   }, 60_000).unref();
+}
+
+// 证书到期提醒:启动一分钟后查一次,之后每天一次(不到 30 天提醒一次,不到 7 天每天都提醒)
+// 向导切换地址之后就开始(完成向导不会重启,这时不开始的话要等下次重启)
+if (certificates && (instance.initialized || instance.switched) && config.FERRY_PLATFORM === "dokploy") {
+  const remind = () =>
+    void certificates.remind((m) => alerts.send(m)).catch((err: Error) => server.log.error(`检查证书到期失败: ${err.message}`));
+  setTimeout(remind, 60_000).unref();
+  setInterval(remind, 24 * 3600_000).unref();
 }
 
 // 冷却期内被压下的告警,冷却期过了还没被新告警带出去的,单独补发

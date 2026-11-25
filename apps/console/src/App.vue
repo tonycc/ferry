@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowLeft, ArrowRight, Document, Files, Grid, Key, Menu, OfficeBuilding, User } from "@element-plus/icons-vue";
+import { ArrowDown, ArrowLeft, ArrowRight, Document, Files, Grid, Key, Lock, Menu, OfficeBuilding, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { type Component, computed, markRaw, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { api } from "./api";
+import { certificateStatus, loadCertificateStatus } from "./certificate";
 import FerryLogo from "./components/FerryLogo.vue";
 import { loadMe, me } from "./session";
 
@@ -34,6 +35,7 @@ const groups: NavGroup[] = [
       { path: "/users", label: "人员", icon: markRaw(User) },
       { path: "/departments", label: "部门", icon: markRaw(OfficeBuilding) },
       { path: "/audit", label: "审计日志", icon: markRaw(Document) },
+      { path: "/certificate", label: "证书", icon: markRaw(Lock) },
     ],
   },
 ];
@@ -55,7 +57,26 @@ const initial = computed(() => Array.from(me.value?.name ?? "")[0] ?? "");
 const navOpen = ref(false);
 watch(() => route.fullPath, () => (navOpen.value = false));
 
-onMounted(() => loadMe().catch((err: Error) => ElMessage.error(err.message)));
+/** 给管理员的常驻提醒:证书快到期、已过期,或者还没启用 HTTPS。证书页上自己会显示,那里不重复 */
+const certificateNotice = computed(() => {
+  const c = certificateStatus.value;
+  if (!c || route.path === "/certificate") return undefined;
+  if (c.level === "expired") return { type: "error" as const, text: `HTTPS 证书已经过期,Ferry 和所有应用都打不开了:请尽快上传新证书` };
+  if (c.level === "urgent" || c.level === "expiring") {
+    return { type: c.level === "urgent" ? ("error" as const) : ("warning" as const), text: `HTTPS 证书还有 ${c.daysLeft} 天过期:请提前上传新证书` };
+  }
+  if (!c.https && c.certificate && c.fixedByEnv) {
+    return { type: "info" as const, text: "证书已经装好,但地址写在服务器的 .env 里:把 PUBLIC_URL、APPS_URL_SCHEME 改成 https 后重启 Ferry" };
+  }
+  if (!c.https) return { type: "info" as const, text: "还没启用 HTTPS:上传证书后 Ferry 和应用都改用 https" };
+  return undefined;
+});
+
+onMounted(async () => {
+  await loadMe().catch((err: Error) => ElMessage.error(err.message));
+  // 本机开发没有正式地址时没有证书页(接口 404),不提醒
+  if (me.value?.isAdmin) await loadCertificateStatus().catch(() => undefined);
+});
 
 const passwordOpen = ref(false);
 const pwSaving = ref(false);
@@ -151,6 +172,9 @@ function onUserCommand(command: string) {
       </header>
 
       <main class="main">
+        <el-alert v-if="certificateNotice" class="cert-notice" :type="certificateNotice.type" :closable="false" show-icon>
+          <template #title>{{ certificateNotice.text }} <router-link to="/certificate">去证书页</router-link></template>
+        </el-alert>
         <router-view v-if="me" />
       </main>
     </div>
@@ -364,5 +388,8 @@ function onUserCommand(command: string) {
   .topbar { padding: 0 12px; }
   .crumb-group, .user-name { display: none; }
   .main { padding: 12px; }
+}
+.cert-notice {
+  margin-bottom: 16px;
 }
 </style>

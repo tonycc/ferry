@@ -194,7 +194,7 @@ Ferry 启动时判断是否已初始化:
   compose 里 `HOST: 0.0.0.0`,不会因为“本机监听”被当成已初始化。
 - `set-password` 命令保留,用于忘记密码等情况。
 
-## 一并要做的:证书到期提醒、替换和补装
+## 一并要做的:证书到期提醒、替换和补装(已做,PR 3c)
 
 证书不再自动续期(人工申请的证书,有效期按行业规定 2026 年起最长约 200 天),忘了换就所有应用同时打不开。
 
@@ -207,6 +207,11 @@ Ferry 启动时判断是否已初始化:
   - 每个应用在 Dokploy 上的域名也要改成 https:启动时的域名检查(`ensureDomains` → `attachDomain`)现在只对齐端口、登录网关和路由文件,
     要一并对齐 `https` 和 `certificateType`。
   - agent 的 MCP 地址从 http 变成 https,要员工自己改:控制台“个人令牌”页显示新地址并提示一次。
+- 实现上的几点:
+  - 到期时间优先看 Traefik 实际出示的证书(按 SNI 连 https 入口读),手动在 Dokploy 上装的、Ferry 没有记录的证书也能提醒;读不到时用 Ferry 记下的。
+  - `PUBLIC_URL` 或 `APPS_URL_SCHEME` 写在 `.env` 里时 Ferry 不切换,证书页提示去改 `.env`。
+  - Dokploy 里已有同名证书时原地更新,不再多建一张;装好后确认 Traefik 出示的是这张,不是时提示去 Dokploy 删掉覆盖同样域名的旧证书。
+  - 切到 https 的时间记在 `instance_settings.https_since`,“个人令牌”页在之后 30 天里提醒改 MCP 地址。
 
 ## 不做的
 

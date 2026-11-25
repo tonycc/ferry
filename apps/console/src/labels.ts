@@ -72,6 +72,7 @@ export const AUDIT_ACTION: Record<AuditAction, string> = {
   "department.delete": "删除部门",
   "setup.selfcheck": "初始化自检",
   "setup.complete": "完成初始化",
+  "certificate.install": "安装证书",
 };
 
 const PERSON_FIELD: Record<string, string> = { name: "姓名", mobile: "手机号", jobNumber: "工号", departmentIds: "部门" };
@@ -129,6 +130,8 @@ export function auditDetail(e: AuditEvent): string {
       return d.skipped ? "跳过了自检" : "自检通过";
     case "setup.complete":
       return String(d.publicUrl ?? "");
+    case "certificate.install":
+      return `${String(d.notAfter ?? "").slice(0, 10)} 到期${d.switchedToHttps ? ",同时切到 https" : ""}`;
     case "department.create":
     case "department.delete":
       return String(d.name ?? d.departmentId ?? "");
