@@ -113,6 +113,8 @@ details ol { margin: 0; padding-left: 18px; } details li { margin: 3px 0; }
 .checks { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13px; }
 .checks li { display: flex; align-items: flex-start; gap: 8px; }
 .checks li svg { width: 15px; height: 15px; margin-top: 3px; }
+.checks li .dot { width: 9px; height: 9px; margin: 6px 3px 0; border: 2px solid #CBD5E1; border-radius: 50%; flex-shrink: 0; }
+.checks li.wait { color: var(--muted); }
 .checks li.ok svg { color: var(--ok); } .checks li.bad svg { color: var(--bad); } .checks li.warn svg { color: var(--warn); } .checks li.wait svg { color: var(--muted); }
 .checks li.bad { color: var(--ink); }
 .fix { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid rgba(0,0,0,.05); color: var(--sub); font-size: 13px; }

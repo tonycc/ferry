@@ -45,6 +45,13 @@ export interface CertificateResult {
   domains?: string[];
 }
 
+export interface SelfCheckProgress {
+  running: boolean;
+  steps: { key: string; label: string; state: "wait" | "running" | "ok" | "bad"; message?: string }[];
+  result?: "passed" | "failed";
+  hint?: string;
+}
+
 export class SetupError extends Error {
   constructor(
     readonly status: number,
@@ -81,6 +88,8 @@ export const setupApi = {
   confirmHttp: () => request<{ ok: true }>("POST", "/api/setup/switch/confirm", {}),
   admin: (input: { orgName: string; name: string; mobile: string; password: string }) =>
     request<{ name: string; orgName: string; created: boolean }>("POST", "/api/setup/admin", input),
+  startSelfCheck: () => request<SelfCheckProgress>("POST", "/api/setup/selfcheck", {}),
+  selfCheck: () => request<SelfCheckProgress>("GET", "/api/setup/selfcheck"),
   skipSelfCheck: () => request<{ ok: true }>("POST", "/api/setup/selfcheck/skip", {}),
   complete: () => request<{ publicUrl: string }>("POST", "/api/setup/complete", {}),
 };
