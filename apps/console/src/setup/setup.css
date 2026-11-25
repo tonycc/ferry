@@ -1,5 +1,5 @@
 /*
- * 设置向导的样式(方案 A,和控制台、登录页一致)。
+ * 设置向导的样式:品牌色(靛蓝到紫的渐变),和控制台、登录页一致。
  */
 :root {
   --brand: #4F46E5; --brand-2: #7C3AED; --brand-soft: #EEF2FF; --grad: linear-gradient(135deg, var(--brand), var(--brand-2));
