@@ -20,7 +20,7 @@
 | 谁 | 做什么 |
 |---|---|
 | 人(外部操作) | 准备 Linux 服务器;在阿里云加两条 A 记录;在阿里云数字证书管理服务申请证书并下载 |
-| 安装命令(服务器上,以后写) | 装 Docker 和固定版本的 Dokploy,用接口注册 Dokploy 管理员、生成 API key(见 [dokploy-findings.md](dokploy-findings.md));去掉 Traefik 默认的 letsencrypt、关掉管理接口;生成 `GATEWAY_SECRET`、`SECRETS_KEY`、数据库密码写进 `.env`;配置防火墙;启动 Ferry;打印向导地址和设置码 |
+| 安装命令(服务器上,`deploy/install.sh`) | 装 Docker 和固定版本的 Dokploy,用接口注册 Dokploy 管理员、生成 API key(见 [dokploy-findings.md](dokploy-findings.md));去掉 Traefik 默认的 letsencrypt、关掉管理接口;生成 `GATEWAY_SECRET`、`SECRETS_KEY`、数据库密码写进 `.env`;配置防火墙;启动 Ferry;打印向导地址和设置码 |
 | 设置向导(浏览器) | 下面的 7 步 |
 
 先做向导、后写安装命令:向导可以在本机(`pnpm dev` + 本机 Dokploy)开发测试,安装命令要 Linux 虚拟机。
@@ -227,7 +227,7 @@ Ferry 启动时判断是否已初始化:
 | 1 | ✅ 验证:Dokploy 证书接口能否用 API key 调用、兜底路由的优先级、Traefik 自签名证书访问 `https://IP`。`instance_settings` 表、环境变量优先的配置读取、未初始化模式、设置码(含输入设置码开向导会话的接口 `/api/setup/status`、`/api/setup/code`,和只有这一步的 `/setup` 页面;未初始化时首页跳到 `/setup`) |
 | 2 | 向导第 1 到 4 步:设置码页、域名和 DNS 检测、证书上传检查和安装(可跳过,先用 HTTP)、重启后交接到正式地址;compose 改成两条兜底路由,`PUBLIC_URL` 改成可选,去掉 `FERRY_HOST`。拆成三个 PR:2a 后端接口,2b 向导界面,2c compose 和部署文档 |
 | 3 | 向导第 5 到 7 步;控制台的证书页(替换、到期提醒,以及跳过证书后的补装和切到 HTTPS)。拆成三个 PR:3a 第 5、7 步(第 6 步先只能跳过)和“已切换、未完成”状态,3b 自检,3c 证书页(先单独修 https 应用的健康检查和域名协议对齐) |
-| 4 | 安装命令 `deploy/install.sh`,在 Linux 虚拟机里从零跑通;更新 deploy/README.md |
+| 4 | ✅ 安装命令 `deploy/install.sh`,更新 deploy/README.md。按要求不在 Linux 虚拟机里跑(本机阶段不做 Linux 部署):只检查了语法,改 Traefik 配置和生成 `.env` 的部分在 Debian 容器里测过,其余步骤留到第一次在服务器上部署时验证 |
 
 前端用控制台现有的 Vue(新的 `/setup` 路由),后端在 Ferry 里加 `/api/setup/*`。
 

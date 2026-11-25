@@ -4,17 +4,19 @@
 这套配置在本机(Mac + Docker Desktop + 本机 Dokploy)上完整验证过:用镜像启动、经 Traefik 登录、用个人令牌发布模板应用并上线、
 打开应用时跳转 Ferry 登录再回到应用、重启后数据和登录都在。**真实域名和证书、Linux 上的防火墙还没有在企业环境里验证**,见文末。
 
-> **现在按这份文档手动部署。** 以后的做法是一条安装命令加浏览器里的设置向导([docs/setup-wizard.md](../docs/setup-wizard.md))。
-> `.env` 里 `PUBLIC_URL` 留空就进向导。向导现在能走完(先用 HTTP 的,之后在控制台“证书”页补装证书、切到 HTTPS),
-> 但还没在真实服务器上完整走过。
-> 所以目前仍建议在 `.env` 里填 `PUBLIC_URL`,按这份文档部署:填了 Ferry 就按已经初始化处理,不会进向导。
-> 要试向导的话,`.env` 里的 `PUBLIC_URL`、`APPS_DOMAIN`、`APPS_URL_SCHEME` 都要删掉:写在 `.env` 里的优先,向导和证书页就改不了它们。
+> **两种部署方式:**
+> - **安装命令加设置向导**(见下面“用安装命令部署”):服务器上运行 `install.sh`,再在浏览器里按向导设置域名、证书和管理员。
+>   **安装命令和向导都还没在真实的 Linux 服务器上从零走过**,第一次用时留出排查的时间。
+> - **手动部署**(“第一次部署”):自己装 Dokploy、在 `.env` 里写好地址,Ferry 启动时就当作已经初始化,不进向导。
+>
+> 两种方式不要混用:`.env` 里写了 `PUBLIC_URL`、`APPS_DOMAIN`、`APPS_URL_SCHEME` 时这些值优先,向导和证书页就改不了它们。
 
 | 文件 | 用途 |
 |---|---|
 | `../Dockerfile` | Ferry 的镜像:发布服务、构建好的控制台、应用模板、固定版本的 gitleaks(按架构下载并校验) |
 | `docker-compose.yml` | Ferry 和它自己的 PostgreSQL |
 | `.env.example` | 配置模板,复制为 `.env` 后填写 |
+| `install.sh` | 安装命令:装 Docker、Dokploy 和 Ferry,打印设置向导的地址和设置码 |
 | `set-password.sh` | 建第一个平台管理员,或给某人生成初始密码 |
 | `firewall.example.sh` | 防火墙示例(未验证) |
 
@@ -33,6 +35,38 @@
   这个路由不挂登录网关,并且排除了 `/authz`:它只给 Traefik 在内部调用。
 - **同一套 Dokploy 只能有一个 Ferry。** 登录网关配置、按名称复用的 Dokploy 资源、登录锁定计数、告警合并都假定只有一个实例。
   在服务器上试验时也不要另外再起一个。
+
+## 用安装命令部署
+
+在一台全新的 Linux 服务器上(建议 4 核 8G 以上,80、443、3000 端口空着),先做这些外部的准备(安装命令不碰它们):
+
+- 内网 DNS:`ferry.公司域名` 和 `*.apps.公司域名` 解析到这台服务器(也可以等向导第 2 步告诉你要加哪两条再加)。
+- 证书(覆盖这两个名字)可以先不办:向导里能跳过,先用 HTTP,之后在控制台“证书”页补装。
+- 服务器不能访问外网时,先准备 npm 和镜像仓库的内部代理(任务 1.2)。安装命令要从外网装 Docker 和拉镜像。
+
+然后:
+
+1. 按下面“2. 构建镜像”构建 Ferry 的镜像,拷到服务器上 `docker load`(或者推到内部镜像仓库)。
+2. 把这个 `deploy` 目录拷到服务器上(比如 `/opt/ferry/deploy`),**不要**放 `.env`(安装命令会生成)。
+3. 用 root 运行:
+
+   ```bash
+   cd /opt/ferry/deploy
+   sudo FERRY_IMAGE=ferry:2026-11-26 ./install.sh
+   ```
+
+   它会依次:装 Docker(没有时)、开启 Swarm、装固定版本的 Dokploy(v0.31.3)、马上用接口建 Dokploy 管理员并生成给 Ferry 用的 API key
+   (登录信息写进 `dokploy-admin.txt`,只有 root 能读)、改 Traefik 的配置(关掉管理接口、去掉内网用不了的 Let's Encrypt)、
+   生成 `.env`(随机的数据库密码、`GATEWAY_SECRET`、`SECRETS_KEY`,不写地址)、启动 Ferry、加上防火墙规则
+   (不让容器经宿主机访问 Dokploy,同 `firewall.example.sh`;不要时设 `SKIP_FIREWALL=1`)。
+   最后打印设置向导的地址 `https://服务器IP/setup` 和设置码。可以重复运行:已经装好的部分跳过,已有的 `.env` 不覆盖
+   (再给一个新的 `FERRY_IMAGE` 就换成新镜像,可以用来升级;不给就用 `.env` 里的)。防火墙规则加不上时只提醒,不中止安装。
+4. 在浏览器里打开向导地址(证书警告点继续),按 7 步做完:设置码、域名和 DNS 检测、证书(可跳过)、切到正式地址、
+   公司和管理员、自检、完成。
+5. **备份 `.env`**(`SECRETS_KEY` 丢了,员工保存过的应用密钥全部解不开),以及 `dokploy-admin.txt`。
+
+之后的日常运维(升级、备份、证书到期)和手动部署一样,见“日常运维”;证书在控制台“证书”页换。
+防火墙规则重启后不保留,要长期生效用 `iptables-persistent` 之类保存。
 
 ## 第一次部署
 
@@ -208,6 +242,8 @@ docker compose up -d ferry
 - 真实域名和证书:本机用的是 `http://ferry.localhost` 和 `*.apps.localhost`,没有走 https。
   经 Dokploy 证书接口装证书、Traefik 用上它,在本机用测试证书验证过(设置向导 PR 36);用 Dokploy 管理页面添加证书没有走过。
 - 在全新的 Linux 服务器上用官方脚本安装 Dokploy(本机是 Mac,用的是 `infra/dokploy/setup-local.sh`)。
+- 安装命令 `install.sh`:只在本机检查过语法,改 Traefik 配置和生成 `.env` 的部分在 Debian 容器里测过(改过的配置 Traefik 能正常加载);
+  装 Docker、Dokploy、注册管理员、生成 API key、防火墙这些步骤没有在 Linux 服务器上跑过。
 - 先用 HTTP 再换 HTTPS 的整个过程。
 - Linux 上的防火墙规则(`firewall.example.sh`)。
 - 服务器能否访问外网、员工实际用的 agent 客户端能否连上 Ferry。
