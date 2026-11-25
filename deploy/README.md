@@ -110,7 +110,7 @@ FERRY_TLS=false
 1. 按“准备”里的方法装好证书。
 2. 把上面四项改回 `https://ferry.公司域名`、`https`、`websecure`、`true`,运行 `docker compose up -d ferry`。
 3. **已经发布的应用要一个个改**:它们在 Dokploy 上的域名还是 http,Ferry 目前不会自动改。在 Dokploy 里打开每个应用的域名设置,
-   打开 HTTPS(证书选 None,用你装的那张)。之后新发布的应用直接就是 https。
+   打开 HTTPS(证书选 None,用你装的那张)。之后新建的应用直接就是 https;已有的应用重新发布也不会自动改,要按这一步在 Dokploy 里改。
 4. 告诉员工:agent 的 MCP 地址从 `http://` 改成 `https://`(控制台“个人令牌”页的配置方法里是新地址)。
 
 `GATEWAY_SECRET` 和 `SECRETS_KEY` 必须固定:不设置的话 compose 拒绝启动。`SECRETS_KEY` 丢了或换了,员工保存过的应用密钥全部解不开,
