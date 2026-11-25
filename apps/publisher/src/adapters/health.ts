@@ -70,9 +70,20 @@ export class HttpHealthChecker implements HealthChecker {
   }
 }
 
-/** 跳到同一个域名的 https 地址(Dokploy 给 https 应用的 http 路由只做这个) */
+/**
+ * 跳到同一个域名的 https 地址(Dokploy 给 https 应用的 http 路由只做这个)。
+ * 按 URL 比较:允许写明 443 端口、域名末尾带点
+ */
 export function isHttpsRedirect(res: { status: number; location?: string }, host: string): boolean {
-  return res.status >= 300 && res.status < 400 && (res.location?.toLowerCase().startsWith(`https://${host.toLowerCase()}/`) ?? false);
+  if (res.status < 300 || res.status >= 400 || !res.location) return false;
+  let target: URL;
+  try {
+    target = new URL(res.location);
+  } catch {
+    return false;
+  }
+  const name = (h: string) => h.toLowerCase().replace(/\.$/, "");
+  return target.protocol === "https:" && (target.port === "" || target.port === "443") && name(target.hostname) === name(host);
 }
 
 /**

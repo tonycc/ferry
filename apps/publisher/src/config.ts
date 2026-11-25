@@ -37,6 +37,10 @@ const envSchema = z.object({
    * 只在 FERRY_PLATFORM=dokploy 时使用;假平台下健康检查也是假的
    */
   HEALTHCHECK_GATEWAY: z.string().default("http://127.0.0.1:80"),
+  /**
+   * 同一台机器上 Traefik 的 https 入口端口。https 应用的 http 路由只做跳转,健康检查和自检要改走这个端口
+   */
+  HEALTHCHECK_TLS_PORT: z.coerce.number().int().min(1).max(65535).default(443),
   /** 部署完成后等应用变健康的最长时间 */
   HEALTHCHECK_TIMEOUT_SECONDS: z.coerce.number().int().default(90),
   /**

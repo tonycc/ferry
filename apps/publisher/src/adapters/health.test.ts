@@ -4,7 +4,7 @@ import { createServer as createHttpsServer } from "node:https";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { HttpHealthChecker } from "./health";
+import { HttpHealthChecker, isHttpsRedirect } from "./health";
 
 let server: Server | undefined;
 
@@ -71,6 +71,17 @@ describe("HttpHealthChecker", () => {
     } finally {
       tls.close();
     }
+  });
+
+  it("跳转地址按 URL 比较:写明 443 端口、域名末尾带点也算;别的端口、别的协议不算", () => {
+    const at = (location: string) => isHttpsRedirect({ status: 308, location }, "Ledger.apps.example.com");
+    expect(at("https://ledger.apps.example.com/healthz")).toBe(true);
+    expect(at("https://ledger.apps.example.com:443/healthz")).toBe(true);
+    expect(at("https://ledger.apps.example.com./")).toBe(true);
+    expect(at("https://ledger.apps.example.com:8443/")).toBe(false);
+    expect(at("http://ledger.apps.example.com/")).toBe(false);
+    expect(at("/login")).toBe(false);
+    expect(isHttpsRedirect({ status: 200, location: "https://ledger.apps.example.com/" }, "ledger.apps.example.com")).toBe(false);
   });
 
   it("跳到别的地址不算:判为不健康", async () => {

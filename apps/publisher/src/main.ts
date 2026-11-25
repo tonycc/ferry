@@ -123,6 +123,7 @@ if (config.FERRY_PLATFORM === "dokploy") {
   );
   adapters.health = new HttpHealthChecker({
     gateway: config.HEALTHCHECK_GATEWAY,
+    tlsPort: config.HEALTHCHECK_TLS_PORT,
     timeoutMs: config.HEALTHCHECK_TIMEOUT_SECONDS * 1000,
     // 登录网关的健康检查口令,和网关用同一个密钥按域名计算
     extraHeaders: (host) => ({ [HEALTH_HEADER]: healthToken(gatewaySecret, host) }),
@@ -252,7 +253,8 @@ const server = buildServer(service, identity, {
             instance.switched && instance.publicUrl && config.FERRY_PLATFORM === "dokploy"
               ? new SelfCheck({
                   service,
-                  probe: (host, path, options) => probeGateway(new URL(config.HEALTHCHECK_GATEWAY), host, path, options),
+                  probe: (host, path, options) =>
+                    probeGateway(new URL(config.HEALTHCHECK_GATEWAY), host, path, { ...options, tlsPort: config.HEALTHCHECK_TLS_PORT }),
                   publicUrl: instance.publicUrl,
                   appsDomain: instance.appsDomain,
                 })
