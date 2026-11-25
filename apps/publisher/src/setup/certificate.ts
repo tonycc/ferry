@@ -65,7 +65,7 @@ export function checkCertificate(chainPem: string, keyPem: string, options: Chec
     bad("key", "私钥文件解析不了:请上传 PEM 格式(以 -----BEGIN … PRIVATE KEY----- 开头)、没有密码保护的 .key 文件");
   }
 
-  const chainProblem = verifyChain(chain, options.trusted ?? defaultTrusted());
+  const chainProblem = verifyChain(chain, options.trusted ?? defaultTrusted()) ?? staleIssuer(chain.slice(1), now);
   if (chainProblem) bad("chain", chainProblem);
   else items.push({ key: "chain", state: "ok", message: "证书链完整,受信任" });
 
@@ -104,6 +104,16 @@ function verifyChain(chain: X509Certificate[], trustedPem: string[]): string | u
   return chain.length === 1
     ? "缺中间证书,很多电脑和手机会提示证书不受信任:请上传证书服务下载的原始 .pem 文件(里面一般有两段证书)"
     : "证书链验证不到受信任的根证书:可能缺中间证书,或者是公司内部 CA 签发的(这时服务器上要设 NODE_EXTRA_CA_CERTS 指向公司的根证书)";
+}
+
+/** 中间证书也要在有效期内:过期了浏览器照样不认,哪怕叶子证书还没到期 */
+function staleIssuer(issuers: X509Certificate[], now: Date): string | undefined {
+  for (const cert of issuers) {
+    const name = cert.subject.match(/CN=([^\n,]+)/)?.[1] ?? "中间证书";
+    if (new Date(cert.validTo) <= now) return `中间证书 ${name} 已在 ${date(new Date(cert.validTo))} 过期:请重新下载完整的证书文件`;
+    if (new Date(cert.validFrom) > now) return `中间证书 ${name} ${date(new Date(cert.validFrom))} 才开始生效`;
+  }
+  return undefined;
 }
 
 function defaultTrusted(): string[] {

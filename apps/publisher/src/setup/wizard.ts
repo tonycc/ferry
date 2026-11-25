@@ -150,6 +150,19 @@ export class SetupWizard {
     return { publicUrl, handoff: !skipped };
   }
 
+  /**
+   * 撤销第 4 步:正式地址在人的电脑上打不开、要回去改域名或 IP 时用。清掉写入的地址配置和交接令牌,
+   * 让 Ferry 重启后回到没有正式地址的状态;第 2、3 步的结果(域名草稿、证书)保留,改完再切换
+   */
+  async undoSwitch(): Promise<void> {
+    const settings = await this.store.getSettings();
+    if (!settings.publicUrl) throw new UserError("conflict", "还没有切到正式地址");
+    await this.store.clearAddress();
+    const { handoff: _dropped, ...rest } = settings.wizard ?? {};
+    await this.store.saveWizard(rest);
+    this.options.restart();
+  }
+
   /** 第 4 步重启后、确认正式地址能打开时:发一次性的交接令牌(5 分钟,只能用一次,只存哈希) */
   async issueHandoff(): Promise<string> {
     const settings = await this.store.getSettings();
@@ -182,9 +195,11 @@ export class SetupWizard {
     return domain;
   }
 
-  /** 切换之后不能再改域名和证书(向导的后面几步在新地址上做) */
+  /** 切换之后不能再改域名和证书(向导的后面几步在新地址上做);要改就先撤销切换 */
   private async requireNotSwitched(): Promise<void> {
-    if ((await this.store.getSettings()).publicUrl) throw new UserError("conflict", "已经切到正式地址,不能再改域名和证书");
+    if ((await this.store.getSettings()).publicUrl) {
+      throw new UserError("conflict", "已经切到正式地址,不能再改域名和证书:要改的话先撤销切换");
+    }
   }
 }
 

@@ -10,3 +10,5 @@
 | `leaf-ferry-only.pem` | 同一把私钥,只覆盖 `ferry.example.com` |
 | `chain.pem`、`chain-ferry-only.pem` | 叶子证书 + 中间证书 |
 | `other.key` | 和上面证书都不匹配的私钥 |
+| `root2.pem`、`inter-short.pem` | 另一套测试根证书,和它签发的只有 2 天有效期的中间证书(2026-11-27 到期) |
+| `chain-short-inter.pem` | 用 `leaf.key` 的叶子证书(10 年)+ 上面的短期中间证书:中间证书比叶子证书先过期 |

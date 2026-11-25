@@ -184,6 +184,28 @@ describe("DokployPlatform", () => {
     warn.mockRestore();
   });
 
+  it("installCertificate:没有 ID 时新建(组织从 organization.all 取);有 ID 时原地更新;那张已经不在了就新建,不记错误日志", async () => {
+    let updateMissing = false;
+    const { platform, called, logged } = fakeDokploy({
+      "organization.all": () => [{ id: "org1" }],
+      "certificates.create": () => ({ certificateId: "c-new", privateKey: "echoed" }),
+      "certificates.update": () =>
+        updateMissing ? new Response(JSON.stringify({ message: "Certificate not found" }), { status: 404 }) : true,
+    });
+    const input = { name: "ferry-example.com", chain: "CHAIN", privateKey: "KEY" };
+    expect(await platform.installCertificate(input)).toBe("c-new");
+    expect(called("certificates.create")[0]?.input).toMatchObject({ name: "ferry-example.com", certificateData: "CHAIN", privateKey: "KEY", organizationId: "org1" });
+
+    expect(await platform.installCertificate({ ...input, id: "c1" })).toBe("c1");
+    expect(called("certificates.update")[0]?.input).toMatchObject({ certificateId: "c1", certificateData: "CHAIN" });
+    expect(called("certificates.create")).toHaveLength(1);
+
+    updateMissing = true;
+    expect(await platform.installCertificate({ ...input, id: "gone" })).toBe("c-new");
+    expect(called("certificates.create")).toHaveLength(2);
+    expect(logged).toEqual([]);
+  });
+
   it("ensureGateway:写入网关配置,顺序是删身份头、问 /authz、删健康检查口令", async () => {
     const { platform, called } = fakeDokploy({ "settings.updateTraefikFile": () => true });
     await platform.ensureGateway({ authAddress: "http://host.docker.internal:8080/authz" });

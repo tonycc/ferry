@@ -410,8 +410,13 @@ export class DokployPlatform implements DeployPlatform {
     // 注意:这两个接口的返回内容里带着私钥原文,不能写进日志
     const body = { name: input.name, certificateData: input.chain, privateKey: input.privateKey };
     if (input.id) {
-      await this.client.mutate("certificates.update", { ...body, certificateId: input.id });
-      return input.id;
+      try {
+        await this.client.mutate("certificates.update", { ...body, certificateId: input.id }, { quiet: true });
+        return input.id;
+      } catch (err) {
+        // 记下的那张已经不在了(在 Dokploy 上删了,或者 /etc/dokploy 被清空):新建一张,别让人卡在这一步
+        if (!isNotFound(err)) throw err;
+      }
     }
     const [org] = await this.client.query<{ id: string }[]>("organization.all");
     if (!org) throw new Error("Dokploy 上没有组织,装不了证书");

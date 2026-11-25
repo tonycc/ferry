@@ -50,6 +50,10 @@ export class PostgresSetupStore implements SetupStore {
     await this.upsert(address);
   }
 
+  async clearAddress() {
+    await this.upsert({ publicUrl: null, appsDomain: null, appsUrlScheme: null });
+  }
+
   async setSetupCodeHash(hash: string) {
     await this.db
       .insert(settingsTable)

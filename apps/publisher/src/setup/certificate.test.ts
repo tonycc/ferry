@@ -46,6 +46,16 @@ describe("证书检查", () => {
     expect(state(check(fixture("inter.pem") + fixture("leaf.pem"), fixture("leaf.key")), "chain")).toBe("bad");
   });
 
+  it("中间证书过期了:证书链不通过,哪怕叶子证书还没到期", () => {
+    const chain = fixture("chain-short-inter.pem");
+    const trusted = [fixture("root2.pem")];
+    expect(state(check(chain, fixture("leaf.key"), { trusted, now: new Date("2026-11-26T00:00:00Z") }), "chain")).toBe("ok");
+    const later = check(chain, fixture("leaf.key"), { trusted, now: new Date("2026-12-10T00:00:00Z") });
+    expect(state(later, "chain")).toBe("bad");
+    expect(later.items.find((i) => i.key === "chain")?.message).toContain("Short-lived Intermediate 已在 2026-11-27 过期");
+    expect(state(later, "expiry")).toBe("ok");
+  });
+
   it("少于 30 天到期只提醒,过期了不通过", () => {
     const soon = check(fixture("chain.pem"), fixture("leaf.key"), { now: new Date("2036-11-01T00:00:00Z") });
     expect(soon.ok).toBe(true);

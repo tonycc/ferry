@@ -59,6 +59,8 @@ export interface SetupStore {
   setCertificate(certificate: CertificateInfo | undefined): Promise<void>;
   /** 写入地址配置(第 4 步),Ferry 重启后按它启动 */
   setAddress(address: InstanceAddress): Promise<void>;
+  /** 撤销第 4 步写入的地址配置(正式地址打不开、要回去改域名时) */
+  clearAddress(): Promise<void>;
 }
 
 /** 测试和内存存储用。未初始化模式要求数据库(向导中途要重启),正式运行不会用到它 */
@@ -96,6 +98,12 @@ export class MemorySetupStore implements SetupStore {
 
   async setAddress(address: InstanceAddress) {
     this.settings = { ...this.settings, ...address };
+  }
+
+  async clearAddress() {
+    delete this.settings.publicUrl;
+    delete this.settings.appsDomain;
+    delete this.settings.appsUrlScheme;
   }
 
   /** 只给测试用:模拟向导写入的配置 */

@@ -25,6 +25,7 @@ const domainBody = z.object({
 });
 /** PEM 文本;证书链一般几 KB */
 const certificateBody = z.object({ certificate: z.string().max(64 * 1024), privateKey: z.string().max(16 * 1024) });
+const handoffBody = z.object({ token: z.string().max(200) });
 
 /** 未初始化时还能访问的路由(按 Fastify 匹配到的路由模式判断,不看原始地址,免得 /api/setup/../ 之类绕过) */
 function allowedBeforeSetup(route: string | undefined): boolean {
@@ -69,18 +70,11 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
       ...(isHttps(req) ? ["Secure"] : []),
     ].join("; ");
 
-  app.get<{ Querystring: { handoff?: string } }>("/setup", async (req, reply) => {
-    // 第 4 步从服务器 IP 跳到正式地址时带着交接令牌:换成这个地址上的向导会话,再去掉地址栏里的令牌
-    const handoff = typeof req.query.handoff === "string" ? req.query.handoff : undefined;
-    if (handoff && options.wizard) {
-      if (await options.wizard.redeemHandoff(handoff)) {
-        const { token } = await service.openSession();
-        reply.header("set-cookie", sessionCookie(req, token));
-      }
-      return reply.header("cache-control", "no-store").redirect("/setup");
-    }
-    return reply.type("text/html; charset=utf-8").header("cache-control", "no-store").send(SETUP_PAGE);
-  });
+  // 第 4 步从服务器 IP 跳到正式地址时地址里带着交接令牌(/setup?handoff=…)。GET 只返回页面、不用掉令牌:
+  // 链接预览、浏览器预取这类抢先访问不会把一次性的令牌用掉;页面去掉地址栏里的令牌,再用同源 POST 兑换
+  app.get("/setup", async (_req, reply) =>
+    reply.type("text/html; charset=utf-8").header("cache-control", "no-store").header("referrer-policy", "no-referrer").send(SETUP_PAGE),
+  );
 
   // 第 2 步经 Traefik 请求它、第 4 步在浏览器里请求它,确认到的是这台服务器上的这个 Ferry。不需要会话,只返回一个随机标识
   app.get("/api/setup/ping", async (_req, reply) =>
@@ -97,6 +91,16 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
         ? { wizard: await options.wizard.status(), suggestedIp: suggestServerIp(req.headers.host) }
         : {}),
     };
+  });
+
+  app.post("/api/setup/handoff/redeem", async (req, reply) => {
+    requireSameHostOrigin(req);
+    const { token } = handoffBody.parse(req.body);
+    if (!options.wizard || !(await options.wizard.redeemHandoff(token))) {
+      throw new UserError("unauthenticated", "交接链接无效或已过期,请重新输入设置码");
+    }
+    const session = await service.openSession();
+    return reply.header("set-cookie", sessionCookie(req, session.token)).send({ ok: true });
   });
 
   app.post("/api/setup/code", async (req, reply) => {
@@ -128,6 +132,11 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
   });
 
   app.post("/api/setup/switch", async (req) => (await guard(req)).switchAddress());
+
+  app.post("/api/setup/switch/undo", async (req) => {
+    await (await guard(req)).undoSwitch();
+    return { ok: true };
+  });
 
   app.post("/api/setup/handoff", async (req) => ({ token: await (await guard(req)).issueHandoff() }));
 }

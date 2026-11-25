@@ -167,6 +167,29 @@ for (const c of storeCases("ferry_test_wizard")) {
       await expect(wizard.issueHandoff()).rejects.toThrow(/不需要交接/);
     });
 
+    it("撤销切换:清掉地址配置和交接令牌、重启;域名草稿和证书保留,可以改了再切换", async () => {
+      const { net, options } = network();
+      const wizard = new SetupWizard(store, platform, options());
+      await expect(wizard.undoSwitch()).rejects.toThrow(/还没有切到正式地址/);
+      await wizard.checkDomain(INPUT);
+      await wizard.installCertificate(CHAIN, KEY);
+      await wizard.switchAddress();
+      await wizard.issueHandoff();
+      await expect(wizard.checkDomain(INPUT)).rejects.toThrow(/先撤销切换/);
+
+      await wizard.undoSwitch();
+      expect(net.restarts).toBe(2);
+      const settings = await store.getSettings();
+      expect(settings.publicUrl).toBeUndefined();
+      expect(settings.appsDomain).toBeUndefined();
+      expect(settings.appsUrlScheme).toBeUndefined();
+      expect(settings.wizard?.handoff).toBeUndefined();
+      expect(settings.wizard?.domain?.ferryHost).toBe("ferry.example.com");
+      expect(settings.certificate).toBeDefined();
+      expect((await wizard.checkDomain(INPUT)).ok).toBe(true);
+      expect(await wizard.switchAddress()).toEqual({ publicUrl: "https://ferry.example.com", handoff: true });
+    });
+
     it("切换(用证书)后交接:令牌只能用一次,过期作废;只存哈希", async () => {
       let now = new Date("2026-12-01T00:00:00Z");
       const { options } = network();
@@ -269,24 +292,31 @@ describe("设置向导的接口", () => {
     }
   });
 
-  it("/setup?handoff=:令牌对了换成新的会话 cookie 并去掉地址里的令牌;不对就只跳回 /setup", async () => {
+  it("交接:GET /setup?handoff= 只返回页面、不用掉令牌;页面用同源 POST 兑换,对了换成 Secure 会话,只能用一次", async () => {
     const { app, wizard } = server();
     await wizard.checkDomain(INPUT);
     await wizard.installCertificate(CHAIN, KEY);
     await wizard.switchAddress();
     const token = await wizard.issueHandoff();
-    const formal = { host: "ferry.example.com", "x-forwarded-proto": "https" };
+    const formal = { host: "ferry.example.com", origin: "https://ferry.example.com", "x-forwarded-proto": "https" };
 
-    const bad = await app.inject({ method: "GET", url: "/setup?handoff=nope", headers: formal });
-    expect(bad.statusCode).toBe(302);
-    expect(bad.headers.location).toBe("/setup");
-    expect(bad.headers["set-cookie"]).toBeUndefined();
+    // 链接预览、预取这类 GET 不会用掉令牌
+    const page = await app.inject({ method: "GET", url: `/setup?handoff=${token}`, headers: formal });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["set-cookie"]).toBeUndefined();
+    expect(page.headers["referrer-policy"]).toBe("no-referrer");
 
-    const good = await app.inject({ method: "GET", url: `/setup?handoff=${token}`, headers: formal });
-    expect(good.headers.location).toBe("/setup");
-    const cookie = String(good.headers["set-cookie"]);
+    const redeem = (h: Record<string, string>, t: string) =>
+      app.inject({ method: "POST", url: "/api/setup/handoff/redeem", headers: h, payload: { token: t } });
+    expect((await redeem({ ...formal, origin: "https://evil.example" }, token)).statusCode).toBe(403);
+    expect((await redeem(formal, "nope")).statusCode).toBe(401);
+
+    const ok = await redeem(formal, token);
+    expect(ok.statusCode).toBe(200);
+    const cookie = String(ok.headers["set-cookie"]);
     expect(cookie).toContain("Secure");
     const status = await app.inject({ method: "GET", url: "/api/setup/status", headers: { ...formal, cookie: cookie.split(";")[0]! } });
     expect(status.json().session).toBe(true);
+    expect((await redeem(formal, token)).statusCode).toBe(401);
   });
 });
