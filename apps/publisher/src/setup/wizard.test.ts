@@ -12,6 +12,7 @@ import { MemoryStore } from "../workflow/store";
 import { ensureSetupCode } from "./code";
 import { SetupService } from "./service";
 import { MemorySetupStore, type SetupStore } from "./store";
+import type { SelfCheck } from "./selfcheck";
 import { type AdminInput, SetupWizard, type WizardOptions } from "./wizard";
 
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
@@ -274,6 +275,36 @@ for (const c of storeCases("ferry_test_wizard")) {
       expect(audits).toEqual(['setup.selfcheck:{"skipped":true}', 'setup.complete:{"publicUrl":"http://ferry.example.com"}']);
     });
 
+    it("自检:要先建好管理员;通过后记下结果和审计日志", async () => {
+      const { options } = network();
+      const audits: string[] = [];
+      let finish!: () => Promise<void>;
+      const selfCheck = {
+        start: (onPassed: () => Promise<void>) => ((finish = onPassed), { progress: { running: true, steps: [] }, done: Promise.resolve() }),
+        status: () => ({ running: true, steps: [] }),
+      } as unknown as SelfCheck;
+      const wizard = new SetupWizard(
+        store,
+        platform,
+        options({
+          selfCheck,
+          createAdmin: async () => ({ userId: "user-1" }),
+          audit: async (action, detail) => void audits.push(`${action}:${JSON.stringify(detail)}`),
+        }),
+      );
+      await wizard.checkDomain(INPUT);
+      await wizard.installCertificate(CHAIN, KEY);
+      await wizard.switchAddress();
+      await expect(wizard.startSelfCheck()).rejects.toThrow(/先设置公司和管理员/);
+      await wizard.createAdmin({ orgName: "示例公司", name: "张三", mobile: "13800000001", password: "correct-horse" });
+      expect((await wizard.startSelfCheck()).running).toBe(true);
+      expect((await wizard.status()).selfCheck).toBeUndefined();
+      await finish();
+      expect((await wizard.status()).selfCheck).toBe("passed");
+      expect(audits).toEqual(['setup.selfcheck:{"skipped":false}']);
+      expect(await wizard.complete()).toEqual({ publicUrl: "https://ferry.example.com" });
+    });
+
     it("撤销切换后 http 地址要重新确认", async () => {
       const { options } = network();
       const wizard = new SetupWizard(store, platform, options());
@@ -409,6 +440,7 @@ describe("设置向导的接口", () => {
       "/api/setup/switch/confirm",
       "/api/setup/admin",
       "/api/setup/selfcheck/skip",
+      "/api/setup/selfcheck",
       "/api/setup/complete",
     ]) {
       expect((await app.inject({ method: "POST", url, headers })).statusCode, url).toBe(401);

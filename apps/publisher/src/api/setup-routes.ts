@@ -172,6 +172,14 @@ export function registerSetupRoutes(app: FastifyInstance, options: SetupRouteOpt
 
   app.post("/api/setup/admin", async (req) => (await guard(req)).createAdmin(adminBody.parse(req.body)));
 
+  app.post("/api/setup/selfcheck", async (req) => (await guard(req)).startSelfCheck());
+
+  // 进度只读,不要求 Origin(浏览器的同源 GET 不一定带),只要会话
+  app.get("/api/setup/selfcheck", async (req) => {
+    if (!(await service.hasSession(req.headers))) throw new UserError("unauthenticated", "向导会话已过期,请重新输入设置码");
+    return options.wizard?.selfCheckStatus() ?? { running: false, steps: [] };
+  });
+
   app.post("/api/setup/selfcheck/skip", async (req) => {
     await (await guard(req)).skipSelfCheck();
     return { ok: true };

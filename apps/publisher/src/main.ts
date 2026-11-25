@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { DokployPlatform, type ResourceLimits } from "./adapters/dokploy";
 import { DokployClient } from "./adapters/dokploy-client";
 import { FsArchiveStore } from "./adapters/archive-store";
-import { HttpHealthChecker } from "./adapters/health";
+import { HttpHealthChecker, probeGateway } from "./adapters/health";
 import { GitleaksScanner } from "./adapters/gitleaks";
 import { AuditLog } from "./audit/log";
 import { Alerts } from "./alerts";
@@ -35,6 +35,7 @@ import { checkInstance, resolveInstance } from "./setup/instance";
 import { ensureSetupCode, removeSetupCodeFile } from "./setup/code";
 import { lookupIpv4, pingFerry } from "./setup/probe";
 import { SetupService } from "./setup/service";
+import { SelfCheck } from "./setup/selfcheck";
 import { SetupWizard } from "./setup/wizard";
 
 const config = loadConfig();
@@ -246,6 +247,16 @@ const server = buildServer(service, identity, {
           authAddress,
           dns: { lookup: lookupIpv4, ping: (host) => pingFerry("http", host) },
           httpsPing: (host) => pingFerry("https", host),
+          // 自检要真的部署一个应用、经 Traefik 访问它:只在接了 Dokploy、已经切到正式地址时有
+          selfCheck:
+            instance.switched && instance.publicUrl && config.FERRY_PLATFORM === "dokploy"
+              ? new SelfCheck({
+                  service,
+                  probe: (host, path) => probeGateway(new URL(config.HEALTHCHECK_GATEWAY), host, path),
+                  publicUrl: instance.publicUrl,
+                  appsDomain: instance.appsDomain,
+                })
+              : undefined,
           createAdmin: async ({ orgName, name, mobile, password }) => {
             const { userId } = await organization.bootstrapAdmin({ name, mobile, orgName, via: "setup" });
             await auth.setPasswordFromSetup(userId, password);

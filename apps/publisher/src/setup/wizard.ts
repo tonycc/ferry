@@ -4,6 +4,7 @@ import { checkNewPassword } from "../auth/password";
 import { UserError } from "../errors";
 import { type CertificateCheck, type CheckItem, checkCertificate, covers } from "./certificate";
 import { checkDomain, type DomainCheck, type DomainDeps, type DomainInput } from "./domain";
+import type { SelfCheck, SelfCheckProgress } from "./selfcheck";
 import type { CertificateInfo, SetupStore, WizardDomain, WizardState } from "./store";
 
 /**
@@ -29,6 +30,8 @@ export interface WizardOptions {
   handoffTtlMs?: number;
   /** 第 5 步:在正在运行的组织架构里建第一个管理员(手机号已是在职的人时设为管理员),设置他填的密码 */
   createAdmin?(input: AdminInput): Promise<{ userId: string }>;
+  /** 第 6 步的自检;没有时只能跳过 */
+  selfCheck?: SelfCheck;
   /** 记审计日志 */
   audit?(action: "setup.selfcheck" | "setup.complete", detail: Record<string, unknown>): Promise<void>;
   /** 第 7 步写入完成时间后:本进程里关闭向导、开始按域名分流 */
@@ -239,6 +242,22 @@ export class SetupWizard {
     const admin = { userId, name: input.name, orgName: input.orgName };
     await this.store.saveWizard({ ...(await this.wizard()), admin });
     return { name: admin.name, orgName: admin.orgName, created: true };
+  }
+
+  /** 第 6 步:开始自检(在后台跑,已经在跑时不重复开始),返回当前进度。通过后记下结果和审计日志 */
+  async startSelfCheck(): Promise<SelfCheckProgress> {
+    await this.requireAdmin();
+    const check = this.options.selfCheck;
+    if (!check) throw new UserError("not_found", "自检还没有开放,请先跳过");
+    return check.start(async () => {
+      await this.store.saveWizard({ ...(await this.wizard()), selfCheck: "passed" });
+      await this.options.audit?.("setup.selfcheck", { skipped: false });
+    }).progress;
+  }
+
+  /** 第 6 步的进度;没有自检时是 undefined */
+  selfCheckStatus(): SelfCheckProgress | undefined {
+    return this.options.selfCheck?.status();
   }
 
   /** 第 6 步选择跳过自检:记进审计日志 */

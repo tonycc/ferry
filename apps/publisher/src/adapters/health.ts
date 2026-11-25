@@ -53,24 +53,39 @@ export class HttpHealthChecker implements HealthChecker {
   }
 
   /** 返回状态码;连不上或超时返回 0 */
-  private get(host: string, path: string): Promise<number> {
-    return new Promise((resolve) => {
-      const req = request(
-        {
-          hostname: this.gateway.hostname,
-          port: this.gateway.port || 80,
-          path: path.startsWith("/") ? path : `/${path}`,
-          headers: { ...this.extraHeaders(host), host },
-          timeout: this.requestTimeoutMs,
-        },
-        (res) => {
-          res.resume();
-          resolve(res.statusCode ?? 0);
-        },
-      );
-      req.on("timeout", () => req.destroy());
-      req.on("error", () => resolve(0));
-      req.end();
-    });
+  private async get(host: string, path: string): Promise<number> {
+    const res = await probeGateway(this.gateway, host, path, { headers: this.extraHeaders(host), timeoutMs: this.requestTimeoutMs });
+    return res.status;
   }
+}
+
+/**
+ * 经统一入口(Traefik 的 http 入口)按域名请求一次,不跟随跳转。返回状态码和 Location;连不上或超时状态码是 0。
+ * 健康检查和设置向导的自检(检查未登录的请求被网关跳到登录页)都用它
+ */
+export function probeGateway(
+  gateway: URL,
+  host: string,
+  path: string,
+  options: { headers?: Record<string, string>; timeoutMs?: number } = {},
+): Promise<{ status: number; location?: string }> {
+  return new Promise((resolve) => {
+    const req = request(
+      {
+        hostname: gateway.hostname,
+        port: gateway.port || 80,
+        path: path.startsWith("/") ? path : `/${path}`,
+        headers: { ...options.headers, host },
+        timeout: options.timeoutMs ?? 5000,
+      },
+      (res) => {
+        res.resume();
+        const location = res.headers.location;
+        resolve({ status: res.statusCode ?? 0, ...(location ? { location } : {}) });
+      },
+    );
+    req.on("timeout", () => req.destroy());
+    req.on("error", () => resolve({ status: 0 }));
+    req.end();
+  });
 }

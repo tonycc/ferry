@@ -5,6 +5,7 @@ import {
   type CertificateResult,
   type DomainResult,
   setupApi,
+  type SelfCheckProgress,
   type SetupStatus,
   sleep,
   waitForRestart,
@@ -14,7 +15,6 @@ import Icon from "./Icon.vue";
 
 /**
  * 设置向导(docs/setup-wizard.md,界面按 docs/mockups/setup-wizard.html 的原型)。
- * 第 6 步的自检还没做(阶段 3b),现在只能跳过。
  * 现在在哪一步由 /api/setup/status 算出来,刷新页面、Ferry 重启后都能接着做。
  */
 
@@ -84,6 +84,7 @@ function go(next: View) {
   window.scrollTo(0, 0);
   if (next === "domain") fillDomainForm();
   if (next === "after") void afterSwitch();
+  if (next === "selfcheck") void watchSelfCheck();
 }
 
 function certificateCovers(): boolean {
@@ -295,6 +296,35 @@ async function createAdmin() {
 
 // ---------- 第 6 步:自检 ----------
 const confirmSkipCheck = ref(false);
+const check = ref<SelfCheckProgress>();
+let watching = false;
+async function startSelfCheck() {
+  busy.value = true;
+  error.value = "";
+  try {
+    check.value = await setupApi.startSelfCheck();
+    await watchSelfCheck();
+  } catch (err) {
+    error.value = (err as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+/** 自检在服务器后台跑(要几分钟):每 2 秒查一次进度,直到结束。刷新页面后进到这一步也接着看 */
+async function watchSelfCheck() {
+  if (watching) return;
+  watching = true;
+  try {
+    for (;;) {
+      check.value = await setupApi.selfCheck().catch(() => check.value);
+      if (!check.value?.running || view.value !== "selfcheck") break;
+      await sleep(2000);
+    }
+    if (check.value?.result === "passed") status.value = await setupApi.status();
+  } finally {
+    watching = false;
+  }
+}
 async function skipSelfCheck() {
   busy.value = true;
   error.value = "";
@@ -565,11 +595,23 @@ const CODE_CMD = "sudo docker compose -f /opt/ferry/docker-compose.yml exec ferr
       </form>
     </section>
 
-    <!-- ===== 第 6 步:自检(阶段 3b 再做,现在只能跳过) ===== -->
+    <!-- ===== 第 6 步:自检 ===== -->
     <section v-else-if="view === 'selfcheck'">
       <h2>自检</h2>
-      <p class="lead">发布一个测试应用,确认能上线、未登录会跳到登录页,然后删掉它。</p>
-      <div class="note info"><Icon name="info" /><span>自检还在开发中,这一版请先跳过。</span></div>
+      <p class="lead">发布一个测试应用,确认能上线、未登录会跳到登录页,然后删掉它。约需几分钟。</p>
+      <div v-if="check?.steps.length" class="result" :class="check.result === 'passed' ? 'ok' : check.result === 'failed' ? 'bad' : ''">
+        <div v-if="check.result" class="title"><Icon :name="check.result === 'passed' ? 'check' : 'x'" />{{ check.result === "passed" ? "一切正常" : "自检没通过" }}</div>
+        <ul class="checks" :style="check.result ? '' : 'margin: 0'">
+          <li v-for="s in check.steps" :key="s.key" :class="s.state">
+            <span v-if="s.state === 'running'" class="spin" />
+            <Icon v-else-if="s.state === 'ok'" name="check" />
+            <Icon v-else-if="s.state === 'bad'" name="x" />
+            <span v-else class="dot" />
+            <span>{{ s.label }}<template v-if="s.message">:{{ s.message }}</template></span>
+          </li>
+        </ul>
+        <div v-if="check.result === 'failed' && check.hint" class="fix">{{ check.hint }}</div>
+      </div>
       <CheckResult v-if="confirmSkipCheck" kind="warn" title="跳过自检?" :items="[{ key: 'a', state: 'warn', message: '跳过会记在审计日志里' }]">
         <div class="actions" style="margin-top: 10px">
           <button class="btn ghost" @click="confirmSkipCheck = false">取消</button>
@@ -578,8 +620,12 @@ const CODE_CMD = "sudo docker compose -f /opt/ferry/docker-compose.yml exec ferr
       </CheckResult>
       <p v-if="error" class="msg bad">{{ error }}</p>
       <div v-if="!confirmSkipCheck" class="actions" style="margin-top: 20px">
+        <button v-if="!check?.running && check?.result !== 'passed'" class="link" @click="confirmSkipCheck = true">跳过自检</button>
         <span class="spacer" />
-        <button class="btn pri" @click="confirmSkipCheck = true">跳过自检</button>
+        <button v-if="check?.result === 'passed'" class="btn pri" @click="go('done')">下一步 <Icon name="arrow" /></button>
+        <button v-else class="btn pri" :disabled="busy || check?.running" @click="startSelfCheck">
+          {{ check?.running ? "正在自检……" : check?.result === "failed" ? "重试" : "开始自检" }}
+        </button>
       </div>
     </section>
 
