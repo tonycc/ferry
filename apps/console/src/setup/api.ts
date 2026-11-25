@@ -77,13 +77,19 @@ export const setupApi = {
   redeem: (token: string) => request<{ ok: true }>("POST", "/api/setup/handoff/redeem", { token }),
 };
 
-/** 等 Ferry 重启完:本进程标识变了(或者从连不上变成能连上)才算起来了。超时返回 false */
+/**
+ * 等 Ferry 重启完:本进程标识变了才算起来了。切换前没拿到旧标识(previous 是 undefined)时,
+ * 要先看到一次连不上(旧进程退出了),或者已经过了 3 秒(旧进程回完话 0.5 秒就退出),再连上才算,
+ * 免得把旧进程退出前的最后一次回答当成新进程。超时返回 false
+ */
 export async function waitForRestart(previous: string | undefined, timeoutMs = 120_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const start = Date.now();
+  let sawDown = false;
+  while (Date.now() - start < timeoutMs) {
     await sleep(1500);
     const now = await setupApi.ping().catch(() => undefined);
-    if (now && now.instance !== previous) return true;
+    if (!now) sawDown = true;
+    else if (previous ? now.instance !== previous : sawDown || Date.now() - start >= 3000) return true;
   }
   return false;
 }

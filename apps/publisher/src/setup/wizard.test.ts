@@ -280,6 +280,20 @@ describe("设置向导的接口", () => {
     }
   });
 
+  it("上传的文件太大:给出中文说明,不是 zod 的原始报错", async () => {
+    const { app } = server();
+    const cookie = await login(app);
+    await app.inject({ method: "POST", url: "/api/setup/domain", headers: { ...headers, cookie }, payload: INPUT });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/certificate",
+      headers: { ...headers, cookie },
+      payload: { certificate: "x".repeat(70 * 1024), privateKey: KEY },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toBe("证书文件太大(超过 64 KB):请确认选的是 .pem 或 .crt 证书文件");
+  });
+
   it("请求日志里去掉交接令牌", () => {
     expect(redactUrl("/setup?handoff=abc123")).toBe("/setup?handoff=<redacted>");
     expect(redactUrl("/setup?x=1&handoff=abc&y=2")).toBe("/setup?x=1&handoff=<redacted>&y=2");

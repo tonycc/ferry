@@ -27,7 +27,10 @@ const domainBody = z.object({
   serverIp: z.string().max(45),
 });
 /** PEM 文本;证书链一般几 KB */
-const certificateBody = z.object({ certificate: z.string().max(64 * 1024), privateKey: z.string().max(16 * 1024) });
+const certificateBody = z.object({
+  certificate: z.string().max(64 * 1024, "证书文件太大(超过 64 KB):请确认选的是 .pem 或 .crt 证书文件"),
+  privateKey: z.string().max(16 * 1024, "私钥文件太大(超过 16 KB):请确认选的是 .key 私钥文件"),
+});
 const handoffBody = z.object({ token: z.string().max(200) });
 
 /**

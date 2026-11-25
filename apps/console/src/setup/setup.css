@@ -98,7 +98,10 @@ details ol { margin: 0; padding-left: 18px; } details li { margin: 3px 0; }
 .drop small { color: var(--muted); font-size: 12px; }
 .drop.filled { border-style: solid; border-color: #A7F3D0; background: var(--ok-bg); }
 .drop.filled .ic { background: #D1FAE5; color: var(--ok); }
-.drop input { display: none; }
+/* 文件框看不见但还能用 Tab 键选中:选中时整个框显示焦点 */
+.drop { position: relative; }
+.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.drop:focus-within { border-color: #6366F1; box-shadow: 0 0 0 4px #E0E7FF; }
 
 /* 检查结果 */
 .result { margin-top: 18px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); background: #fff; }

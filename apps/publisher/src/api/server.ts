@@ -66,7 +66,12 @@ export function buildServer(
       return reply.status(HTTP_STATUS[err.code]).send({ error: err.code, message: err.message });
     }
     if (err instanceof z.ZodError) {
-      return reply.status(400).send({ error: "invalid_input", message: err.message });
+      // zod 4 的 err.message 是整个 issues 的 JSON,页面上没法看;只给每一项的说明。
+      // 定义 schema 时写了中文说明的原样给;zod 自带的英文说明前面加上字段名,不然看不出是哪一项
+      const message = err.issues
+        .map((i) => (i.path.length && /^[\x20-\x7e]*$/.test(i.message) ? `${i.path.join(".")}: ${i.message}` : i.message))
+        .join(";");
+      return reply.status(400).send({ error: "invalid_input", message });
     }
     // Fastify 自己抛出的请求错误(如 JSON 格式不对)保留原状态码
     const status = (err as { statusCode?: number }).statusCode;
