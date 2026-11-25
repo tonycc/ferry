@@ -252,7 +252,7 @@ const server = buildServer(service, identity, {
             instance.switched && instance.publicUrl && config.FERRY_PLATFORM === "dokploy"
               ? new SelfCheck({
                   service,
-                  probe: (host, path) => probeGateway(new URL(config.HEALTHCHECK_GATEWAY), host, path),
+                  probe: (host, path, options) => probeGateway(new URL(config.HEALTHCHECK_GATEWAY), host, path, options),
                   publicUrl: instance.publicUrl,
                   appsDomain: instance.appsDomain,
                 })

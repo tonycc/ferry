@@ -1,3 +1,4 @@
+import { UserError } from "../errors";
 import type { User } from "../identity";
 import type { PublisherService } from "../service";
 import { makeZip } from "../zip";
@@ -42,8 +43,8 @@ export interface SelfCheckDeps {
     PublisherService,
     "getTemplate" | "prepareApp" | "receiveUpload" | "publish" | "status" | "listApps" | "unpublish" | "deleteApp"
   >;
-  /** 经 Traefik 的 http 入口按域名请求一次,不跟随跳转 */
-  probe(host: string, path: string): Promise<{ status: number; location?: string }>;
+  /** 经 Traefik 的 http 入口(tls 时是 https 入口)按域名请求一次,不跟随跳转 */
+  probe(host: string, path: string, options?: { tls?: boolean }): Promise<{ status: number; location?: string }>;
   /** Ferry 的正式地址:未登录的请求应该跳到它的 /auth/app */
   publicUrl: string;
   appsDomain: string;
@@ -134,14 +135,16 @@ export class SelfCheck {
       step.state = "bad";
       step.message = (err as Error).message;
       const failure = err as Error & { hint?: string };
-      this.progress.hint ??= failure.hint ?? hint;
+      const add = failure.hint ?? hint;
+      // 前面已经有一步没通过时,清理的提示也要留着:测试应用还在服务器上
+      if (add) this.progress.hint = this.progress.hint ? `${this.progress.hint}。${add}` : add;
       return false;
     }
   }
 
   /** 先删掉上一次留下的测试应用,再按模板打包上传 */
   private async create(): Promise<void> {
-    if ((await this.deps.service.listApps(SYSTEM_USER)).some((a) => a.name === SELFCHECK_APP)) await this.removeApp();
+    if ((await this.deps.service.listApps(SYSTEM_USER)).some((a) => a.name === SELFCHECK_APP)) await this.removeApp("create");
     const files = await this.deps.service.getTemplate(TEMPLATE);
     const zip = makeZip(
       Object.fromEntries(
@@ -170,7 +173,11 @@ export class SelfCheck {
   /** 不带登录状态访问应用:登录网关应该跳到 Ferry 的登录页 */
   private async checkGateway(): Promise<void> {
     const host = `${SELFCHECK_APP}.${this.deps.appsDomain}`;
-    const res = await this.deps.probe(host, "/");
+    let res = await this.deps.probe(host, "/");
+    // 应用用 https 时,http 入口先跳到 https 的同一个地址:改走 https 入口再看一次
+    if (res.status >= 300 && res.status < 400 && res.location?.startsWith(`https://${host}/`)) {
+      res = await this.deps.probe(host, "/", { tls: true });
+    }
     const login = new URL("/auth/app", this.deps.publicUrl).toString();
     if (res.status >= 300 && res.status < 400 && res.location?.startsWith(login)) return;
     const got = res.status === 0 ? "连不上" : `返回 ${res.status}${res.location ? `,跳到 ${res.location}` : ""}`;
@@ -180,8 +187,11 @@ export class SelfCheck {
     );
   }
 
-  /** 下线再彻底删除。上一次自检的发布还在进行时,等它结束(最多一会儿) */
-  private async removeApp(): Promise<void> {
+  /**
+   * 下线再彻底删除。上一次自检的发布还在进行时,等它结束(最多一会儿);
+   * waitingOn:等的时候在这一步上说明在等什么
+   */
+  private async removeApp(waitingOn?: SelfCheckStepKey): Promise<void> {
     const apps = await this.deps.service.listApps(SYSTEM_USER);
     if (!apps.some((a) => a.name === SELFCHECK_APP)) return;
     for (let i = 0; ; i++) {
@@ -189,10 +199,15 @@ export class SelfCheck {
         await this.deps.service.unpublish(SYSTEM_USER, SELFCHECK_APP);
         break;
       } catch (err) {
-        if (!(err as Error).message.includes("还在进行中") || i >= 100) throw err;
+        // 下线只在有发布还在进行时报 conflict
+        if (!(err instanceof UserError && err.code === "conflict") || i >= 100) throw err;
+        const step = waitingOn && this.progress.steps.find((s) => s.key === waitingOn);
+        if (step) step.message = "等上一次自检的发布结束";
         await this.sleep(this.deps.pollMs ?? 3000);
       }
     }
+    const step = waitingOn && this.progress.steps.find((s) => s.key === waitingOn);
+    if (step) delete step.message;
     await this.deps.service.deleteApp(SYSTEM_USER, SELFCHECK_APP);
   }
 }

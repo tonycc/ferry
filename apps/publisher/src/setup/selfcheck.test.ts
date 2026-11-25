@@ -8,7 +8,9 @@ import { SELFCHECK_APP, SelfCheck } from "./selfcheck";
 
 const LOGIN = "https://ferry.example.com/auth/app?host=ferry-selfcheck.apps.example.com&next=%2F";
 
-function setup(probe: (host: string) => { status: number; location?: string } = () => ({ status: 302, location: LOGIN })) {
+type Probe = (host: string, tls: boolean) => { status: number; location?: string };
+
+function setup(probe: Probe = () => ({ status: 302, location: LOGIN })) {
   const adapters = createFakeAdapters();
   const store = new MemoryStore();
   const service = new PublisherService(store, new Engine(store, adapters, { maxFixAttempts: 3 }), adapters, {
@@ -21,7 +23,7 @@ function setup(probe: (host: string) => { status: number; location?: string } = 
   const probed: string[] = [];
   const check = new SelfCheck({
     service,
-    probe: async (host) => (probed.push(host), probe(host)),
+    probe: async (host, _path, options) => (probed.push(`${options?.tls ? "https" : "http"}:${host}`), probe(host, options?.tls === true)),
     publicUrl: "https://ferry.example.com",
     appsDomain: "apps.example.com",
     pollMs: 1,
@@ -45,7 +47,7 @@ describe("设置向导的自检", () => {
     expect(status).toMatchObject({ running: false, result: "passed" });
     expect(status.steps.map((s) => s.state)).toEqual(["ok", "ok", "ok", "ok"]);
     expect(passed).toBe(1);
-    expect(probed).toEqual(["ferry-selfcheck.apps.example.com"]);
+    expect(probed).toEqual(["http:ferry-selfcheck.apps.example.com"]);
     // 测试应用和它的数据库都删掉了
     expect(await store.getApp(SELFCHECK_APP)).toBeUndefined();
     expect(adapters.platform.calls.some((c) => c.startsWith("createDatabase"))).toBe(true);
@@ -109,5 +111,25 @@ describe("设置向导的自检", () => {
     await check.cleanup();
     expect(await store.getApp(SELFCHECK_APP)).toBeUndefined();
     await check.cleanup();
+  });
+
+  it("应用用 https 时,http 入口先跳到 https:改走 https 入口再检查", async () => {
+    const { check, probed } = setup((host, tls) =>
+      tls ? { status: 302, location: LOGIN } : { status: 308, location: `https://${host}/` },
+    );
+    const { status } = await run(check);
+    expect(status.result).toBe("passed");
+    expect(probed).toEqual(["http:ferry-selfcheck.apps.example.com", "https:ferry-selfcheck.apps.example.com"]);
+  });
+
+  it("前面没通过、清理也失败:两条提示都留着", async () => {
+    const { check, adapters } = setup(() => ({ status: 200 }));
+    adapters.platform.removeApp = async () => {
+      throw new Error("Dokploy 连不上");
+    };
+    const { status } = await run(check);
+    expect(status.steps.map((s) => s.state)).toEqual(["ok", "ok", "bad", "bad"]);
+    expect(status.hint).toContain("登录网关");
+    expect(status.hint).toContain("测试应用没删掉");
   });
 });
