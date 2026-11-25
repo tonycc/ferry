@@ -2,7 +2,7 @@ import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
 
 /** 本机开发时 Ferry 的地址;接口、登录页都转给它 */
-const ferry = process.env.FERRY_URL ?? "http://127.0.0.1:8080";
+const ferry = process.env.FERRY_URL ?? "http://127.0.0.1:8081";
 
 export default defineConfig({
   // 构建结果由 Ferry 在 /console/ 下提供
