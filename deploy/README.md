@@ -54,10 +54,10 @@
 
    ```bash
    cd /opt/ferry/deploy
-   sudo FERRY_IMAGE=ghcr.io/tonycc/ferry:v2026.11.26 ./install.sh
+   sudo FERRY_IMAGE=ghcr.io/tonycc/ferry:<版本> ./install.sh
    ```
 
-   本机已有这个镜像(`docker load` 进来的)就直接用,没有时从镜像仓库拉。自己构建的镜像写成 `FERRY_IMAGE=ferry:2026-11-26` 这样。
+   `<版本>` 换成已经发布的版本号(如 `v2026.11.26`),在 GitHub 仓库页面右侧的 Packages 里能看到有哪些。本机已有这个镜像(`docker load` 进来的)就直接用,没有时从镜像仓库拉。自己构建的镜像写成 `FERRY_IMAGE=ferry:2026-11-26` 这样。
 
    它会依次:装 Docker(没有时)、开启 Swarm、装固定版本的 Dokploy(v0.31.3)、马上用接口建 Dokploy 管理员并生成给 Ferry 用的 API key
    (登录信息写进 `dokploy-admin.txt`,只有 root 能读)、改 Traefik 的配置(关掉管理接口、去掉内网用不了的 Let's Encrypt)、
@@ -140,7 +140,9 @@ git tag v2026.11.26
 git push origin v2026.11.26
 ```
 
-不发 `latest`,服务器上写明版本。仓库是公开的,镜像拉取不用登录;第一次发布后到 GitHub 上这个包的设置(Package settings)里
+发布前会先跑一遍 CI(类型检查、测试、镜像能启动),不通过就不发布。不发 `latest`,服务器上写明版本。
+第一次发布之前,先在 GitHub 的 Actions 页面手动运行一次 “Publish image”(镜像标签是分支名,只用于试验),确认 ARM 镜像也能构建
+(平时的 CI 只构建 x86)。仓库是公开的,镜像拉取不用登录;第一次发布后到 GitHub 上这个包的设置(Package settings)里
 确认可见性是 Public,是 Private 的话改成 Public(只要改一次)。服务器在国内、访问 `ghcr.io` 慢或连不上时,还是用上面的
 `docker save` / `docker load`,或者推到国内的镜像仓库。
 

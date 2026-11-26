@@ -6,6 +6,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # 发布镜像前先跑一遍(publish-image.yml)
+  workflow_call:
 
 # 同一个分支有新的推送时,取消还在跑的旧检查
 concurrency:
