@@ -18,7 +18,7 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 管理员停用和恢复应用(后端接口) | 已实现,有测试 |
 | 代码包上传(一次性上传地址、本地目录存储、用旧包回滚) | 已实现,有测试,本地用真实 zip 验证过 |
 | REST 接口、MCP 工具(10 个) | 已实现,本地验证过 |
-| Dokploy 对接(`adapters/dokploy.ts`)、真实健康检查 | 已实现,对本机 Dokploy 的集成测试通过;经 MCP 完整发布模板应用已验证(M1 验收) |
+| Dokploy 对接(`adapters/dokploy.ts`)、真实健康检查 | 已实现,对本机 Dokploy 的集成测试通过;经 MCP 完整发布模板应用已验证(M1 验收)。https 应用的健康检查改走 443(Dokploy 给 https 域名的 80 端口只做跳转),在本机用测试域名验证过 |
 | 密钥扫描(gitleaks,外加钉钉、企业微信、飞书机器人 webhook,sk- 开头的大模型 key,带密码的连接串) | 已实现,有测试;发现密钥时按种类给出修复提示,用 Claude Code 盲测过。本机要装 gitleaks |
 | 应用密钥(控制台上给应用配置第三方 API key、群机器人 webhook 等,发布和回滚时注入环境变量) | 已实现,有测试,在本机 Dokploy 上验证过。值只在网页上填写、加密存放、保存后不再显示,agent 碰不到;用数据库时要设置 `SECRETS_KEY` 才能保存。Ferry 是应用环境变量唯一的写入方:在 Dokploy 上手动加的变量下次发布时会被清掉 |
 | 通知 | 一期没有对外发通知的渠道:给负责人的通知(停用、下线、删除)和给管理员的告警都只写进服务日志(`NOTIFY_VIA=log`) |
@@ -32,25 +32,36 @@ Ferry 是夹在 agent 和 Dokploy 之间的发布编排层:只有它持有平台
 | 审计日志(谁在什么时候对哪个应用做了什么) | 已实现,有测试,用浏览器验证过。管理员在控制台“审计日志”页查看,接口 `GET /api/admin/audit`;应用被彻底删除后记录还在。没设 `DATABASE_URL` 时只记在内存里 |
 | 告警(通知管理员) | 已实现,有测试,在本机 Dokploy 上验证过:应用连续发布失败、迁移前备份失败、部署平台出错、网关网络检查失败。发给 `ADMIN_USERS` 和控制台上设的管理员;一期没有对外发通知的渠道,告警只写进服务日志。定时备份失败的告警随任务 3.4 一起做 |
 | 网络隔离(每个应用和数据库在自己的网络里,连不到 Dokploy 和别的应用) | 已实现,在本机 Dokploy 上按协议实测;`pnpm test:dokploy` 里有检查。已有应用在下次发布时自动隔离 |
-| 部署配置(镜像、compose、部署文档,见 [deploy/README.md](deploy/README.md)) | 已实现,在本机用镜像接本机 Dokploy 完整验证过(登录、发布上线、经网关打开应用、重启后数据和登录都在);真实域名和证书、Linux 上的防火墙待企业环境验证 |
+| 设置向导(浏览器里 7 步:设置码、域名和 DNS 检测、证书(可跳过,先用 HTTP)、切到正式地址、公司和管理员、自检、完成,见 [docs/setup-wizard.md](docs/setup-wizard.md)) | 已实现,有测试,在本机 Dokploy 上用测试域名和测试 CA 验证过;自检会真实发布一个测试应用,检查未登录跳转登录页后删掉。还没在真实服务器上走过 |
+| 控制台“证书”页(看证书、到期提醒、替换证书,先用 HTTP 的补装后切到 HTTPS) | 已实现,有测试,在本机 Dokploy 上用测试 CA 验证过上传、切换和提醒;切换后已有应用的域名改成 https 只有单元测试 |
+| 安装命令(`deploy/install.sh`:装 Docker、Dokploy 和 Ferry,打印设置向导的地址和设置码) | 已实现,只在本机检查过语法、在 Debian 容器里测过改 Traefik 配置和生成 `.env`;没有在 Linux 服务器上从零跑过 |
+| 部署配置(镜像、compose、部署文档,见 [deploy/README.md](deploy/README.md);两种方式:安装命令加设置向导,或者手动部署) | 已实现,在本机用镜像接本机 Dokploy 完整验证过(登录、发布上线、经网关打开应用、重启后数据和登录都在);真实域名和证书、Linux 上的防火墙待企业环境验证 |
 
 ## 目录结构
 
 ```
 apps/
   publisher/            发布编排服务
-    src/api/            REST 接口、登录网关的 /authz、MCP 入口
+    src/api/            REST 接口、控制台和向导的接口、按域名分流、MCP 入口
     src/mcp/            给 agent 的 MCP 工具
     src/workflow/       发布状态机(engine)、状态定义、存储接口
-    src/adapters/       外部系统接口(types)、假实现(fake)、代码包存储、Dokploy 适配器(未实现)和客户端
+    src/adapters/       外部系统接口(types)、假实现(fake)、代码包存储、Dokploy 适配器和客户端、健康检查、密钥扫描
+    src/gateway/        登录网关(/authz、登录跳转)和它在 Traefik 上的配置
+    src/auth/           手机号 + 密码登录、个人令牌
+    src/org/            人员和部门
     src/authz/          应用访问权限判定
-    src/db/             PostgreSQL 表结构(尚未接入)
+    src/audit/          审计日志
+    src/setup/          设置向导、自检、证书检查和“证书”页、实例配置
+    src/db/             PostgreSQL 表结构和存储实现(迁移在 drizzle/)
+    src/cli/            命令行(set-password)
     src/service.ts      REST 和 MCP 共用的业务入口
   console/              控制台(Vue 3 + Element Plus),构建后由 Ferry 在 /console/ 下提供
 packages/
   manifest/             app.yaml 的结构定义与校验
   templates/            给 agent 用的应用模板(node-postgres、static,都用 TypeScript)
-infra/                  本地开发依赖和登录网关配置示例
+deploy/                 服务器部署:compose、安装命令、部署文档
+infra/                  本地开发依赖、本机 Dokploy 安装脚本和登录网关配置示例
+scripts/                测试用脚本(模拟 agent 发布、失败案例)
 ```
 
 ## 发布流程

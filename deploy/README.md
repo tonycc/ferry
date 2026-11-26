@@ -81,14 +81,33 @@
 - 证书(P3):要同时覆盖 `ferry.公司域名` 和 `*.apps.公司域名`(一张多域名证书,或者两张)。内网用不了 Traefik 自动申请的证书
   (Let's Encrypt 要从公网访问到服务器;泛域名还要 DNS 验证,Ferry 不保存阿里云的凭据),所以由人申请后放到服务器上:
   - 证书要带中间证书(下载时选 Nginx 格式,`.pem` 里一般有两段);私钥不能有密码。
-  - 在 Dokploy 管理页面的证书(Certificates)设置里添加:粘贴证书链和私钥。Dokploy 把它们写到
-    `/etc/dokploy/traefik/dynamic/certificates/` 下,**但 Traefik 不会自己加载**(见 `docs/dokploy-findings.md`),
-    添加后运行 `docker restart dokploy-traefik`。
-  - 检查:`openssl s_client -connect 服务器IP:443 -servername ferry.公司域名 </dev/null | openssl x509 -noout -subject -enddate`
+  - 装证书有两种做法:Ferry 启动后在控制台“证书”页上传(Ferry 检查后装进 Traefik,推荐);或者现在就在 Dokploy 管理页面的
+    证书(Certificates)设置里添加:粘贴证书链和私钥。Dokploy 把它们写到 `/etc/dokploy/traefik/dynamic/certificates/` 下,
+    **但 Traefik 不会自己加载**(见 `docs/dokploy-findings.md`),添加后运行 `docker restart dokploy-traefik`。
+    两种做法只选一种:在 Dokploy 上加的证书和“证书”页装的名字不同,以后改用“证书”页时,先在 Dokploy 的证书设置里删掉原来那张,
+    不然两张证书覆盖同样的域名,Traefik 出示哪张不确定,“证书”页会提示“出示的还是另一张证书”。
+  - 证书装好之后检查(用“证书”页上传时页面会自己检查;还没装时这里看到的是 Traefik 的默认证书,不是出错):`openssl s_client -connect 服务器IP:443 -servername ferry.公司域名 </dev/null | openssl x509 -noout -subject -enddate`
     显示的应该是你的证书,不是 `TRAEFIK DEFAULT CERT`。
   - Dokploy 的 `traefik.yml` 给 `websecure` 入口设了默认的 `certResolver: letsencrypt`,内网域名的 ACME 验证永远不会成功,
-    Traefik 会反复重试、刷日志。把这个默认的 certResolver 从 `traefik.yml` 里去掉,重启 Traefik。
-  - 证书没有自动续期:记下到期时间,到期前按上面再换一次(人工申请的证书最长约 200 天)。
+    Traefik 会反复重试、刷日志。去掉它,但入口上的 `tls` 要留着:把
+
+    ```yaml
+        http:
+          tls:
+            certResolver: letsencrypt
+    ```
+
+    改成
+
+    ```yaml
+        http:
+          tls: {}
+    ```
+
+    (整个 `tls` 删掉的话,https 应用的路由不再接 TLS 连接,应用全部打不开),再删掉文件末尾的 `certificatesResolvers` 一段,重启 Traefik。
+    安装命令 `install.sh` 就是这样改的。
+  - 证书没有自动续期(人工申请的证书最长约 200 天)。到期前 30 天起,Ferry 在控制台顶部给管理员提醒、日志里有告警,不到 7 天每天告警;
+    换证书在控制台“证书”页上传新的。
   - **证书还没办下来**,可以先用 HTTP 部署,见下面“先用 HTTP”。
 - 关掉 Traefik 的管理接口:`/etc/dokploy/traefik/traefik.yml` 里 `api.insecure: false`,重启 Traefik(见 `docs/dokploy-findings.md`)。
 - 服务器不能访问外网时,先准备 npm 和镜像仓库的内部代理(任务 1.2),员工应用构建要用。
