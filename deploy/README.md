@@ -156,17 +156,24 @@ docker save --platform linux/amd64 -o ferry-v2026.11.26.tar ghcr.io/tonycc/ferry
 scp ferry-v2026.11.26.tar root@服务器IP:/opt/ferry/
 ```
 
-服务器是 ARM 的,把两处 `linux/amd64` 都换成 `linux/arm64`。在服务器上:
+服务器是 ARM 的,把两处 `linux/amd64` 都换成 `linux/arm64`。`docker save --platform` 要较新的 Docker(27 以后);
+旧版报 `unknown flag: --platform` 时,去掉这个参数直接 `docker save` 就行(旧版的镜像存储本来只存拉下来的那一种架构)。在服务器上:
 
 ```bash
 docker load -i /opt/ferry/ferry-v2026.11.26.tar
 ```
 
-镜像名保持 `ghcr.io/tonycc/ferry:<版本>` 不变,`install.sh` 发现本机已有就直接用、不再去拉。服务器上还没有 Docker 时,先运行一次
-`install.sh`(它装好 Docker 后会在启动 Ferry 那一步因为拉不到镜像停下),`docker load` 之后再运行一次。
+镜像名保持 `ghcr.io/tonycc/ferry:<版本>` 不变,`install.sh` 发现本机已有就直接用、不再去拉。
+
+服务器连 Docker Hub 也上不去时,安装命令要用的另外四个镜像也这样导出导入(同样带 `--platform`):
+`dokploy/dokploy:v0.31.3`、`traefik:v3.7.16`、`postgres:16`(Dokploy 的数据库)、`postgres:17-alpine`(Ferry 的数据库)。
+
+服务器上还没有 Docker 时,`docker load` 要等 Docker 装好:先运行一次 `install.sh`,它装好 Docker 后会在第一个拉不到的镜像那里停下
+(Docker Hub 上不去时停在 Dokploy,等 5 分钟后报“Dokploy 没有起来”;只是连不上 ghcr.io 时停在启动 Ferry)。
+把上面要用的镜像都 `docker load` 进去,再运行一次,装好的部分会跳过。也可以先自己装好 Docker(比如用阿里云的 docker-ce 软件源),
+导入镜像后只运行一次。
+
 升级时同样:导出新版本、拷过去 `docker load`,再用新的 `FERRY_IMAGE` 重新运行 `install.sh`。
-Dokploy、Traefik、数据库的镜像(`dokploy/dokploy:v0.31.3`、`traefik:v3.7.16`、`postgres:16`、`postgres:17-alpine`)
-服务器拉不到时也这样导出导入,同样要带 `--platform`。
 
 ### 3. 填写配置
 
