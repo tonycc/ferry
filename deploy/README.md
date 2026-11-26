@@ -46,14 +46,18 @@
 
 然后:
 
-1. 按下面“2. 构建镜像”构建 Ferry 的镜像,拷到服务器上 `docker load`(或者推到内部镜像仓库)。
+1. 准备 Ferry 的镜像,二选一:
+   - 用 GitHub 上发布的镜像 `ghcr.io/tonycc/ferry:<版本>`(见下面“2. 构建镜像”里的“发布到 ghcr.io”),服务器能访问 `ghcr.io` 时最省事;
+   - 按“2. 构建镜像”自己构建,拷到服务器上 `docker load`(或者推到内部镜像仓库)。
 2. 把这个 `deploy` 目录拷到服务器上(比如 `/opt/ferry/deploy`),**不要**放 `.env`(安装命令会生成)。
 3. 用 root 运行:
 
    ```bash
    cd /opt/ferry/deploy
-   sudo FERRY_IMAGE=ferry:2026-11-26 ./install.sh
+   sudo FERRY_IMAGE=ghcr.io/tonycc/ferry:v2026.11.26 ./install.sh
    ```
+
+   本机已有这个镜像(`docker load` 进来的)就直接用,没有时从镜像仓库拉。自己构建的镜像写成 `FERRY_IMAGE=ferry:2026-11-26` 这样。
 
    它会依次:装 Docker(没有时)、开启 Swarm、装固定版本的 Dokploy(v0.31.3)、马上用接口建 Dokploy 管理员并生成给 Ferry 用的 API key
    (登录信息写进 `dokploy-admin.txt`,只有 root 能读)、改 Traefik 的配置(关掉管理接口、去掉内网用不了的 Let's Encrypt)、
@@ -127,6 +131,18 @@ docker buildx build --platform linux/amd64 -t ferry:2026-11-22 --load .
 ```
 
 镜像可以推到内部镜像仓库,或者 `docker save` 后拷到服务器上 `docker load`。镜像标签用日期或版本号,不要只用 latest,回退时才知道换回哪个。
+
+**发布到 ghcr.io**:在 GitHub 上推一个 `v` 开头的标签,Actions 会构建 x86 和 ARM 两种架构的镜像,推到 `ghcr.io/tonycc/ferry:<标签>`
+(`.github/workflows/publish-image.yml`,约十几分钟):
+
+```bash
+git tag v2026.11.26
+git push origin v2026.11.26
+```
+
+不发 `latest`,服务器上写明版本。仓库是公开的,镜像拉取不用登录;第一次发布后到 GitHub 上这个包的设置(Package settings)里
+确认可见性是 Public,是 Private 的话改成 Public(只要改一次)。服务器在国内、访问 `ghcr.io` 慢或连不上时,还是用上面的
+`docker save` / `docker load`,或者推到国内的镜像仓库。
 
 ### 3. 填写配置
 
