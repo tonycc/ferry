@@ -3,7 +3,7 @@ import { computed } from "vue";
 import type { TagType } from "../labels";
 
 /** 带圆点的状态标签;type 沿用 labels.ts 里 Element Plus 的标签类型,换成对应的配色 */
-const props = defineProps<{ type?: TagType; plain?: boolean }>();
+const props = defineProps<{ type?: TagType; plain?: boolean; pulse?: boolean }>();
 
 const TONE: Record<TagType, string> = {
   success: "success",
@@ -13,7 +13,7 @@ const TONE: Record<TagType, string> = {
   info: "closed",
 };
 
-const cls = computed(() => ["status-tag", TONE[props.type ?? "info"], { plain: props.plain }]);
+const cls = computed(() => ["status-tag", TONE[props.type ?? "info"], { plain: props.plain, pulse: props.pulse }]);
 </script>
 
 <template>

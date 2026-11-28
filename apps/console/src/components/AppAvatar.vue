@@ -5,14 +5,14 @@ import { computed } from "vue";
 const props = withDefaults(defineProps<{ name: string; size?: number; muted?: boolean }>(), { size: 34 });
 
 const PALETTE: [string, string][] = [
-  ["#6366F1", "#8B5CF6"],
-  ["#0EA5E9", "#22D3EE"],
-  ["#F59E0B", "#F97316"],
-  ["#10B981", "#14B8A6"],
-  ["#EC4899", "#F43F5E"],
-  ["#8B5CF6", "#D946EF"],
-  ["#3B82F6", "#6366F1"],
-  ["#14B8A6", "#84CC16"],
+  ["#3B82F6", "#60A5FA"],
+  ["#0EA5E9", "#38BDF8"],
+  ["#14B8A6", "#2DD4BF"],
+  ["#10B981", "#34D399"],
+  ["#6366F1", "#818CF8"],
+  ["#F59E0B", "#FBBF24"],
+  ["#F97316", "#FB923C"],
+  ["#0284C7", "#38BDF8"],
 ];
 
 const style = computed(() => {

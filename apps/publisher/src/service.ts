@@ -7,7 +7,7 @@ import type { User } from "./identity";
 import type { Engine } from "./workflow/engine";
 import type { TemplateFile, TemplateLibrary, TemplateSummary } from "./templates";
 import { pruneArchives } from "./workflow/retention";
-import { checkArchiveLayout, readZipFile, zipEntryNames } from "./zip";
+import { checkArchiveEntries, checkArchiveLayout, hasCustomZipDockerfile, readZipFile, replaceZipDockerfile, zipEntryNames } from "./zip";
 import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
 import { MAX_SECRETS_PER_APP, validateSecretName, validateSecretValue, type SecretBox } from "./secrets";
@@ -236,7 +236,10 @@ export class PublisherService {
   }
 
   /** 接收代码包。上传地址里的令牌就是凭据:只能用一次,过期作废 */
-  async receiveUpload(token: string, zip: Buffer): Promise<{ app: string; version: string; bytes: number }> {
+  async receiveUpload(
+    token: string,
+    zip: Buffer,
+  ): Promise<{ app: string; version: string; bytes: number; notice?: string }> {
     const ticket = await this.store.getUploadByTokenHash(hashToken(token));
     if (!ticket) throw new UserError("not_found", "上传地址无效");
     if (ticket.receivedAt) throw new UserError("conflict", "这个上传地址已经用过了,请重新调用 prepare_app");
@@ -246,23 +249,46 @@ export class PublisherService {
     const names = isZip(zip) ? zipEntryNames(zip) : undefined;
     if (!names) throw new UserError("invalid_input", "上传的内容不是 zip 文件");
     // 检查不通过时上传地址还能再用
+    const entryProblem = checkArchiveEntries(zip);
+    if (entryProblem) throw new UserError("invalid_input", entryProblem);
     const layoutProblem = checkArchiveLayout(names);
     if (layoutProblem) throw new UserError("invalid_input", layoutProblem);
     // 发布只认代码包里的 app.yaml:在这里读出并校验,写错了在上传时就报出来,并随凭据记下供发布使用
     const manifest = await this.manifestOf(zip, ticket.appName);
+
+    // 平台强制托管 Dockerfile:剥离上传包里的任何根目录 Dockerfile 变体,注入平台对应模板的受信任 Dockerfile
+    let archiveZip = zip;
+    let notice: string | undefined;
+    if (this.config.templates) {
+      const templateDockerfile = await this.config.templates.dockerfile(manifest.template);
+      if (!templateDockerfile) throw new Error(`找不到模板 ${manifest.template} 的托管 Dockerfile`);
+      if (hasCustomZipDockerfile(zip, templateDockerfile)) {
+        notice =
+          `代码包里的 Dockerfile 与模板 ${manifest.template} 不一致,已忽略并替换为平台托管的模板 Dockerfile:` +
+          "构建配置由平台统一托管,不支持自定义修改";
+      }
+      const rewritten = replaceZipDockerfile(zip, templateDockerfile);
+      if (!rewritten) {
+        throw new UserError(
+          "invalid_input",
+          "代码包压缩格式不支持(可能已损坏、加密或使用了不常见的压缩方式)。请用 zip 命令或系统自带的压缩工具重新打包上传",
+        );
+      }
+      archiveZip = rewritten;
+    }
 
     // 先原子地占用凭据再保存代码包:并发的两次上传只有一次能成功,不会互相覆盖代码包
     if (!(await this.store.claimUpload(ticket.tokenHash, new Date(), manifest))) {
       throw new UserError("conflict", "这个上传地址已经用过了,请重新调用 prepare_app");
     }
     try {
-      await this.adapters.archives.save(ticket.appName, ticket.version, zip);
+      await this.adapters.archives.save(ticket.appName, ticket.version, archiveZip);
     } catch (err) {
       // 代码包没存下来:把凭据恢复成未使用,同一个地址可以重新上传
       await this.store.saveUpload({ ...ticket, receivedAt: undefined, manifest: undefined });
       throw err;
     }
-    return { app: ticket.appName, version: ticket.version, bytes: zip.length };
+    return { app: ticket.appName, version: ticket.version, bytes: archiveZip.length, ...(notice ? { notice } : {}) };
   }
 
   /** 读出并校验代码包根目录的 app.yaml;有问题时抛出写给 agent 的修复说明 */

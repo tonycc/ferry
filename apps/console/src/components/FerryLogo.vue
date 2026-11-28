@@ -19,8 +19,8 @@ withDefaults(defineProps<{ size?: number }>(), { size: 34 });
   display: inline-grid;
   flex-shrink: 0;
   place-items: center;
-  background: linear-gradient(135deg, var(--color-brand), var(--color-brand-2));
-  box-shadow: 0 6px 14px -6px rgba(79, 70, 229, 0.7);
+  background: var(--gradient-brand);
+  box-shadow: 0 5px 12px -5px rgba(59, 130, 246, 0.52);
   color: #fff;
 }
 svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

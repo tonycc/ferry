@@ -27,11 +27,12 @@ export function deployFailure(reason: FailureReason, manifest: Manifest): Failur
       return {
         fixable: true,
         type: "build_failed",
-        message: "构建失败(按 Dockerfile 构建镜像时出错)",
+        message: "构建失败(按模板 Dockerfile 构建镜像时出错)",
         hint:
           "看 logs 末尾的报错修复后重新发布。常见原因:TypeScript 类型错误(logs 里有 文件(行,列): error TS…," +
           "本地可以先运行 npx tsc --noEmit 检查)、package.json 里的依赖名或版本号不存在、" +
-          "Dockerfile 里 COPY 的文件不在代码包里、构建命令写错",
+          "缺少模板要求的目录或文件(如 package.json、tsconfig.json、migrations 或 public)。" +
+          "注意 Dockerfile 由平台按模板强制托管,修改代码包里的 Dockerfile 不会生效",
       };
     case "start":
       return {
@@ -39,7 +40,7 @@ export function deployFailure(reason: FailureReason, manifest: Manifest): Failur
         type: "start_failed",
         message: "构建成功,但应用一启动就退出了,没有运行起来。logs 是应用启动时的输出",
         hint:
-          "在 logs 里找应用退出前的报错并修复。常见原因:Dockerfile 的 CMD 指向的文件不存在、" +
+          "在 logs 里找应用退出前的报错并修复。常见原因:模板 Dockerfile 的 CMD 指向的 dist/server.js 不存在(源码入口须为 src/server.ts)、" +
           "代码 import 了 package.json 里没有的依赖、启动时查询了还不存在的表。" +
           "注意发布顺序是先启动新代码、再执行迁移:应用启动时不能依赖这次迁移才建的表或字段," +
           "启动阶段不要查询业务表,或者查询失败时只记日志、不要退出;只是把建表语句加进 migrations 解决不了启动崩溃。" +

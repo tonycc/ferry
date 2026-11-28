@@ -1,49 +1,63 @@
 <script setup lang="ts">
-import { CircleCheck, CircleClose, Warning } from "@element-plus/icons-vue";
+import { CircleCheck, CircleClose, Lock, Upload, Warning } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { api, ApiError, type CertificateInstallResult } from "../api";
 import { certificateStatus as status, loadCertificateStatus } from "../certificate";
 
-/**
- * 证书页(只给平台管理员,docs/setup-wizard.md“一并要做的”):现在的证书和到期情况;上传新证书替换;
- * 还在用 http 时,上传后自动切到 https(Ferry 重启,已有应用的域名一起改成 https)。
- */
-
-/** 本机开发没有正式地址时没有证书页 */
+const loading = ref(true);
+const forbidden = ref(false);
 const unavailable = ref(false);
 const files = reactive<{ chain?: { name: string; text: string }; key?: { name: string; text: string } }>({});
+const dragOver = reactive({ chain: false, key: false });
 const result = ref<CertificateInstallResult>();
 const installing = ref(false);
-/** 切到 https 后等 Ferry 重启 */
 const switching = ref("");
+let disposed = false;
 
 async function load() {
   try {
     await loadCertificateStatus();
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) unavailable.value = true;
+    else if (err instanceof ApiError && err.status === 403) forbidden.value = true;
     else ElMessage.error((err as Error).message);
+  } finally {
+    loading.value = false;
   }
 }
-onMounted(load);
+onMounted(() => void load());
+onBeforeUnmount(() => {
+  disposed = true;
+});
 
-/** 还在用 http、地址不是写在 .env 里:装好后自动切到 https */
 const willSwitch = computed(() => !!status.value && !status.value.https && !status.value.fixedByEnv);
 const levelText = computed(() => {
   const s = status.value;
   if (!s?.certificate) return { type: "info" as const, text: "还没有证书" };
   if (s.level === "expired") return { type: "danger" as const, text: "已过期" };
-  if (s.level === "urgent" || s.level === "expiring") return { type: s.level === "urgent" ? ("danger" as const) : ("warning" as const), text: `还有 ${s.daysLeft} 天过期` };
-  return { type: "success" as const, text: `还有 ${s.daysLeft} 天过期` };
+  if (s.level === "urgent" || s.level === "expiring") {
+    return { type: s.level === "urgent" ? ("danger" as const) : ("warning" as const), text: `还有 ${s.daysLeft} 天过期` };
+  }
+  return { type: "success" as const, text: `剩余 ${s.daysLeft} 天有效` };
 });
 const date = (iso?: string) => (iso ? iso.slice(0, 10) : "");
 
-async function pick(kind: "chain" | "key", event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0];
+async function loadFile(kind: "chain" | "key", file?: File) {
   if (!file) return;
   files[kind] = { name: file.name, text: await file.text() };
   result.value = undefined;
+}
+
+function pick(kind: "chain" | "key", event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  void loadFile(kind, file);
+}
+
+function onDrop(kind: "chain" | "key", event: DragEvent) {
+  dragOver[kind] = false;
+  const file = event.dataTransfer?.files?.[0];
+  void loadFile(kind, file);
 }
 
 async function install() {
@@ -51,9 +65,15 @@ async function install() {
   installing.value = true;
   result.value = undefined;
   try {
-    result.value = await api.post<CertificateInstallResult>("/api/admin/certificate", { certificate: files.chain.text, privateKey: files.key.text });
+    result.value = await api.post<CertificateInstallResult>("/api/admin/certificate", {
+      certificate: files.chain.text,
+      privateKey: files.key.text,
+    });
     if (result.value.switchedTo) return void waitAndGo(result.value.switchedTo);
-    if (result.value.installed) await load();
+    if (result.value.installed) {
+      ElMessage.success("证书已安装并生效");
+      await load();
+    }
   } catch (err) {
     ElMessage.error((err as Error).message);
   } finally {
@@ -61,18 +81,13 @@ async function install() {
   }
 }
 
-/**
- * Ferry 按 https 重启:等它重新起来后跳到 https 地址(要重新登录时会先到登录页)。
- * 查的是当前地址的 /healthz(同源、能读结果;切换后 http 也照样回答它,不跳转):
- * 先看到一次连不上或者不正常(旧进程退出了),或者已经过了 3 秒(旧进程回完话 0.5 秒就退出),再正常才算起来了。
- * 不能查 https 地址:跨域只能 no-cors,Traefik 在 Ferry 重启期间回的 502 也算“请求成功”
- */
 async function waitAndGo(url: string) {
   switching.value = url;
   const start = Date.now();
   let sawDown = false;
-  while (Date.now() - start < 120_000) {
+  while (!disposed && Date.now() - start < 120_000) {
     await new Promise((r) => setTimeout(r, 1500));
+    if (disposed) return;
     const ok = await fetch("/healthz", { cache: "no-store", signal: AbortSignal.timeout(5000) })
       .then((r) => r.ok)
       .catch(() => false);
@@ -82,58 +97,95 @@ async function waitAndGo(url: string) {
       return;
     }
   }
-  ElMessage.error(`等了两分钟 Ferry 还没起来:请查看 Ferry 的日志,处理后手动打开 ${url}`);
+  if (!disposed) ElMessage.error(`等了两分钟 Ferry 还没起来：请查看 Ferry 的日志，处理后手动打开 ${url}`);
 }
 </script>
 
 <template>
-  <section class="ops-page">
-    <div v-if="unavailable" class="content-panel">
-      <p class="panel-note">Ferry 没有正式地址(本机开发),没有证书可管理。</p>
+  <section v-loading="loading" class="ops-page">
+    <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
+    <div v-else-if="unavailable" class="content-panel">
+      <el-empty description="当前未配置正式对外地址（本机开发模式），暂无证书可管理。" />
     </div>
 
     <template v-else-if="status">
       <div class="content-panel">
-        <div class="panel-toolbar"><div class="panel-title">现在的证书</div></div>
-        <dl class="summary">
-          <dt>Ferry</dt>
-          <dd>{{ status.https ? "https" : "http" }}://{{ status.ferryHost }}</dd>
-          <dt>应用</dt>
-          <dd>{{ status.https ? "https" : "http" }}://应用名.{{ status.appsDomain }}</dd>
-          <dt>证书</dt>
-          <dd>
-            <el-tag :type="levelText.type" size="small" effect="light">{{ levelText.text }}</el-tag>
-            <span v-if="status.certificate" class="muted">{{ date(status.certificate.notAfter) }} 到期 · {{ status.certificate.domains.join("、") }}</span>
-          </dd>
-        </dl>
+        <div class="panel-toolbar">
+          <div class="panel-title">当前证书状态</div>
+          <el-tag :type="levelText.type" effect="light" round>{{ levelText.text }}</el-tag>
+        </div>
+
+        <div class="cert-cards">
+          <div class="cert-card">
+            <span class="cert-label">Ferry 控制台地址</span>
+            <code class="cert-val">{{ status.https ? "https" : "http" }}://{{ status.ferryHost }}</code>
+          </div>
+          <div class="cert-card">
+            <span class="cert-label">员工应用域名模板</span>
+            <code class="cert-val">{{ status.https ? "https" : "http" }}://应用名.{{ status.appsDomain }}</code>
+          </div>
+          <div class="cert-card">
+            <span class="cert-label">到期时间</span>
+            <span class="cert-val">{{ status.certificate ? date(status.certificate.notAfter) : "未安装证书" }}</span>
+          </div>
+        </div>
+
+        <div v-if="status.certificate?.domains?.length" class="domains-row">
+          <span class="cert-label">覆盖域名：</span>
+          <el-tag v-for="d in status.certificate.domains" :key="d" size="small" effect="plain" type="info">{{ d }}</el-tag>
+        </div>
+
         <el-alert v-if="!status.https && status.fixedByEnv" type="info" :closable="false" show-icon class="gap">
           <template #title>
-            地址写在服务器的 <code>.env</code> 里:装好证书后,把 <code>PUBLIC_URL</code> 改成 https、<code>APPS_URL_SCHEME</code> 改成 https,再重启 Ferry
+            地址写在服务器的 <code>.env</code> 里：装好证书后，把 <code>PUBLIC_URL</code> 和 <code>APPS_URL_SCHEME</code> 改为 https 并重启 Ferry
           </template>
         </el-alert>
       </div>
 
       <div class="content-panel">
-        <div class="panel-toolbar"><div class="panel-title">{{ status.certificate ? "上传新证书" : "上传证书" }}</div></div>
+        <div class="panel-toolbar">
+          <div class="panel-title">{{ status.certificate ? "替换 HTTPS 证书" : "上传 HTTPS 证书" }}</div>
+        </div>
         <p class="panel-note">
-          证书要同时覆盖 <code>{{ status.ferryHost }}</code> 和 <code>*.{{ status.appsDomain }}</code>(泛域名)。
-          上传证书文件(含中间证书的 .pem 或 .crt)和私钥(.key)。私钥只交给 Dokploy,Ferry 不保存。
-          <template v-if="willSwitch">装好后 Ferry 会切到 https 并重启(约十几秒),已有应用的地址也一起改成 https,http 的旧链接会自动跳转。</template>
+          证书需同时覆盖 <code>{{ status.ferryHost }}</code> 与 <code>*.{{ status.appsDomain }}</code>（泛域名）。
+          请上传完整证书链（含中间证书的 <code>.pem</code> 或 <code>.crt</code>）和私钥（<code>.key</code>），私钥直接交给 Dokploy，Ferry 不落盘保存。
+          <template v-if="willSwitch">安装后 Ferry 将自动切换至 HTTPS 并重启（约十几秒），已有应用旧 HTTP 链接会自动跳转。</template>
         </p>
+
         <div class="files">
-          <label class="file">
-            <span>证书文件</span>
+          <label
+            class="drop-zone"
+            :class="{ over: dragOver.chain, picked: !!files.chain }"
+            @dragover.prevent="dragOver.chain = true"
+            @dragleave="dragOver.chain = false"
+            @drop.prevent="onDrop('chain', $event)"
+          >
             <input type="file" accept=".pem,.crt,.cer" @change="pick('chain', $event)" />
-            <em>{{ files.chain?.name ?? "未选择" }}</em>
+            <span class="drop-icon">
+              <el-icon><CircleCheck v-if="files.chain" /><Upload v-else /></el-icon>
+            </span>
+            <span class="drop-title">证书文件（.pem / .crt / .cer）</span>
+            <span class="drop-sub">{{ files.chain ? `已选择：${files.chain.name}` : "点击选择或将文件拖拽到此处" }}</span>
           </label>
-          <label class="file">
-            <span>私钥文件</span>
+
+          <label
+            class="drop-zone"
+            :class="{ over: dragOver.key, picked: !!files.key }"
+            @dragover.prevent="dragOver.key = true"
+            @dragleave="dragOver.key = false"
+            @drop.prevent="onDrop('key', $event)"
+          >
             <input type="file" accept=".key,.pem" @change="pick('key', $event)" />
-            <em>{{ files.key?.name ?? "未选择" }}</em>
+            <span class="drop-icon">
+              <el-icon><CircleCheck v-if="files.key" /><Lock v-else /></el-icon>
+            </span>
+            <span class="drop-title">私钥文件（.key / .pem）</span>
+            <span class="drop-sub">{{ files.key ? `已选择：${files.key.name}` : "点击选择或将文件拖拽到此处" }}</span>
           </label>
         </div>
+
         <el-button type="primary" :disabled="!files.chain || !files.key || !!switching" :loading="installing" @click="install">
-          {{ willSwitch ? "检查并安装,切到 HTTPS" : "检查并安装" }}
+          {{ willSwitch ? "检查并安装，同时切到 HTTPS" : "检查并安装证书" }}
         </el-button>
 
         <ul v-if="result" class="checks">
@@ -142,8 +194,9 @@ async function waitAndGo(url: string) {
             <span>{{ item.message }}</span>
           </li>
         </ul>
+
         <el-alert v-if="switching" type="success" :closable="false" show-icon class="gap">
-          <template #title>证书已装好,Ferry 正在切到 https 并重启,好了会自动打开 {{ switching }}……</template>
+          <template #title>证书已安装，Ferry 正在切换至 HTTPS 并重启，完成后将自动跳转 {{ switching }}…</template>
         </el-alert>
       </div>
     </template>
@@ -151,84 +204,97 @@ async function waitAndGo(url: string) {
 </template>
 
 <style scoped>
-.summary {
+.cert-cards {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 10px 20px;
-  margin: 0;
-  font-size: 14px;
-}
-.summary dt {
-  color: var(--el-text-color-secondary);
-}
-.summary dd {
-  margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.muted {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
-}
-.gap {
-  margin-top: 14px;
-}
-.files {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  margin: 4px 0 16px;
 }
-.file {
+@media (max-width: 780px) { .cert-cards { grid-template-columns: 1fr; } }
+.cert-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 12px 14px;
-  border: 1px dashed var(--el-border-color);
-  border-radius: 10px;
+  border: 1px solid #EEF2F6;
+  border-radius: 12px;
+  background: var(--color-bg-page);
+}
+.cert-label { color: var(--color-text-muted); font-size: 12px; }
+.cert-val { color: var(--color-text-heading); font-size: 13px; font-weight: 600; word-break: break-all; }
+.domains-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+.gap { margin-top: 14px; }
+
+.files {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 6px 0 18px;
+}
+@media (max-width: 640px) { .files { grid-template-columns: 1fr; } }
+.drop-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 16px;
+  border: 1.5px dashed var(--color-border-strong);
+  border-radius: 14px;
+  background: var(--color-bg-page);
+  text-align: center;
   cursor: pointer;
-  font-size: 13px;
+  transition: border-color 0.16s, background 0.16s, box-shadow 0.16s;
 }
-.file span {
-  font-weight: 600;
+.drop-zone input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
 }
-.file input {
-  font-size: 12px;
+.drop-zone:hover, .drop-zone.over {
+  border-color: var(--color-brand);
+  background: var(--color-brand-hover);
 }
-.file em {
-  font-style: normal;
-  color: var(--el-text-color-secondary);
+.drop-zone.picked {
+  border-style: solid;
+  border-color: #10B981;
+  background: #ECFDF5;
 }
+.drop-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--color-brand);
+  box-shadow: var(--shadow-card);
+  font-size: 18px;
+}
+.drop-zone.picked .drop-icon { color: #059669; }
+.drop-title { color: var(--color-text-heading); font-size: 13px; font-weight: 600; }
+.drop-sub { color: var(--color-text-muted); font-size: 12px; word-break: break-all; }
+
 .checks {
   list-style: none;
-  padding: 0;
+  padding: 12px 14px;
   margin: 16px 0 0;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-page);
   display: grid;
-  gap: 6px;
+  gap: 8px;
   font-size: 13px;
 }
-.checks li {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-.checks li .el-icon {
-  margin-top: 2px;
-}
-.checks li.ok .el-icon {
-  color: var(--el-color-success);
-}
-.checks li.bad .el-icon {
-  color: var(--el-color-danger);
-}
-.checks li.warn .el-icon {
-  color: var(--el-color-warning);
-}
-@media (max-width: 640px) {
-  .files {
-    grid-template-columns: 1fr;
-  }
-}
+.checks li { display: flex; gap: 8px; align-items: flex-start; }
+.checks li .el-icon { margin-top: 2px; flex-shrink: 0; }
+.checks li.ok .el-icon { color: var(--el-color-success); }
+.checks li.bad .el-icon { color: var(--el-color-danger); }
+.checks li.warn .el-icon { color: var(--el-color-warning); }
 </style>
