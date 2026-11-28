@@ -11,6 +11,7 @@
 #   DOKPLOY_VERSION    Dokploy 版本,默认 v0.31.3(Ferry 是按这个版本验证的)
 #   ADVERTISE_ADDR     Docker Swarm 用的本机地址,默认取默认路由的出口地址
 #   SKIP_FIREWALL=1    不加防火墙规则(见下面 configure_firewall)
+#   ALLOW_EGRESS_V4_CIDRS 允许容器访问的企业内网 IPv4 地址/网段(如内网 npm / 镜像仓库代理,传给 firewall.example.sh)
 #
 # 不操作任何外部服务(阿里云 DNS、证书等),也不保存外部服务的凭据。可以重复运行:已经装好的部分会跳过,
 # 已有的 .env 不会被覆盖。生成的密码和密钥只写进文件(chmod 600),不打印。
@@ -272,10 +273,10 @@ start_ferry() {
   fail "Ferry 没有起来:cd $DEPLOY_DIR && docker compose logs ferry"
 }
 
-# 拦住“容器经宿主机地址访问 Dokploy 的 3000 端口”(员工应用绕过网络隔离调 Dokploy),规则同 firewall.example.sh。
-# 不碰其他规则,管理员从外面访问不受影响。重启后不保留:要长期生效用 iptables-persistent 保存
+# 拦住容器绕过宿主机访问 Dokploy 3000 端口、云元数据地址及企业私网横向探测(IPv4 + IPv6),规则见 firewall.example.sh。
+# 管理员从外面访问不受影响;有内网镜像/npm 代理时设 ALLOW_EGRESS_V4_CIDRS。重启后不保留:长期生效用 iptables-persistent 保存
 configure_firewall() {
-  step "防火墙:不让容器经宿主机访问 Dokploy"
+  step "防火墙:容器管理面隔离与内网出站防护"
   if [ "${SKIP_FIREWALL:-}" = 1 ]; then
     echo "SKIP_FIREWALL=1,跳过"
     return

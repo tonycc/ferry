@@ -1,31 +1,147 @@
 #!/usr/bin/env bash
-# 防火墙示例(任务 3.2 留到部署时处理的部分)。**没有在真实的 Linux 服务器上验证过**,上线前要按实际网络改好、实测。
+# 宿主机容器出站与管理面隔离防火墙(任务 3.2 纵深加固)。
+# **上线前请结合企业实际网段验证**,特别是存在内网 npm / 镜像仓库代理时需配置白名单。
 #
-# 网络隔离后,员工应用连不到 dokploy-network 里的 Dokploy 和 Ferry,但还能经宿主机的地址绕过去:
-# Dokploy 的 3000 端口默认发布在宿主机所有网卡上。这里在 Docker 的 DOCKER-USER 链上拦住
-# “从容器发往宿主机 3000 端口”的连接。Ferry 的数据库不发布端口,不用另外处理。
+# 防护目标(同时覆盖 IPv4 iptables 与 IPv6 ip6tables,幂等可重复执行):
+# 1. 禁止容器网桥(含 docker build 默认网桥 docker0、自定义网桥 br-*、Swarm overlay 出口 docker_gwbridge)
+#    经宿主机本机地址(直连 INPUT 或 DNAT 转发)绕过网络隔离访问 Dokploy 管理端口(默认 3000);
+# 2. 禁止容器访问云厂商元数据与链路本地地址(169.254.0.0/16、阿里云 100.100.100.200、fe80::/10、fd00:ec2::254);
+# 3. 默认禁止容器经宿主机物理网卡主动连接企业内网私网网段(10/8、172.16/12、192.168/16、100.64/10、fc00::/7),
+#    阻断员工应用或构建期向企业 OA / 内网中间件发起横向探测与 SSRF:
+#    - 已建立连接(ESTABLISHED,RELATED)先放行,内网员工浏览器访问应用、管理员访问 Dokploy 的回包不受影响;
+#    - 容器网络内部东西向流量(-o docker0 / br-+ / docker_gwbridge)交还 Docker 自有隔离链处理,不影响 Traefik 转发与应用连库;
+#    - 默认放行容器发起的 DNS 查询(UDP/TCP 53),避免内网 DNS 无法解析。
 #
-# 另外建议:Dokploy 管理页面只对管理网段开放(云服务器用安全组,或者在下面加一条按来源网段放行的规则)。
+# 可选环境变量:
+#   DOKPLOY_PORT=3000                    要对容器封禁的宿主机管理端口(默认 3000)
+#   BLOCK_PRIVATE_EGRESS=1               设为 0 可关闭对企业私网网段的出站拦截(默认 1 开启)
+#   ALLOW_EGRESS_V4_CIDRS="10.10.2.10/32" 允许容器访问的内网 IPv4 地址/网段(空格或逗号分隔,如内网镜像/npm 代理)
+#   ALLOW_EGRESS_V6_CIDRS=""             允许容器访问的内网 IPv6 地址/网段(空格或逗号分隔)
 #
 # 用法:sudo deploy/firewall.example.sh
-# 这些规则重启后不保留,要用 iptables-persistent 之类保存,或者写进开机脚本。
+# 规则重启后不保留,长期生效请用 iptables-persistent / netfilter-persistent 保存或写入开机脚本。
 set -euo pipefail
 
-# 宿主机上所有本机地址(容器经这些地址都能到宿主机)
-HOST_ADDRS=$(ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -v ':')
+DOKPLOY_PORT="${DOKPLOY_PORT:-3000}"
+BLOCK_PRIVATE_EGRESS="${BLOCK_PRIVATE_EGRESS:-1}"
+ALLOW_V4="${ALLOW_EGRESS_V4_CIDRS:-}"
+ALLOW_V4="${ALLOW_V4//,/ }"
+ALLOW_V6="${ALLOW_EGRESS_V6_CIDRS:-}"
+ALLOW_V6="${ALLOW_V6//,/ }"
 
-# Docker 把发布的端口做了 DNAT:容器经宿主机地址访问 3000 时,到 DOCKER-USER 链时目标地址已经改成 Dokploy 容器的地址。
-# 所以按 conntrack 记下的“改写前的目标”来认:原始目标是宿主机地址、原始端口是 3000、并且是从容器的网桥进来的,才拒绝。
-# - 只认宿主机地址:Traefik 访问应用容器(包括监听 3000 的模板应用)的原始目标是容器地址,不受影响;
-# - 只认容器网桥(docker0、br-*、docker_gwbridge):管理员从外面访问 Dokploy 是从物理网卡进来的,不受影响。
-for iface in docker0 'br-+' docker_gwbridge; do
-  for addr in $HOST_ADDRS; do
-    rule=(-i "$iface" -p tcp -m conntrack --ctorigdst "$addr" --ctorigdstport 3000 --ctdir ORIGINAL -j REJECT)
-    iptables -C DOCKER-USER "${rule[@]}" 2>/dev/null || iptables -I DOCKER-USER "${rule[@]}"
-  done
+CONTAINER_IFACES=(docker0 'br-+' docker_gwbridge)
+
+# 创建或清空独立子链,并确保挂载在父链第 1 条(重复运行不会堆积重复规则,且保持从上到下的匹配顺序)
+reset_chain() {
+  local bin="$1" parent="$2" chain="$3"
+  "$bin" -nL "$parent" >/dev/null 2>&1 || return 1
+  "$bin" -N "$chain" 2>/dev/null || "$bin" -F "$chain"
+  while "$bin" -D "$parent" -j "$chain" 2>/dev/null; do :; done
+  "$bin" -I "$parent" 1 -j "$chain"
+}
+
+# ---- IPv4 (iptables) ----
+command -v iptables >/dev/null || { echo "找不到 iptables" >&2; exit 1; }
+
+HOST_V4_ADDRS=$(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
+
+reset_chain iptables INPUT FERRY-HOST-INPUT
+iptables -A FERRY-HOST-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+for iface in "${CONTAINER_IFACES[@]}"; do
+  iptables -A FERRY-HOST-INPUT -i "$iface" -p tcp --dport "$DOKPLOY_PORT" -j REJECT
 done
+iptables -A FERRY-HOST-INPUT -j RETURN
 
-echo "已添加。验证(三项都要做):"
-echo "  1. 在一个员工应用的容器里 curl http://<宿主机地址>:3000,应该连不上;"
-echo "  2. 已上线的应用(包括监听 3000 端口的模板应用)照常能打开;"
-echo "  3. 管理员从管理网段仍能打开 Dokploy。"
+# Docker 启动前可能还没有 DOCKER-USER,只在链存在时挂载(Docker 装好运行后必有)
+if reset_chain iptables DOCKER-USER FERRY-ISOLATION; then
+  # 1. 放行已建立连接的回包(内网浏览器访问 Traefik、管理员从管理网段访问 Dokploy)
+  iptables -A FERRY-ISOLATION -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+  # 2. 拦截容器经宿主机任意本机地址(DNAT 改写前原始目标)访问 Dokploy 端口
+  for iface in "${CONTAINER_IFACES[@]}"; do
+    for addr in $HOST_V4_ADDRS; do
+      iptables -A FERRY-ISOLATION -i "$iface" -p tcp -m conntrack --ctorigdst "$addr" --ctorigdstport "$DOKPLOY_PORT" --ctdir ORIGINAL -j REJECT
+    done
+  done
+
+  # 3. 拦截容器访问云元数据与链路本地地址(AWS/GCP/OpenStack/腾讯云 169.254.169.254、阿里云 100.100.100.200)
+  for iface in "${CONTAINER_IFACES[@]}"; do
+    for cidr in 169.254.0.0/16 100.100.100.200/32; do
+      iptables -A FERRY-ISOLATION -i "$iface" -d "$cidr" -j REJECT
+    done
+  done
+
+  # 4. 容器网络内部东西向流量交还 Docker 自有的 DOCKER-ISOLATION 链(同网络互通、跨网络隔离)
+  for out_iface in lo "${CONTAINER_IFACES[@]}"; do
+    iptables -A FERRY-ISOLATION -o "$out_iface" -j RETURN
+  done
+
+  # 5. 拦截容器向宿主机外部发起的企业私网横向连接(保留 DNS 53 端口及显式白名单网段)
+  if [ "$BLOCK_PRIVATE_EGRESS" = 1 ]; then
+    for iface in "${CONTAINER_IFACES[@]}"; do
+      iptables -A FERRY-ISOLATION -i "$iface" -p udp --dport 53 -j RETURN
+      iptables -A FERRY-ISOLATION -i "$iface" -p tcp --dport 53 -j RETURN
+      for cidr in $ALLOW_V4; do
+        iptables -A FERRY-ISOLATION -i "$iface" -d "$cidr" -j RETURN
+      done
+      for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+        iptables -A FERRY-ISOLATION -i "$iface" -d "$cidr" -j REJECT
+      done
+    done
+  fi
+
+  iptables -A FERRY-ISOLATION -j RETURN
+fi
+
+# ---- IPv6 (ip6tables:系统启用了 IPv6 时同步封堵,避免经 IPv6 绕过) ----
+if command -v ip6tables >/dev/null && ip6tables -nL INPUT >/dev/null 2>&1; then
+  HOST_V6_ADDRS=$(ip -6 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
+
+  reset_chain ip6tables INPUT FERRY-HOST-INPUT
+  ip6tables -A FERRY-HOST-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  for iface in "${CONTAINER_IFACES[@]}"; do
+    ip6tables -A FERRY-HOST-INPUT -i "$iface" -p tcp --dport "$DOKPLOY_PORT" -j REJECT
+  done
+  ip6tables -A FERRY-HOST-INPUT -j RETURN
+
+  # Docker 未开启 IPv6 时可能没有 DOCKER-USER 链,退回挂在 FORWARD 链顶部兜底
+  V6_FORWARD_PARENT="DOCKER-USER"
+  ip6tables -nL DOCKER-USER >/dev/null 2>&1 || V6_FORWARD_PARENT="FORWARD"
+  if reset_chain ip6tables "$V6_FORWARD_PARENT" FERRY-ISOLATION; then
+    ip6tables -A FERRY-ISOLATION -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+    for iface in "${CONTAINER_IFACES[@]}"; do
+      for addr in $HOST_V6_ADDRS; do
+        ip6tables -A FERRY-ISOLATION -i "$iface" -p tcp -m conntrack --ctorigdst "$addr" --ctorigdstport "$DOKPLOY_PORT" --ctdir ORIGINAL -j REJECT
+      done
+    done
+
+    for iface in "${CONTAINER_IFACES[@]}"; do
+      for cidr in fe80::/10 fd00:ec2::254/128; do
+        ip6tables -A FERRY-ISOLATION -i "$iface" -d "$cidr" -j REJECT
+      done
+    done
+
+    for out_iface in lo "${CONTAINER_IFACES[@]}"; do
+      ip6tables -A FERRY-ISOLATION -o "$out_iface" -j RETURN
+    done
+
+    if [ "$BLOCK_PRIVATE_EGRESS" = 1 ]; then
+      for iface in "${CONTAINER_IFACES[@]}"; do
+        ip6tables -A FERRY-ISOLATION -i "$iface" -p udp --dport 53 -j RETURN
+        ip6tables -A FERRY-ISOLATION -i "$iface" -p tcp --dport 53 -j RETURN
+        for cidr in $ALLOW_V6; do
+          ip6tables -A FERRY-ISOLATION -i "$iface" -d "$cidr" -j RETURN
+        done
+        ip6tables -A FERRY-ISOLATION -i "$iface" -d fc00::/7 -j REJECT
+      done
+    fi
+
+    ip6tables -A FERRY-ISOLATION -j RETURN
+  fi
+fi
+
+echo "已添加 IPv4/IPv6 容器隔离防火墙规则。上线前请逐项验证:"
+echo "  1. 在员工应用容器里 curl http://<宿主机地址>:$DOKPLOY_PORT 和 http://169.254.169.254,都应连不上;"
+echo "  2. 在员工应用容器里访问企业内网其他机器(非白名单地址),应连不上;如有内网 npm/镜像代理,设 ALLOW_EGRESS_V4_CIDRS 后可正常拉包;"
+echo "  3. 已上线的应用(包括监听 3000 端口的模板应用)经域名照常打开,管理员从管理网段仍能打开 Dokploy。"
