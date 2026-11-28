@@ -1,14 +1,12 @@
 <script setup lang="ts">
+import { Refresh, Search } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, ApiError, type AuditAction, type AuditEvent, type AuditPage } from "../api";
-import { AUDIT_ACTION, auditDetail, time } from "../labels";
+import StatusTag from "../components/StatusTag.vue";
+import { AUDIT_ACTION, auditDetail, auditTone, relativeTime, time } from "../labels";
 
-/**
- * 审计日志(只有管理员能看):谁在什么时候对哪个应用做了什么,从新到旧。
- * 筛选条件放在地址栏里,管理页的“操作记录”链接直接带上应用名
- */
 const route = useRoute();
 const router = useRouter();
 
@@ -16,7 +14,6 @@ const events = ref<AuditEvent[]>([]);
 const nextBefore = ref<number>();
 const loading = ref(false);
 const forbidden = ref(false);
-/** 每次请求加一;返回时已经不是最新的请求就丢掉,免得慢的旧请求覆盖新筛选条件的结果 */
 let requestSeq = 0;
 
 const appInput = ref("");
@@ -25,7 +22,7 @@ const filters = computed(() => ({
   actor: typeof route.query.actor === "string" ? route.query.actor : undefined,
   action: typeof route.query.action === "string" ? (route.query.action as AuditAction) : undefined,
 }));
-/** 按操作人筛选时显示的姓名(从已加载的记录里找) */
+const hasFilters = computed(() => !!(filters.value.app || filters.value.actor || filters.value.action));
 const actorLabel = ref<string>();
 const actions = Object.entries(AUDIT_ACTION) as [AuditAction, string][];
 
@@ -40,7 +37,6 @@ function query(before?: number): string {
 async function load(more = false) {
   const seq = ++requestSeq;
   if (!more) {
-    // 换了筛选条件:上一个条件的翻页位置不能再用
     events.value = [];
     nextBefore.value = undefined;
   }
@@ -65,6 +61,12 @@ function setFilter(patch: Partial<Record<"app" | "actor" | "action", string | un
   void router.replace({ query: next as typeof route.query });
 }
 
+function clearAllFilters() {
+  appInput.value = "";
+  actorLabel.value = undefined;
+  void router.replace({ query: {} });
+}
+
 function filterActor(e: AuditEvent) {
   if (!e.actorId) return;
   actorLabel.value = e.actorName ?? e.actorId;
@@ -85,63 +87,88 @@ watch(
 <template>
   <section class="ops-page">
     <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
-    <div v-else class="content-panel">
-      <div class="panel-toolbar">
-        <div class="filter-bar">
-          <el-input
-            v-model="appInput"
-            clearable
-            placeholder="应用名"
-            style="width: 200px"
-            @keyup.enter="setFilter({ app: appInput.trim() || undefined })"
-            @clear="setFilter({ app: undefined })"
-          />
-          <el-select
-            :model-value="filters.action"
-            clearable
-            placeholder="全部操作"
-            style="width: 160px"
-            @update:model-value="(v: string | undefined) => setFilter({ action: v || undefined })"
-          >
-            <el-option v-for="[value, label] in actions" :key="value" :value="value" :label="label" />
-          </el-select>
-          <el-tag v-if="filters.actor" closable disable-transitions @close="setFilter({ actor: undefined })">
-            操作人:{{ actorLabel ?? filters.actor }}
-          </el-tag>
+    <template v-else>
+      <div class="content-panel">
+        <div class="panel-toolbar">
+          <div class="filter-bar">
+            <el-input
+              v-model="appInput"
+              clearable
+              :prefix-icon="Search"
+              placeholder="输入应用名按回车筛选"
+              style="width: 220px"
+              @keyup.enter="setFilter({ app: appInput.trim() || undefined })"
+              @clear="setFilter({ app: undefined })"
+            />
+            <el-select
+              :model-value="filters.action"
+              clearable
+              placeholder="全部操作类型"
+              style="width: 170px"
+              @update:model-value="(v: string | undefined) => setFilter({ action: v || undefined })"
+            >
+              <el-option v-for="[value, label] in actions" :key="value" :value="value" :label="label" />
+            </el-select>
+            <el-tag v-if="filters.actor" closable disable-transitions @close="setFilter({ actor: undefined })">
+              操作人：{{ actorLabel ?? filters.actor }}
+            </el-tag>
+            <el-button v-if="hasFilters" link type="primary" @click="clearAllFilters">重置筛选</el-button>
+          </div>
+          <div class="filter-bar">
+            <span class="status-note">点击操作人或应用名可快速过滤</span>
+            <el-button :icon="Refresh" :loading="loading" @click="load(false)">刷新</el-button>
+          </div>
         </div>
-        <span class="status-note">点操作人的名字只看这个人的操作</span>
+        <el-table v-loading="loading" class="data-table" :data="events" :empty-text="loading ? ' ' : '没有匹配的审计记录'">
+          <el-table-column label="时间" width="175">
+            <template #default="{ row }">
+              <span :title="time(row.at)">{{ relativeTime(row.at) }}</span>
+              <div class="status-note">{{ time(row.at) }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作人" width="125">
+            <template #default="{ row }">
+              <el-button v-if="row.actorId" link type="primary" @click="filterActor(row)">{{ row.actorName ?? row.actorId }}</el-button>
+              <span v-else class="system-actor">Ferry 系统</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="145">
+            <template #default="{ row }">
+              <StatusTag :type="auditTone(row.action as AuditAction)">
+                {{ AUDIT_ACTION[row.action as AuditAction] ?? row.action }}
+              </StatusTag>
+            </template>
+          </el-table-column>
+          <el-table-column label="应用" min-width="155">
+            <template #default="{ row }">
+              <div v-if="row.appName" class="stack-cell">
+                <span><el-button link @click="setFilter({ app: row.appName })">{{ row.appName }}</el-button></span>
+                <span v-if="row.appOwnerId && row.appOwnerId !== row.actorId" class="status-note">
+                  负责人 {{ row.appOwnerName ?? row.appOwnerId }}
+                </span>
+              </div>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="详情" min-width="230">
+            <template #default="{ row }">{{ auditDetail(row) || "—" }}</template>
+          </el-table-column>
+        </el-table>
+        <div v-if="nextBefore" class="load-more">
+          <el-button :loading="loading" @click="load(true)">加载更早的记录</el-button>
+        </div>
       </div>
-      <el-table v-loading="loading" class="data-table" :data="events" :empty-text="loading ? ' ' : '没有记录'">
-        <el-table-column label="时间" width="170">
-          <template #default="{ row }"><span class="status-note">{{ time(row.at) }}</span></template>
-        </el-table-column>
-        <el-table-column label="操作人" width="120">
-          <template #default="{ row }">
-            <el-button v-if="row.actorId" link type="primary" @click="filterActor(row)">{{ row.actorName ?? row.actorId }}</el-button>
-            <span v-else class="muted">Ferry</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="120">
-          <template #default="{ row }">{{ AUDIT_ACTION[row.action as AuditAction] ?? row.action }}</template>
-        </el-table-column>
-        <el-table-column label="应用" min-width="150">
-          <template #default="{ row }">
-            <div v-if="row.appName" class="stack-cell">
-              <span><el-button link @click="setFilter({ app: row.appName })">{{ row.appName }}</el-button></span>
-              <span v-if="row.appOwnerId && row.appOwnerId !== row.actorId" class="status-note">
-                负责人 {{ row.appOwnerName ?? row.appOwnerId }}
-              </span>
-            </div>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="详情" min-width="220">
-          <template #default="{ row }">{{ auditDetail(row) }}</template>
-        </el-table-column>
-      </el-table>
-      <div v-if="nextBefore" class="load-more">
-        <el-button :loading="loading" @click="load(true)">加载更早的记录</el-button>
-      </div>
-    </div>
+    </template>
   </section>
 </template>
+
+<style scoped>
+.system-actor {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+</style>

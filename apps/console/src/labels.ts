@@ -45,6 +45,58 @@ export function appStatKey(app: AppView): "live" | "pending" | "offline" | "disa
 
 export const time = (iso?: string) => (iso ? new Date(iso).toLocaleString("zh-CN", { hour12: false }) : "—");
 
+/** 相对时间(如“3 分钟前”“2 天前”),配合 title 属性显示完整时间 */
+export function relativeTime(iso?: string): string {
+  if (!iso) return "—";
+  const diff = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(diff)) return "—";
+  if (diff < 0) return time(iso);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return "刚刚";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分钟前`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour} 小时前`;
+  const day = Math.floor(hour / 24);
+  if (day < 30) return `${day} 天前`;
+  return new Date(iso).toLocaleDateString("zh-CN");
+}
+
+/** 审计操作对应的语义色,让管理员一眼分辨高危/配置/发布类事件 */
+export function auditTone(action: AuditAction): TagType {
+  switch (action) {
+    case "app.disable":
+    case "app.delete":
+    case "user.deactivate":
+    case "department.delete":
+    case "token.revoke":
+    case "secret.delete":
+      return "danger";
+    case "app.create":
+    case "app.enable":
+    case "user.create":
+    case "user.reactivate":
+    case "department.create":
+    case "setup.complete":
+    case "certificate.install":
+      return "success";
+    case "app.publish":
+    case "release.finish":
+    case "token.create":
+      return "primary";
+    case "app.rollback":
+    case "app.unpublish":
+    case "app.visibility":
+    case "secret.set":
+    case "password.reset":
+    case "password.change":
+    case "user.admin":
+      return "warning";
+    default:
+      return "info";
+  }
+}
+
 /** 审计日志的操作名称 */
 export const AUDIT_ACTION: Record<AuditAction, string> = {
   "app.create": "创建应用",
