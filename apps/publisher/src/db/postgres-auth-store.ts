@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, lte } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { AuthStore, PasswordRecord, PersonalToken, Session } from "../auth/store";
 import * as schema from "./schema";
@@ -45,6 +45,14 @@ export class PostgresAuthStore implements AuthStore {
 
   async deleteSessionsOf(userId: string) {
     await this.db.delete(schema.sessions).where(eq(schema.sessions.userId, userId));
+  }
+
+  async deleteExpiredSessions(now: Date) {
+    const deleted = await this.db
+      .delete(schema.sessions)
+      .where(lte(schema.sessions.expiresAt, now))
+      .returning({ tokenHash: schema.sessions.tokenHash });
+    return deleted.length;
   }
 
   async saveToken(t: PersonalToken) {

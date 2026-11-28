@@ -17,12 +17,13 @@ export async function pruneArchives(
 ): Promise<string[]> {
   const app = await store.getApp(appName);
   if (!app) return [];
-  const releases = await store.listReleases(appName);
+  // 从新到旧排列且不读 error.logs 大字段
+  const releases = await store.listReleaseSummaries(appName);
 
   const keep = new Set<string>();
   if (app.liveVersion) keep.add(app.liveVersion);
   const liveVersions: string[] = [];
-  for (const release of [...releases].reverse()) {
+  for (const release of releases) {
     if (release.state !== "LIVE" || liveVersions.includes(release.version)) continue;
     liveVersions.push(release.version);
     if (liveVersions.length === 2) break;

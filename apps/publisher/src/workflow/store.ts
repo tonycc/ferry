@@ -127,8 +127,13 @@ export interface Store {
   deleteApp(name: string): Promise<void>;
 
   getRelease(id: string): Promise<ReleaseRecord | undefined>;
-  /** 按创建时间从旧到新 */
+  /** 按创建时间从旧到新(含完整 error.logs) */
   listReleases(appName: string): Promise<ReleaseRecord[]>;
+  /**
+   * 按创建时间从新到旧列出发布记录摘要(剥离体积较大的 error.logs 大字段,传 limit 时只取最新 limit 条):
+   * 供应用详情列表、回滚目标查找、代码包保留策略等不需要构建日志的高频路径使用。
+   */
+  listReleaseSummaries(appName: string, limit?: number): Promise<ReleaseRecord[]>;
   /**
    * 当前允许通过网关健康检查的路径集合(正在执行的发布单 + 最近一次 LIVE 发布单的健康检查路径;
    * 忽略已失败/已回滚的记录,避免失败发布单改了 healthcheck 导致线上旧版本健康检查 403)。
@@ -155,6 +160,8 @@ export interface Store {
    * 原子地把上传凭据标记为已收到,同时记下清单。凭据已经被用过(包括并发的另一次上传抢先)时返回 false。
    */
   claimUpload(tokenHash: string, receivedAt: Date, manifest: Manifest): Promise<boolean>;
+  /** 清理已过期且从未上传过代码包的废弃上传凭据(已收到代码包的保留记录,以区分“未上传”与“代码包过期被清理”) */
+  deleteExpiredUploads(now: Date): Promise<number>;
 
   /** 按名称排序 */
   listSecrets(appName: string): Promise<SecretRecord[]>;
@@ -349,6 +356,17 @@ export class MemoryStore implements Store {
     return [...this.releases.values()].filter((release) => release.appName === appName).map(copy);
   }
 
+  async listReleaseSummaries(appName: string, limit?: number) {
+    if (limit !== undefined && limit <= 0) return [];
+    const matched = [...this.releases.values()].filter((release) => release.appName === appName).reverse();
+    const sliced = limit !== undefined ? matched.slice(0, limit) : matched;
+    return sliced.map((release) => {
+      const cloned = copy(release);
+      if (cloned.error) delete cloned.error.logs;
+      return cloned;
+    });
+  }
+
   async getActiveHealthchecks(appName: string) {
     const paths = new Set<string>();
     let tookLive = false;
@@ -441,6 +459,17 @@ export class MemoryStore implements Store {
     ticket.receivedAt = receivedAt;
     ticket.manifest = copy(manifest);
     return true;
+  }
+
+  async deleteExpiredUploads(now: Date) {
+    let deleted = 0;
+    for (const [hash, ticket] of this.uploads) {
+      if (!ticket.receivedAt && ticket.expiresAt <= now) {
+        this.uploads.delete(hash);
+        deleted++;
+      }
+    }
+    return deleted;
   }
 
   async listSecrets(appName: string) {

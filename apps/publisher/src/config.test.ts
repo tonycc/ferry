@@ -33,4 +33,11 @@ describe("loadConfig", () => {
     }
     for (const host of ["0.0.0.0", "::", "10.0.0.5", "ferry.corp.example"]) expect(isLoopbackHost(host)).toBe(false);
   });
+
+  it("MAX_ARCHIVE_MB 默认收敛为 25MB,APPS_DOMAIN 自动转小写并去掉首尾点号", () => {
+    expect(loadConfig({}).MAX_ARCHIVE_MB).toBe(25);
+    expect(loadConfig({ MAX_ARCHIVE_MB: "50" }).MAX_ARCHIVE_MB).toBe(50);
+    expect(() => loadConfig({ MAX_ARCHIVE_MB: "0" })).toThrow();
+    expect(loadConfig({ APPS_DOMAIN: " .Apps.Corp.Example. " }).APPS_DOMAIN).toBe("apps.corp.example");
+  });
 });

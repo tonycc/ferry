@@ -347,6 +347,25 @@ if (certificates && (instance.initialized || instance.switched) && config.FERRY_
 // 冷却期内被压下的告警,冷却期过了还没被新告警带出去的,单独补发
 setInterval(() => void alerts.flush(), 60_000).unref();
 
+// 定期垃圾回收:清理过期的浏览器会话、向导会话、废弃未上传的凭据,以及 Dokploy 上可能残留的全局临时任务
+const runMaintenanceGc = async (scheduleMinAgeMs: number) => {
+  await Promise.all([
+    auth.pruneExpiredSessions().catch((err: Error) => server.log.error(`清理过期登录会话失败: ${err.message}`)),
+    setupStore.deleteExpiredSessions(new Date()).catch((err: Error) => server.log.error(`清理过期向导会话失败: ${err.message}`)),
+    service.pruneExpiredUploads().catch((err: Error) => server.log.error(`清理过期上传凭据失败: ${err.message}`)),
+    config.FERRY_PLATFORM === "dokploy" && (instance.initialized || instance.switched)
+      ? adapters.platform
+          .cleanupServerSchedules({ minAgeMs: scheduleMinAgeMs })
+          .then((n) => {
+            if (n > 0) server.log.info(`已清理 ${n} 个残留的 Dokploy 临时定时任务`);
+          })
+          .catch((err: Error) => server.log.error(`清理残留 Dokploy 临时任务失败: ${err.message}`))
+      : Promise.resolve(),
+  ]);
+};
+void runMaintenanceGc(0);
+setInterval(() => void runMaintenanceGc(30 * 60_000), 3600_000).unref();
+
 // 继续执行上次没跑完的发布(进程重启前正在进行的)
 const resumed = instance.initialized || instance.switched ? await service.resumeUnfinished() : [];
 if (resumed.length > 0) server.log.info({ releases: resumed }, `继续执行 ${resumed.length} 个未完成的发布`);

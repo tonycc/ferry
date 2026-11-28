@@ -289,9 +289,9 @@ export class Engine {
   private async restoreLive(app: AppRecord, failure: Failure): Promise<Failure> {
     if (!app.liveVersion) return failure;
     try {
-      const liveRelease = [...(await this.store.listReleases(app.name))]
-        .reverse()
-        .find((r) => r.version === app.liveVersion && r.state === "LIVE");
+      const liveRelease = (await this.store.listReleaseSummaries(app.name)).find(
+        (r) => r.version === app.liveVersion && r.state === "LIVE",
+      );
       const previous = await this.managedArchive(
         await this.archive(app.name, app.liveVersion),
         liveRelease?.manifest.template,
@@ -404,12 +404,12 @@ export class Engine {
 
   /** 这次发布之前,同一应用连续多少次以“可修复的失败”结束 */
   private async priorConsecutiveFailures(release: ReleaseRecord): Promise<number> {
-    // 回滚不是 agent 发起的修复,不参与计数
-    const earlier = (await this.store.listReleases(release.appName)).filter(
+    // 回滚不是 agent 发起的修复,不参与计数;listReleaseSummaries 已按从新到旧排列且不含 logs 大字段
+    const earlier = (await this.store.listReleaseSummaries(release.appName)).filter(
       (r) => r.id !== release.id && r.kind === "publish",
     );
     let count = 0;
-    for (const r of earlier.reverse()) {
+    for (const r of earlier) {
       if (r.state !== "FAILED_FIXABLE" && r.state !== "ROLLED_BACK") break;
       count++;
     }

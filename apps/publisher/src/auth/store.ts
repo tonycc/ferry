@@ -43,6 +43,8 @@ export interface AuthStore {
   deleteSession(tokenHash: string): Promise<void>;
   /** 删除某人的全部登录会话(改密码、管理员重置密码时) */
   deleteSessionsOf(userId: string): Promise<void>;
+  /** 定期清理已过期的浏览器登录会话,返回清理条数 */
+  deleteExpiredSessions(now: Date): Promise<number>;
 
   saveToken(token: PersonalToken): Promise<void>;
   getTokenByHash(tokenHash: string): Promise<PersonalToken | undefined>;
@@ -86,6 +88,17 @@ export class MemoryAuthStore implements AuthStore {
 
   async deleteSessionsOf(userId: string) {
     for (const [hash, session] of this.sessions) if (session.userId === userId) this.sessions.delete(hash);
+  }
+
+  async deleteExpiredSessions(now: Date) {
+    let deleted = 0;
+    for (const [hash, session] of this.sessions) {
+      if (session.expiresAt <= now) {
+        this.sessions.delete(hash);
+        deleted++;
+      }
+    }
+    return deleted;
   }
 
   async saveToken(token: PersonalToken) {

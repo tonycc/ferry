@@ -264,18 +264,21 @@ describe.each(storeCases("ferry_test_auth"))("登录:$name", (c) => {
     for (const secret of [initial, password, fresh]) expect(text).not.toContain(secret);
   });
 
-  it("登录会话 7 天后过期;退出后失效", async () => {
-    const { auth, time, aliceWithPassword } = setup(storeCase.createAuth());
+  it("登录会话 7 天后过期;退出后失效;后台清理只删已过期的会话", async () => {
+    const { auth, time, store, aliceWithPassword } = setup(storeCase.createAuth());
     const { sessionToken } = await aliceWithPassword();
     time.advance(7 * 24 * 3600_000 - 1000);
     expect(await auth.sessionUser(sessionToken)).toBe("dingtalk:alice");
+    const freshLogin = await auth.login("13800000001", "alice-own-pass");
+    if (freshLogin.kind !== "session") throw new Error();
     time.advance(2000);
     expect(await auth.sessionUser(sessionToken)).toBeUndefined();
+    expect(await auth.pruneExpiredSessions()).toBe(1);
+    expect(await auth.sessionUser(freshLogin.sessionToken)).toBe("dingtalk:alice");
 
-    const second = await auth.login("13800000001", "alice-own-pass");
-    if (second.kind !== "session") throw new Error();
-    await auth.logout(second.sessionToken);
-    expect(await auth.sessionUser(second.sessionToken)).toBeUndefined();
+    await auth.logout(freshLogin.sessionToken);
+    expect(await auth.sessionUser(freshLogin.sessionToken)).toBeUndefined();
+    expect(await store.deleteExpiredSessions(time.now())).toBe(0);
   });
 
   it("个人令牌:带前缀,只存哈希,列表里没有令牌本身;作废后失效;最近使用时间按间隔更新", async () => {

@@ -452,8 +452,9 @@ export class PublisherService {
 
   async appDetail(user: User, appName: string): Promise<AppDetailView> {
     const app = await this.ownApp(user, appName);
-    const releases = await this.store.listReleases(app.name);
-    const latest = releases.at(-1)?.manifest;
+    // 只取最新 50 条摘要(已剥离 error.logs 大字段,从新到旧排列)
+    const releases = await this.store.listReleaseSummaries(app.name, 50);
+    const latest = releases[0]?.manifest;
     return {
       ...toAppView(app, this.appUrl(app.host)),
       visibilityPinned: app.visibilityPinned ?? false,
@@ -461,20 +462,17 @@ export class PublisherService {
       port: latest?.port,
       healthcheck: latest?.healthcheck,
       database: latest?.database,
-      releases: releases
-        .slice(-50)
-        .reverse()
-        .map((r) => ({
-          releaseId: r.id,
-          kind: r.kind,
-          state: r.state,
-          done: isTerminal(r.state),
-          version: r.version,
-          live: !app.unpublishedAt && r.version === app.liveVersion && r.state === "LIVE",
-          createdAt: r.createdAt.toISOString(),
-          finishedAt: isTerminal(r.state) ? r.history.at(-1)?.at.toISOString() : undefined,
-          error: r.error && { stage: r.error.stage, type: r.error.type, message: r.error.message, hint: r.error.hint },
-        })),
+      releases: releases.map((r) => ({
+        releaseId: r.id,
+        kind: r.kind,
+        state: r.state,
+        done: isTerminal(r.state),
+        version: r.version,
+        live: !app.unpublishedAt && r.version === app.liveVersion && r.state === "LIVE",
+        createdAt: r.createdAt.toISOString(),
+        finishedAt: isTerminal(r.state) ? r.history.at(-1)?.at.toISOString() : undefined,
+        error: r.error && { stage: r.error.stage, type: r.error.type, message: r.error.message, hint: r.error.hint },
+      })),
     };
   }
 
@@ -505,12 +503,12 @@ export class PublisherService {
     if (initialApp.unpublishedAt || !initialApp.liveVersion) {
       throw new UserError("invalid_input", `应用 ${initialApp.name} 现在没有在线的版本,不能回滚`);
     }
-    const releases = await this.store.listReleases(initialApp.name);
+    const releases = await this.store.listReleaseSummaries(initialApp.name);
     if (releases.some((r) => !isTerminal(r.state))) {
       throw new UserError("conflict", `应用 ${initialApp.name} 有一次发布还在进行中,请等它结束`);
     }
 
-    const live = [...releases].reverse().filter((r) => r.state === "LIVE");
+    const live = releases.filter((r) => r.state === "LIVE");
     const current = live.find((r) => r.version === initialApp.liveVersion);
     const target = live.find((r) => r.version !== initialApp.liveVersion);
     if (!current || !target || !(await this.adapters.archives.read(initialApp.name, target.version))) {
@@ -688,7 +686,7 @@ export class PublisherService {
       if (!app.unpublishedAt && !app.disabled) {
         throw new UserError("invalid_input", `应用 ${app.name} 还在线,不能删除。请先停用,或者请负责人先下线`);
       }
-      const releasesBefore = await this.store.listReleases(app.name);
+      const releasesBefore = await this.store.listReleaseSummaries(app.name);
       if (releasesBefore.some((r) => !isTerminal(r.state))) {
         throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
       }
@@ -699,7 +697,7 @@ export class PublisherService {
         await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason: deleteMarkerReason });
         const [latestApp, releasesAfter] = await Promise.all([
           this.store.getApp(app.name),
-          this.store.listReleases(app.name),
+          this.store.listReleaseSummaries(app.name),
         ]);
         const raced =
           releasesAfter.some((r) => !isTerminal(r.state)) ||
@@ -811,7 +809,7 @@ export class PublisherService {
     for (const app of await this.store.listApps()) {
       if (!app.platform.appId || !app.platform.domainAttached || app.unpublishedAt) continue;
       // 端口取最近一次发布的清单:域名就是那次发布绑的。没有发布记录的不猜端口,跳过
-      const latest = (await this.store.listReleases(app.name)).at(-1);
+      const [latest] = await this.store.listReleaseSummaries(app.name, 1);
       if (!latest) continue;
       checked++;
       try {
@@ -913,6 +911,11 @@ export class PublisherService {
   /** 兼容保留:应用当前主健康检查路径 */
   async healthcheckPath(appName: string): Promise<string | undefined> {
     return (await this.healthcheckPaths(appName))[0];
+  }
+
+  /** 清理已过期且未上传过代码包的上传凭据(后台定时调用) */
+  async pruneExpiredUploads(): Promise<number> {
+    return this.store.deleteExpiredUploads((this.config.now ?? (() => new Date()))());
   }
 
   /** 网关用:viewer 能否访问这个应用(停用、下线的都不能;其余按可见范围和组织架构)。不再查存储 */
