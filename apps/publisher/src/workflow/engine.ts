@@ -1,15 +1,20 @@
+import { parseManifest } from "@ferry/manifest";
 import type { Adapters, Archive } from "../adapters/types";
 import { memoryAuditLog, type AuditLog } from "../audit/log";
 import type { Alerts } from "../alerts";
 import { deployFailure, healthFailure, migrationFailure, scanFailure } from "./failures";
 import { isTerminal, stepOrder, type ReleaseState, type StepState } from "./states";
 import { RESERVED_ENV_NAMES, type SecretBox } from "../secrets";
+import type { TemplateLibrary } from "../templates";
+import { readZipFile, replaceZipDockerfile } from "../zip";
 import type { AppRecord, ReleaseRecord, Store } from "./store";
 
 export interface EngineConfig {
   maxFixAttempts: number;
   /** 应用地址的协议,默认 https */
   appsUrlScheme?: "http" | "https";
+  /** 平台模板库;设置后每次构建部署(含历史包回滚)都强制注入对应模板的受信任 Dockerfile */
+  templates?: TemplateLibrary;
   /** 解密应用密钥用;不传时有密钥的应用发布会失败(只有不涉及密钥的测试可以不传) */
   secretBox?: SecretBox;
   /** 审计日志,记录每次发布的结果;不传时记在内存里(只有测试可以不传) */
@@ -195,7 +200,10 @@ export class Engine {
       if (release.kind === "rollback") {
         await this.adapters.platform.setEnv(this.appId(app), await this.secretEnv(app), RESERVED_ENV_NAMES);
       }
-      const archive = await this.archive(release.appName, release.version);
+      const archive = await this.managedArchive(
+        await this.archive(release.appName, release.version),
+        release.manifest.template,
+      );
       const result = await this.adapters.platform.deploy(this.appId(app), archive, { databaseId: app.platform.databaseId });
       if (!result.ok) {
         const failure: Failure = { kind: "fail", ...deployFailure(result.reason, release.manifest), logs: result.logs };
@@ -280,7 +288,7 @@ export class Engine {
   /** 新版本不可用时:有上一个可用版本就用保存的代码包把它重新部署回去(只回滚代码,不动数据库) */
   private async restoreLive(app: AppRecord, failure: Failure): Promise<Failure> {
     if (!app.liveVersion) return failure;
-    const previous = await this.archive(app.name, app.liveVersion);
+    const previous = await this.managedArchive(await this.archive(app.name, app.liveVersion));
     const rollback = await this.adapters.platform.deploy(this.appId(app), previous, { databaseId: app.platform.databaseId });
     if (!rollback.ok) {
       return {
@@ -408,6 +416,27 @@ export class Engine {
     const zip = await this.adapters.archives.read(appName, version);
     if (!zip) throw new Error(`找不到应用 ${appName} 版本 ${version} 的代码包`);
     return { version, zip };
+  }
+
+  /**
+   * 部署前兜底强制托管 Dockerfile:即便磁盘里是历史遗留未过滤的旧代码包(如自动回滚旧版本),
+   * 或平台升级过模板 Dockerfile,交给部署平台的也始终是当前受信任的官方模板 Dockerfile。
+   */
+  private async managedArchive(archive: Archive, templateHint?: string): Promise<Archive> {
+    const { templates } = this.config;
+    if (!templates) return archive;
+    let template = templateHint;
+    if (!template) {
+      const yaml = readZipFile(archive.zip, "app.yaml")?.toString("utf8");
+      const parsed = yaml ? parseManifest(yaml) : undefined;
+      if (!parsed?.ok) throw new Error(`代码包版本 ${archive.version} 里的 app.yaml 无效,无法确定托管模板`);
+      template = parsed.manifest.template;
+    }
+    const dockerfile = await templates.dockerfile(template);
+    if (!dockerfile) throw new Error(`找不到模板 ${template} 的托管 Dockerfile`);
+    const safeZip = replaceZipDockerfile(archive.zip, dockerfile);
+    if (!safeZip) throw new Error(`无法为版本 ${archive.version} 注入托管 Dockerfile(代码包格式异常)`);
+    return { version: archive.version, zip: safeZip };
   }
 
   private appId(app: AppRecord): string {

@@ -16,6 +16,7 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 
 1. 和用户确认要做什么。先用 list_templates 看有哪些模板,用 get_template 取模板文件写到一个新目录里,在模板基础上改。
    不要从零开始写,也不要换别的语言或框架:模板之外的写法很可能发布不了。
+   Dockerfile 由 Ferry 按 app.yaml 的 template 强制托管(构建时始终使用平台内置模板的 Dockerfile,代码包里对 Dockerfile 的任何修改都会被忽略覆盖),不要修改 Dockerfile,并保持入口为 src/server.ts。
    要保存数据用 node-postgres;只是页面、文档、看板或纯浏览器里的小工具用 static(没有数据库)。
    页面上的事实信息不要编:人名、电话、邮箱、地址、银行账号、开票信息、制度规定、日期和金额等,要么向用户要,
    要么写成一眼能看出来的占位符(如【待填写:开户行】),不要写成看起来像真的示例。
@@ -59,7 +60,7 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
 0. 本机有 Node.js 时,先在应用目录里运行 `npm install && npx tsc --noEmit`,没有类型错误再发布。
 
 1. prepare_app(应用名):返回 version 和一次性的 uploadUrl(只能用一次,很快过期,过期了就重新调用 prepare_app)。
-2. 打包:进入应用目录,在里面打包,让 app.yaml 和 Dockerfile 在 zip 的根目录;排除 node_modules、.git、.env 等:
+2. 打包:进入应用目录,在里面打包,让 app.yaml 在 zip 的根目录;排除 node_modules、.git、.env 等:
    `cd 应用目录 && zip -r ../app.zip . -x 'node_modules/*' 'dist/*' '.git/*' '.env*'`
    没有 zip 命令时(如 Windows):`python -c "import shutil; shutil.make_archive('../app', 'zip', '.')"`(先删掉 node_modules 和 dist),
    或 PowerShell 的 `Compress-Archive -Path * -DestinationPath ..\app.zip`。
@@ -76,9 +77,9 @@ Ferry 把员工做的网页应用发布到公司服务器上,给同事使用。�
   ROLLED_BACK 表示线上已恢复为上一个版本,同事不受影响,可以从容修复。各类型的含义:
   - scan_failed:代码包里有密钥,logs 列出了文件和行号。按 hint 删掉密钥,不要用编码、拆分等写法绕过扫描。
   - build_failed:构建镜像时出错,看 logs 末尾。常见:TypeScript 类型错误(logs 里有 文件(行,列): error TS…)、
-    依赖名或版本号不存在、Dockerfile 里的文件路径不对。
+    依赖名或版本号不存在、删掉了模板必需的文件或目录(package.json、tsconfig.json、migrations 或 public)。不要试图改 Dockerfile(平台会覆盖)。
   - start_failed:构建成功,但应用一启动就退出。logs 是应用最后一次启动的输出,找退出前的报错。
-    常见:启动命令指向的文件不存在、import 了没装的依赖、启动时查询了还不存在的表
+    常见:源码入口不是 src/server.ts(导致没有生成 dist/server.js)、import 了没装的依赖、启动时查询了还不存在的表
     (迁移在启动之后才执行,把建表语句加进 migrations 解决不了,要让启动阶段不依赖这张表)。
   - migration_failed:迁移命令出错(数据库在迁移前已备份)。SQL 写错就改 SQL;找不到脚本就改 app.yaml 的 migrate。
     已经执行成功的迁移文件不要改,新的变更写成新文件。

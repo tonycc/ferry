@@ -35,7 +35,7 @@ export function createMcpServer(service: PublisherService, user: User): McpServe
     {
       description:
         "取一个模板的全部文件(path 和 content)。把它们原样写到一个新目录里,再在此基础上修改;" +
-        "先改 app.yaml 的 name 和 visibility。模板里的 README.md 说明了每个文件的作用。",
+        "先改 app.yaml 的 name 和 visibility。不要修改 Dockerfile(构建时由平台按模板强制托管)。模板里的 README.md 说明了每个文件的作用。",
       inputSchema: { name: z.string().describe("模板名,来自 list_templates") },
     },
     ({ name }) => respond(() => service.getTemplate(name)),

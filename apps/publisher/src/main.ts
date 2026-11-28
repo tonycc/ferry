@@ -163,9 +163,11 @@ if (instance.initialized && !instance.publicUrl && !config.AGENT_URL) {
 
 // 审计日志(任务 3.3):操作人的姓名在记录时从组织架构查好存下来
 const audit = new AuditLog(auditStore, directory);
+const templates = new TemplateLibrary();
 const engine = new Engine(store, adapters, {
   maxFixAttempts: config.MAX_FIX_ATTEMPTS,
   appsUrlScheme: instance.appsUrlScheme,
+  templates,
   secretBox,
   audit,
   alerts,
@@ -179,7 +181,7 @@ const service = new PublisherService(store, engine, adapters, {
   agentUrl,
   uploadTtlMs: config.UPLOAD_TTL_MINUTES * 60_000,
   archiveGraceMs: config.ARCHIVE_GRACE_HOURS * 3600_000,
-  templates: new TemplateLibrary(),
+  templates,
   secretBox,
   audit,
 });
