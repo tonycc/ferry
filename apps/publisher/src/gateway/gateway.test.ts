@@ -1,5 +1,5 @@
 import { parseManifest } from "@ferry/manifest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MemoryDirectory } from "../adapters/directory";
 import { createFakeAdapters } from "../adapters/fake";
 import { buildServer } from "../api/server";
@@ -36,6 +36,7 @@ async function setup() {
     uploadTtlMs: 60_000,
   });
   let now = new Date("2026-11-18T08:00:00Z");
+  const auth = new AuthService(new MemoryAuthStore(), directory, { now: () => now });
   const gateway = new Gateway(service, directory, {
     secret: "x".repeat(32),
     ferryUrl: FERRY,
@@ -43,8 +44,8 @@ async function setup() {
     appCookieTtlMs: 12 * 3600_000,
     ticketTtlMs: 60_000,
     now: () => now,
+    sessionEpoch: (userId) => auth.sessionEpoch(userId),
   });
-  const auth = new AuthService(new MemoryAuthStore(), directory, { now: () => now });
   const allowedOrigins = new Set([FERRY]);
   const identity = createIdentity({ auth, directory, adminIds: new Set(), devAuth: false, allowedOrigins });
   const app = buildServer(service, identity, {
@@ -122,7 +123,7 @@ async function setup() {
     return setCookie.split(";")[0]!;
   }
 
-  return { app, service, store, gateway, directory, authz, ferryLogin, visit, addApp, advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
+  return { app, auth, service, store, gateway, directory, authz, ferryLogin, visit, addApp, advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
 }
 
 describe("登录网关", () => {
@@ -288,5 +289,188 @@ describe("登录网关", () => {
     const cookie = await visit("A001");
     expect((await authz("gone.apps.test", "/", { cookie })).statusCode).toBe(404);
     expect((await authz("blocked.apps.test", "/", { cookie })).statusCode).toBe(403);
+  });
+
+  it("改密码或管理员重置密码后,已签发的网关 cookie 立即失效;旧代数 cookie 不会挡住后面的新 cookie", async () => {
+    const { app, auth, authz, addApp } = await setup();
+    await addApp("ledger");
+
+    // 首次登录并访问应用(时钟固定不推进,验证不依赖毫秒递增也能精确吊销)
+    const userId = (await auth.resetPassword(undefined, "dingtalk:alice")) && "dingtalk:alice";
+    const initial = await auth.resetPassword("dingtalk:admin", userId);
+    const loginRes = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      headers: { origin: FERRY },
+      payload: { account: "A001", password: initial },
+    });
+    const changed = await app.inject({
+      method: "POST",
+      url: "/auth/change-password",
+      headers: { origin: FERRY },
+      payload: { ticket: loginRes.json().ticket, newPassword: "own-password-1" },
+    });
+    const ferrySession1 = String(changed.headers["set-cookie"]).split(";")[0]!;
+
+    const issueAppCookie = async (sessionCookie: string) => {
+      const t = await app.inject({
+        method: "GET",
+        url: "/auth/app?host=ledger.apps.test&next=%2F",
+        headers: { cookie: sessionCookie },
+      });
+      expect(t.statusCode).toBe(302);
+      const cb = new URL(String(t.headers.location));
+      const back = await authz("ledger.apps.test", cb.pathname + cb.search);
+      return String(back.headers["set-cookie"]).split(";")[0]!;
+    };
+
+    const appCookie1 = await issueAppCookie(ferrySession1);
+    expect((await authz("ledger.apps.test", "/", { cookie: appCookie1 })).statusCode).toBe(200);
+
+    // 本人修改密码:同一毫秒内旧应用 cookie 立即 302 跳回登录
+    const pwdChanged = await app.inject({
+      method: "POST",
+      url: "/api/me/password",
+      headers: { cookie: ferrySession1, origin: FERRY },
+      payload: { currentPassword: "own-password-1", newPassword: "own-password-2" },
+    });
+    expect(pwdChanged.statusCode).toBe(200);
+    expect((await authz("ledger.apps.test", "/", { cookie: appCookie1 })).statusCode).toBe(302);
+
+    // 用新会话重新换取应用 cookie 后恢复访问;请求头里夹带旧代数 cookie 时仍能匹配到新 cookie
+    const ferrySession2 = String(pwdChanged.headers["set-cookie"]).split(";")[0]!;
+    const appCookie2 = await issueAppCookie(ferrySession2);
+    expect((await authz("ledger.apps.test", "/", { cookie: `${appCookie1}; ${appCookie2}` })).statusCode).toBe(200);
+
+    // 不同应用的网关 cookie 里的代数标识按域名独立派生,应用之间不能横向关联
+    await addApp("crm");
+    const crmCookie = await issueAppCookie(ferrySession2);
+    // (上面默认请求 ledger.apps.test,再单独签一张 crm.apps.test 的对比 v 字段)
+    const crmTicket = await app.inject({
+      method: "GET",
+      url: "/auth/app?host=crm.apps.test&next=%2F",
+      headers: { cookie: ferrySession2 },
+    });
+    const crmCb = new URL(String(crmTicket.headers.location));
+    const crmSet = String((await authz("crm.apps.test", crmCb.pathname + crmCb.search)).headers["set-cookie"]).split(";")[0]!;
+    const decodePayload = (c: string) => JSON.parse(Buffer.from(c.split("=")[1]!.split(".")[0]!, "base64url").toString()) as { v: string };
+    expect(decodePayload(crmCookie).v).not.toBe(decodePayload(crmSet).v);
+
+    // 改密期间若并发触发 reloadPasswordEpochs,旧数据库快照绝不能覆盖刚落库的新代数
+    let releaseList!: () => void;
+    const listGate = new Promise<void>((r) => (releaseList = r));
+    const authStore = (auth as unknown as { store: { listPasswords: () => Promise<unknown[]> } }).store;
+    const rawList = authStore.listPasswords.bind(authStore);
+    let intercepted = false;
+    authStore.listPasswords = async () => {
+      const snapshot = await rawList();
+      if (!intercepted) {
+        intercepted = true;
+        await listGate;
+      }
+      return snapshot;
+    };
+    const reloading = auth.reloadPasswordEpochs();
+    const pwdChanged2 = await app.inject({
+      method: "POST",
+      url: "/api/me/password",
+      headers: { cookie: ferrySession2, origin: FERRY },
+      payload: { currentPassword: "own-password-2", newPassword: "own-password-3" },
+    });
+    expect(pwdChanged2.statusCode).toBe(200);
+    releaseList();
+    await reloading;
+    // 旧的 appCookie2 必须依然是失效状态(不能被 reload 的旧快照复活)
+    expect((await authz("ledger.apps.test", "/", { cookie: appCookie2 })).statusCode).toBe(302);
+
+    // 管理员重置密码(进入 mustChange 状态):应用 cookie 失效;若残留旧 ferry_session 请求 /auth/app,跳 /login 而非自跳 /auth/app
+    const ferrySession3 = String(pwdChanged2.headers["set-cookie"]).split(";")[0]!;
+    const appCookie3 = await issueAppCookie(ferrySession3);
+    expect((await authz("ledger.apps.test", "/", { cookie: appCookie3 })).statusCode).toBe(200);
+    await auth.resetPassword("dingtalk:admin", "dingtalk:alice");
+    expect((await authz("ledger.apps.test", "/", { cookie: appCookie3 })).statusCode).toBe(302);
+
+    // 模拟数据库异常残留了一个会话但用户处于无有效正式密码状态:访问 /auth/app 必须跳 /login,绝不能跳回 /auth/app 死循环
+    const rawAuthStore = (auth as unknown as { store: import("../auth/store").AuthStore }).store;
+    const { createHash } = await import("node:crypto");
+    const orphanToken = "orphan-session-token";
+    await rawAuthStore.saveSession({
+      tokenHash: createHash("sha256").update(orphanToken).digest("hex"),
+      userId: "dingtalk:alice",
+      createdAt: new Date("2026-11-18T08:00:00Z"),
+      expiresAt: new Date("2026-11-25T08:00:00Z"),
+    });
+    const noLoop = await app.inject({
+      method: "GET",
+      url: "/auth/app?host=ledger.apps.test&next=%2F",
+      headers: { cookie: `ferry_session=${orphanToken}` },
+    });
+    expect(noLoop.statusCode).toBe(302);
+    expect(String(noLoop.headers.location)).toMatch(/^\/login\?next=/);
+  });
+
+  it("/authz 稳态请求零存储查询,并发慢读不会覆盖新写入的停用状态,访问不存在应用不会冲刷缓存", async () => {
+    const { authz, addApp, visit, service, store, gateway } = await setup();
+    await addApp("ledger");
+    const cookie = await visit("A001");
+    const carolCookie = await visit("B001");
+    const health = gateway.healthToken("ledger.apps.test");
+
+    // 预热一次应用路由缓存和健康检查缓存
+    expect((await authz("ledger.apps.test", "/", { cookie })).statusCode).toBe(200);
+    expect((await authz("ledger.apps.test", "/healthz", { "x-ferry-health": health })).statusCode).toBe(200);
+
+    const spies = [
+      vi.spyOn(store, "listApps"),
+      vi.spyOn(store, "getAppByHost"),
+      vi.spyOn(store, "getActiveHealthchecks"),
+      vi.spyOn(store, "listReleases"),
+    ];
+    for (let i = 0; i < 10; i++) {
+      expect((await authz("ledger.apps.test", "/assets/app.js", { cookie })).statusCode).toBe(200);
+      expect((await authz("ledger.apps.test", "/healthz", { "x-ferry-health": health })).statusCode).toBe(200);
+      expect((await authz("missing.apps.test", "/", { cookie })).statusCode).toBe(404);
+    }
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+
+    // 对随机不存在的应用调用下线接口失败时,不能使整表网关缓存失效
+    const alice = { id: "dingtalk:alice", departments: ["dingtalk:finance"], isAdmin: true };
+    await expect(service.unpublish(alice, "ghost-app")).rejects.toThrow("不存在");
+    expect((await authz("ledger.apps.test", "/assets/app.js", { cookie })).statusCode).toBe(200);
+    expect(spies[0]).not.toHaveBeenCalled();
+
+    // 修改可见范围为全公司:Carol 立即可以访问,且只按单域名重读一次
+    expect((await authz("ledger.apps.test", "/", { cookie: carolCookie })).statusCode).toBe(403);
+    await service.setVisibility(alice, "ledger", "company");
+    expect((await authz("ledger.apps.test", "/", { cookie: carolCookie })).statusCode).toBe(200);
+    expect(spies[1]).toHaveBeenCalledTimes(1);
+    expect(spies[0]).not.toHaveBeenCalled();
+
+    // 模拟单域名刷新 getAppByHost 慢返回期间管理员紧急停用应用:旧快照绝不能把停用后的应用复活
+    await service.setVisibility(alice, "ledger", "department");
+    const rawGetByHost = store.getAppByHost.bind(store);
+    let releaseSlowRead!: () => void;
+    const slowReadGate = new Promise<void>((r) => (releaseSlowRead = r));
+    let enteredSlowRead!: () => void;
+    const slowReadStarted = new Promise<void>((r) => (enteredSlowRead = r));
+    let delayOnce = true;
+    store.getAppByHost = async (h) => {
+      const snap = await rawGetByHost(h);
+      if (delayOnce) {
+        delayOnce = false;
+        enteredSlowRead();
+        await slowReadGate;
+      }
+      return snap;
+    };
+    const pendingAuthz = authz("ledger.apps.test", "/", { cookie });
+    await slowReadStarted;
+    await service.disableApp(alice, "ledger", "紧急停用");
+    releaseSlowRead();
+    expect((await pendingAuthz).statusCode).toBe(403);
+    expect((await authz("ledger.apps.test", "/", { cookie })).statusCode).toBe(403);
+
+    await service.unpublish(alice, "ledger");
+    expect((await authz("ledger.apps.test", "/", { cookie })).statusCode).toBe(404);
   });
 });

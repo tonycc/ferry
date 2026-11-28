@@ -201,6 +201,46 @@ describe("agent 接入", () => {
     expect((await service.status(alice, rel.releaseId)).state).toBe("LIVE");
     expect(deployedZip && readZipFile(deployedZip, "Dockerfile")?.toString("utf8")).toBe(expectedDockerfile);
   });
+
+  it("并发调用 prepareApp、publish 与 rollback 时严格互斥且不会突破在线应用配额", async () => {
+    const { service } = setup();
+
+    // 同一负责人并发 prepareApp 8 个不同应用(上限 maxAppsPerUser = 5):精确只有 5 个成功
+    const prepared = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, i) => service.prepareApp(alice, `tool-${i}`)),
+    );
+    expect(prepared.filter((r) => r.status === "fulfilled")).toHaveLength(5);
+    expect(
+      prepared.filter((r) => r.status === "rejected" && String(r.reason.message).includes("最多 5 个")),
+    ).toHaveLength(3);
+
+    // 对其中一个应用先跑通 v1 和 v2 两次上线,再并发触发第 3 次 publish 和 rollback:精确只有 1 个进入执行
+    const uploadVersion = async (name: string) => {
+      const p = await service.prepareApp(alice, name);
+      const zip = makeZip({ "app.yaml": `name: ${name}\ntemplate: node-postgres\n` });
+      await service.receiveUpload(p.uploadUrl.split("/").pop()!, zip);
+      return p.version;
+    };
+    const v1 = await uploadVersion("tool-0");
+    const r1 = await service.publish(alice, { name: "tool-0", version: v1 });
+    await service.settle(r1.releaseId);
+    const v2 = await uploadVersion("tool-0");
+    const r2 = await service.publish(alice, { name: "tool-0", version: v2 });
+    await service.settle(r2.releaseId);
+
+    const v3 = await uploadVersion("tool-0");
+    const v4 = await uploadVersion("tool-0");
+    const race = await Promise.allSettled([
+      service.publish(alice, { name: "tool-0", version: v3 }),
+      service.publish(alice, { name: "tool-0", version: v4 }),
+      service.rollback(alice, "tool-0"),
+    ]);
+    const succeeded = race.filter((r) => r.status === "fulfilled");
+    const conflicts = race.filter((r) => r.status === "rejected" && String(r.reason.message).includes("还在进行中"));
+    expect(succeeded).toHaveLength(1);
+    expect(conflicts).toHaveLength(2);
+    await service.settle(succeeded[0]!.value.releaseId);
+  });
 });
 
 describe("代码包结构检查", () => {

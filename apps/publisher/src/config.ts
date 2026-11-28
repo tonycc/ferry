@@ -29,7 +29,10 @@ const envSchema = z.object({
    */
   DATABASE_URL: z.string().optional(),
   /** 应用域名后缀:应用地址为 <APPS_URL_SCHEME>://<name>.<APPS_DOMAIN>。本机开发用 apps.localhost */
-  APPS_DOMAIN: z.string().default("apps.corp.example"),
+  APPS_DOMAIN: z
+    .string()
+    .default("apps.corp.example")
+    .transform((v) => v.trim().toLowerCase().replace(/^\.+|\.+$/g, "")),
   /** 应用地址的协议。本机开发没有证书,用 http */
   APPS_URL_SCHEME: z.enum(["http", "https"]).default("https"),
   /**

@@ -217,11 +217,16 @@ docker compose logs ferry
 - `curl -I https://ferry.公司域名/authz` 应该是 404(不对外开放)。
 - 检查完在控制台下线测试应用,再由管理员在“管理全部应用”里删除。
 
-## 防火墙(未验证)
+## 防火墙(上线前必检)
 
-网络隔离后,员工应用还能经宿主机的地址访问 Dokploy 的 3000 端口(见 `docs/dokploy-findings.md`“经宿主机绕过”)。
-`firewall.example.sh` 是在 Docker 的 `DOCKER-USER` 链上拦截的示例,**没有在真实服务器上验证过**,上线前要按实际网络改好、实测:
-在一个员工应用的容器里访问 `http://<宿主机地址>:3000` 应该连不上,管理员从管理网段仍能打开 Dokploy。
+网络隔离后,员工应用虽然连不到其他应用容器和 `dokploy-network`,但默认仍能经宿主机地址访问 Dokploy 的 3000 端口(见 `docs/dokploy-findings.md`“经宿主机绕过”),也能经宿主机网卡访问企业内网其他服务器或云元数据端点。
+
+`firewall.example.sh` 通过临时链原子切换的 `FERRY-ISOLATION`、`FERRY-HOST-INPUT` 与 `mangle FERRY-PRE` 子链同时在 `iptables` 和 `ip6tables` 上做了三层拦截(可重复运行,早于 Docker 启动也可预建 `DOCKER-USER`):
+- 禁止容器网桥(`docker0`、`br-*`、`docker_gwbridge`)直连宿主机 SSH(`:22`)、Dokploy(`:3000`)或经宿主机 IPv4/IPv6 地址 DNAT 绕过访问 `:3000`;
+- 禁止容器访问云元数据与链路本地地址(`169.254.0.0/16`、阿里云 `100.100.100.200`、`fe80::/10`、`fd00:ec2::254`);
+- 默认禁止容器主动向企业私网网段(`10/8`、`172.16/12`、`192.168/16`、`100.64/10`、`fc00::/7`)发起新连接(放行已建立连接的回包,并仅对 `/etc/resolv.conf` 中的上游 DNS 服务器地址放行 53 端口)。若企业使用内网 npm/镜像仓库代理,或将 `ferry.公司域名` 解析在内网前置 SLB/WAF 的私网 VIP 上(设置向导会从容器自检该地址),运行时需加入白名单:`sudo ALLOW_EGRESS_V4_CIDRS="10.10.2.10/32,10.10.0.100/32" ./firewall.example.sh`。
+
+**上线前要在真实服务器上逐项实测**:员工应用容器里访问宿主机 `:3000`、云元数据和内网非白名单机器都应被拒绝,已上线应用和管理员管理网段访问 Dokploy 照常可用。
 
 ## 日常运维
 

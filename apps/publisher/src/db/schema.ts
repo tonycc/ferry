@@ -50,7 +50,13 @@ export const releases = pgTable(
     history: jsonb("history").notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("releases_app_name_idx").on(t.appName, t.createdAt, t.seq)],
+  (t) => [
+    index("releases_app_name_idx").on(t.appName, t.createdAt, t.seq),
+    // 数据库兜底互斥:同一应用最多只能有一条未结束的发布或回滚单
+    uniqueIndex("releases_one_active_per_app_idx")
+      .on(t.appName)
+      .where(sql`${t.state} NOT IN ('LIVE', 'FAILED_FIXABLE', 'ROLLED_BACK', 'FAILED')`),
+  ],
 );
 
 /** 一次性上传凭据;代码包本身存在文件存储里 */

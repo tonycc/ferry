@@ -80,6 +80,25 @@ export interface SecretRecord {
   updatedBy: string;
 }
 
+export type PrepareAppResult =
+  | { ok: true; app: AppRecord; created: boolean }
+  | { ok: false; reason: "conflict" | "disabled" | "quota_exceeded" };
+
+export type StartReleaseResult =
+  | { ok: true; app: AppRecord; revived: boolean }
+  | {
+      ok: false;
+      reason: "not_found" | "forbidden_owner" | "disabled" | "not_live" | "stale_live" | "in_progress" | "quota_exceeded";
+    };
+
+export type MarkUnpublishedResult =
+  | { ok: true; app: AppRecord; alreadyDone: boolean; firstAttempt: boolean }
+  | { ok: false; reason: "not_found" | "in_progress" };
+
+export type StoreMutation =
+  | { kind: "app"; appName: string; host?: string }
+  | { kind: "release"; appName: string };
+
 export interface Store {
   getApp(name: string): Promise<AppRecord | undefined>;
   getAppByHost(host: string): Promise<AppRecord | undefined>;
@@ -88,21 +107,46 @@ export interface Store {
   /** 新建应用;应用名已被占用时不写入并返回 false */
   createApp(app: AppRecord): Promise<boolean>;
   /**
+   * 原子地校验负责人在线应用配额并占用(或复用自己的)应用名,消除并发 prepare_app 超配额竞态。
+   */
+  prepareAppSlot(app: AppRecord, maxActiveByOwner: number): Promise<PrepareAppResult>;
+  /**
    * 更新应用的部署信息(platform、liveVersion、visibility、unpublishedAt)。
-   * 不改停用状态:发布过程中管理员可能同时停用应用,用旧数据整行覆盖会把停用标记冲掉。
+   * 不改停用状态;当数据库里 visibilityPinned 已为 true 时也不覆盖 visibility,防止后台旧快照冲掉期间修改的可见范围。
    */
   saveApp(app: AppRecord): Promise<void>;
+  /** 单独修改应用的可见范围(负责人或首次上线按 app.yaml 设置时) */
+  setAppVisibility(name: string, visibility: Visibility, pinned: boolean): Promise<void>;
   /** 设置或清除停用状态 */
   setAppDisabled(name: string, disabled: AppRecord["disabled"]): Promise<void>;
+  /**
+   * 原子地检查没有进行中的发布单并将应用标记为已下线,防止下线与发布并发交叉。
+   */
+  markAppUnpublished(appName: string, ownerId: string, at: Date): Promise<MarkUnpublishedResult>;
   /** 删除应用和它的全部发布记录、上传凭据、密钥(管理员删除应用时);之后应用名可以被重新使用 */
   deleteApp(name: string): Promise<void>;
 
   getRelease(id: string): Promise<ReleaseRecord | undefined>;
   /** 按创建时间从旧到新 */
   listReleases(appName: string): Promise<ReleaseRecord[]>;
+  /**
+   * 当前允许通过网关健康检查的路径集合(正在执行的发布单 + 最近一次 LIVE 发布单的健康检查路径;
+   * 忽略已失败/已回滚的记录,避免失败发布单改了 healthcheck 导致线上旧版本健康检查 403)。
+   */
+  getActiveHealthchecks(appName: string): Promise<string[]>;
   saveRelease(release: ReleaseRecord): Promise<void>;
+  /**
+   * 原子地校验应用状态、无未结束发布单、(恢复已下线应用时)配额未满并写入新发布单。
+   */
+  startRelease(
+    release: ReleaseRecord,
+    options?: { maxActiveByOwner?: number; expectedLiveVersion?: string },
+  ): Promise<StartReleaseResult>;
   /** 还没有结束的发布,按创建时间从旧到新(服务重启后继续执行用) */
   listUnfinishedReleases(): Promise<ReleaseRecord[]>;
+
+  /** 订阅应用或发布单的变更通知(供网关内存缓存失效用) */
+  subscribe?(listener: (mutation: StoreMutation) => void): () => void;
 
   saveUpload(ticket: UploadTicket): Promise<void>;
   getUploadByTokenHash(tokenHash: string): Promise<UploadTicket | undefined>;
@@ -132,13 +176,42 @@ export class MemoryStore implements Store {
   private releases = new Map<string, ReleaseRecord>();
   private uploads = new Map<string, UploadTicket>();
   private secrets = new Map<string, SecretRecord>();
+  private locks = new Map<string, Promise<void>>();
+  private listeners = new Set<(mutation: StoreMutation) => void>();
+
+  subscribe(listener: (mutation: StoreMutation) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit(mutation: StoreMutation): void {
+    for (const listener of this.listeners) listener(mutation);
+  }
+
+  private async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prev.then(() => gate);
+    this.locks.set(key, tail);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.locks.get(key) === tail) this.locks.delete(key);
+    }
+  }
 
   async getApp(name: string) {
     return copy(this.apps.get(name));
   }
 
   async getAppByHost(host: string) {
-    return copy([...this.apps.values()].find((app) => app.host === host));
+    const target = host.toLowerCase();
+    return copy([...this.apps.values()].find((app) => app.host.toLowerCase() === target));
   }
 
   async listAppsByOwner(ownerId: string) {
@@ -150,28 +223,121 @@ export class MemoryStore implements Store {
   }
 
   async createApp(app: AppRecord) {
-    if (this.apps.has(app.name)) return false;
-    this.apps.set(app.name, copy(app));
-    return true;
+    const normalized = { ...copy(app), host: app.host.toLowerCase() };
+    const created = await this.withLock(`app:${normalized.name}`, async () => {
+      if (this.apps.has(normalized.name)) return false;
+      if ([...this.apps.values()].some((a) => a.host.toLowerCase() === normalized.host)) return false;
+      this.apps.set(normalized.name, normalized);
+      return true;
+    });
+    if (created) this.emit({ kind: "app", appName: normalized.name, host: normalized.host });
+    return created;
+  }
+
+  async prepareAppSlot(candidate: AppRecord, maxActiveByOwner: number): Promise<PrepareAppResult> {
+    const normalizedHost = candidate.host.toLowerCase();
+    const result = await this.withLock(`owner:${candidate.ownerId}`, () =>
+      this.withLock(`app:${candidate.name}`, async (): Promise<PrepareAppResult> => {
+        const existing = this.apps.get(candidate.name);
+        if (existing && existing.ownerId !== candidate.ownerId) return { ok: false, reason: "conflict" };
+        if (!existing && [...this.apps.values()].some((a) => a.host.toLowerCase() === normalizedHost)) {
+          return { ok: false, reason: "conflict" };
+        }
+        if (existing?.disabled) return { ok: false, reason: "disabled" };
+        if (!existing || existing.unpublishedAt !== undefined) {
+          const active = [...this.apps.values()].filter((a) => a.ownerId === candidate.ownerId && !a.unpublishedAt).length;
+          if (active >= maxActiveByOwner) return { ok: false, reason: "quota_exceeded" };
+        }
+        if (existing) return { ok: true, app: copy(existing), created: false };
+        const stored = { ...copy(candidate), host: normalizedHost };
+        this.apps.set(stored.name, stored);
+        return { ok: true, app: copy(stored), created: true };
+      }),
+    );
+    if (result.ok && result.created) {
+      this.emit({ kind: "app", appName: result.app.name, host: result.app.host });
+    }
+    return result;
   }
 
   async saveApp(app: AppRecord) {
-    const current = this.apps.get(app.name);
-    if (!current) throw new Error(`应用 ${app.name} 不存在`);
-    this.apps.set(app.name, { ...copy(app), disabled: current.disabled });
+    const host = await this.withLock(`app:${app.name}`, async () => {
+      const current = this.apps.get(app.name);
+      if (!current) throw new Error(`应用 ${app.name} 不存在`);
+      const next = {
+        ...copy(app),
+        host: current.host,
+        visibility: current.visibilityPinned ? current.visibility : app.visibility,
+        visibilityPinned: current.visibilityPinned || app.visibilityPinned ? true : undefined,
+        disabled: current.disabled,
+      };
+      this.apps.set(app.name, next);
+      return current.host;
+    });
+    this.emit({ kind: "app", appName: app.name, host });
+  }
+
+  async setAppVisibility(name: string, visibility: Visibility, pinned: boolean) {
+    const host = await this.withLock(`app:${name}`, async () => {
+      const current = this.apps.get(name);
+      if (!current) throw new Error(`应用 ${name} 不存在`);
+      current.visibility = visibility;
+      current.visibilityPinned = pinned ? true : undefined;
+      return current.host;
+    });
+    this.emit({ kind: "app", appName: name, host });
+  }
+
+  async markAppUnpublished(appName: string, ownerId: string, at: Date): Promise<MarkUnpublishedResult> {
+    const result = await this.withLock(`app:${appName}`, async (): Promise<MarkUnpublishedResult> => {
+      const current = this.apps.get(appName);
+      if (!current || current.ownerId !== ownerId) return { ok: false, reason: "not_found" };
+      if (current.unpublishedAt && !current.platform.appId) {
+        return { ok: true, app: copy(current), alreadyDone: true, firstAttempt: false };
+      }
+      for (const existing of this.releases.values()) {
+        if (existing.appName === appName && !isTerminal(existing.state)) {
+          return { ok: false, reason: "in_progress" };
+        }
+      }
+      const firstAttempt = !current.unpublishedAt;
+      current.unpublishedAt = new Date(at.getTime());
+      return { ok: true, app: copy(current), alreadyDone: false, firstAttempt };
+    });
+    if (result.ok && !result.alreadyDone) {
+      this.emit({ kind: "app", appName, host: result.app.host });
+    }
+    return result;
   }
 
   async deleteApp(name: string) {
-    this.apps.delete(name);
-    for (const [id, release] of this.releases) if (release.appName === name) this.releases.delete(id);
-    for (const [key, upload] of this.uploads) if (upload.appName === name) this.uploads.delete(key);
-    for (const [key, secret] of this.secrets) if (secret.appName === name) this.secrets.delete(key);
+    const deletedHost = await this.withLock(`app:${name}`, async () => {
+      for (const existing of this.releases.values()) {
+        if (existing.appName === name && !isTerminal(existing.state)) {
+          throw new Error(`应用 ${name} 仍有未结束的发布单,不能删除`);
+        }
+      }
+      const host = this.apps.get(name)?.host;
+      const existed = this.apps.delete(name);
+      for (const [id, release] of this.releases) if (release.appName === name) this.releases.delete(id);
+      for (const [key, upload] of this.uploads) if (upload.appName === name) this.uploads.delete(key);
+      for (const [key, secret] of this.secrets) if (secret.appName === name) this.secrets.delete(key);
+      return existed ? host : undefined;
+    });
+    if (deletedHost !== undefined) {
+      this.emit({ kind: "app", appName: name, host: deletedHost });
+      this.emit({ kind: "release", appName: name });
+    }
   }
 
   async setAppDisabled(name: string, disabled: AppRecord["disabled"]) {
-    const current = this.apps.get(name);
-    if (!current) throw new Error(`应用 ${name} 不存在`);
-    current.disabled = copy(disabled);
+    const host = await this.withLock(`app:${name}`, async () => {
+      const current = this.apps.get(name);
+      if (!current) throw new Error(`应用 ${name} 不存在`);
+      current.disabled = copy(disabled);
+      return current.host;
+    });
+    this.emit({ kind: "app", appName: name, host });
   }
 
   async getRelease(id: string) {
@@ -183,8 +349,74 @@ export class MemoryStore implements Store {
     return [...this.releases.values()].filter((release) => release.appName === appName).map(copy);
   }
 
+  async getActiveHealthchecks(appName: string) {
+    const paths = new Set<string>();
+    let tookLive = false;
+    const ordered = [...this.releases.values()].filter((r) => r.appName === appName).reverse();
+    for (const r of ordered) {
+      if (r.state === "LIVE") {
+        if (!tookLive) {
+          paths.add(r.manifest.healthcheck);
+          tookLive = true;
+        }
+      } else if (!isTerminal(r.state)) {
+        paths.add(r.manifest.healthcheck);
+      }
+    }
+    return [...paths];
+  }
+
   async saveRelease(release: ReleaseRecord) {
-    this.releases.set(release.id, copy(release));
+    await this.withLock(`app:${release.appName}`, async () => {
+      if (!isTerminal(release.state)) {
+        for (const existing of this.releases.values()) {
+          if (existing.appName === release.appName && existing.id !== release.id && !isTerminal(existing.state)) {
+            throw new Error(`应用 ${release.appName} 已有未结束的发布单`);
+          }
+        }
+      }
+      this.releases.set(release.id, copy(release));
+    });
+    this.emit({ kind: "release", appName: release.appName });
+  }
+
+  async startRelease(
+    release: ReleaseRecord,
+    options: { maxActiveByOwner?: number; expectedLiveVersion?: string } = {},
+  ): Promise<StartReleaseResult> {
+    const result = await this.withLock(`owner:${release.ownerId}`, () =>
+      this.withLock(`app:${release.appName}`, async (): Promise<StartReleaseResult> => {
+        const current = this.apps.get(release.appName);
+        if (!current) return { ok: false, reason: "not_found" };
+        if (current.ownerId !== release.ownerId) return { ok: false, reason: "forbidden_owner" };
+        if (current.disabled) return { ok: false, reason: "disabled" };
+        if (options.expectedLiveVersion !== undefined) {
+          if (current.unpublishedAt || !current.liveVersion) return { ok: false, reason: "not_live" };
+          if (current.liveVersion !== options.expectedLiveVersion) return { ok: false, reason: "stale_live" };
+        }
+        for (const existing of this.releases.values()) {
+          if (existing.appName === release.appName && !isTerminal(existing.state)) {
+            return { ok: false, reason: "in_progress" };
+          }
+        }
+        let revived = false;
+        if (current.unpublishedAt !== undefined && options.expectedLiveVersion === undefined) {
+          if (options.maxActiveByOwner !== undefined) {
+            const active = [...this.apps.values()].filter((a) => a.ownerId === current.ownerId && !a.unpublishedAt).length;
+            if (active >= options.maxActiveByOwner) return { ok: false, reason: "quota_exceeded" };
+          }
+          current.unpublishedAt = undefined;
+          revived = true;
+        }
+        this.releases.set(release.id, copy(release));
+        return { ok: true, app: copy(current), revived };
+      }),
+    );
+    if (result.ok) {
+      if (result.revived) this.emit({ kind: "app", appName: release.appName, host: result.app.host });
+      this.emit({ kind: "release", appName: release.appName });
+    }
+    return result;
   }
 
   async listUnfinishedReleases() {
