@@ -153,12 +153,39 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       expect(await store.getRelease("00000000-0000-4000-8000-000000000099")).toBeUndefined();
     });
 
-    it("创建时间相同时,按写入顺序列出", async () => {
+    it("创建时间相同时,按写入顺序列出;listReleaseSummaries 按从新到旧分页并剥离 error.logs", async () => {
       const store = storeCase.create();
       await store.createApp(newApp());
       const ids = [3, 1, 2].map((n) => `00000000-0000-4000-8000-00000000000${n}`);
-      for (const id of ids) await store.saveRelease(newRelease({ id, state: "LIVE" }));
+      for (const id of ids) {
+        await store.saveRelease(
+          newRelease({
+            id,
+            state: "FAILED_FIXABLE",
+            error: { stage: "BUILDING", type: "build_failed", message: "构建失败", logs: "huge-log-output", hint: "修" },
+          }),
+        );
+      }
       expect((await store.listReleases("ledger")).map((r) => r.id)).toEqual(ids);
+
+      const top2 = await store.listReleaseSummaries("ledger", 2);
+      expect(top2.map((r) => r.id)).toEqual([ids[2], ids[1]]);
+      expect(top2[0]?.error).toEqual({ stage: "BUILDING", type: "build_failed", message: "构建失败", hint: "修" });
+      expect(top2[0]?.error?.logs).toBeUndefined();
+      expect(await store.listReleaseSummaries("ledger", Number.NaN)).toEqual([]);
+      expect(await store.listReleaseSummaries("ledger", 0)).toEqual([]);
+      expect((await store.listReleaseSummaries("ledger", 1.9)).map((r) => r.id)).toEqual([ids[2]]);
+      // 按单条 ID 查询时完整的构建日志仍在
+      expect((await store.getRelease(ids[2]!))?.error?.logs).toBe("huge-log-output");
+
+      // 乱序 createdAt 写入时,MemoryStore 与 PostgresStore 均严格按 (createdAt, seq) 排列
+      await store.createApp(newApp({ name: "out-of-order", host: "ooo.apps.test" }));
+      const laterId = "00000000-0000-4000-8000-000000000091";
+      const earlierId = "00000000-0000-4000-8000-000000000092";
+      await store.saveRelease(newRelease({ id: laterId, appName: "out-of-order", state: "LIVE", createdAt: at("2026-11-16T08:10:00.000Z") }));
+      await store.saveRelease(newRelease({ id: earlierId, appName: "out-of-order", state: "LIVE", createdAt: at("2026-11-16T08:02:00.000Z") }));
+      expect((await store.listReleases("out-of-order")).map((r) => r.id)).toEqual([earlierId, laterId]);
+      expect((await store.listReleaseSummaries("out-of-order")).map((r) => r.id)).toEqual([laterId, earlierId]);
     });
 
     it("同一应用不能同时有两个未结束的发布单;结束后可以新建,不同应用互不影响", async () => {
@@ -338,6 +365,26 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       await store.saveUpload(received);
       expect(await store.getUpload("ledger", "v1")).toEqual(received);
       expect(await store.getUpload("ledger", "v2")).toBeUndefined();
+
+      // 清理过期且未上传的凭据:已上传过代码包的(哪怕上传地址本身已过 15 分钟)和未过期的凭据都保留
+      await store.saveUpload({
+        tokenHash: "b".repeat(64),
+        appName: "ledger",
+        ownerId: "dingtalk:alice",
+        version: "v-expired-unused",
+        expiresAt: at("2026-11-16T08:10:00.000Z"),
+      });
+      await store.saveUpload({
+        tokenHash: "c".repeat(64),
+        appName: "ledger",
+        ownerId: "dingtalk:alice",
+        version: "v-fresh-unused",
+        expiresAt: at("2026-11-16T08:30:00.000Z"),
+      });
+      expect(await store.deleteExpiredUploads(at("2026-11-16T08:20:00.000Z"))).toBe(1);
+      expect(await store.getUpload("ledger", "v-expired-unused")).toBeUndefined();
+      expect(await store.getUpload("ledger", "v-fresh-unused")).toBeDefined();
+      expect(await store.getUpload("ledger", "v1")).toBeDefined();
     });
   });
 });

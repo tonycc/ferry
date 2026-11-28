@@ -425,6 +425,7 @@ describe("登录网关", () => {
       vi.spyOn(store, "getAppByHost"),
       vi.spyOn(store, "getActiveHealthchecks"),
       vi.spyOn(store, "listReleases"),
+      vi.spyOn(store, "listReleaseSummaries"),
     ];
     for (let i = 0; i < 10; i++) {
       expect((await authz("ledger.apps.test", "/assets/app.js", { cookie })).statusCode).toBe(200);

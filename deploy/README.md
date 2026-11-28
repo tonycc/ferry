@@ -77,9 +77,7 @@
 ### 1. 准备
 
 - 一台 Linux 服务器(建议 4 核 8G 以上)。服务器的 80、443、3000 端口要空着(Traefik 和 Dokploy 用)。
-- 安装 Dokploy:用 root 运行官方安装脚本 `curl -sSL https://dokploy.com/install.sh | sh`。没有 Docker 时脚本会先装好 Docker
-  并初始化 Docker Swarm,不用单独装;已经装过 Docker 的,先升级到官方最新版。本机用的是 Dokploy v0.31.3,
-  脚本怎么固定版本以 Dokploy 官方文档为准。(本机用的 `infra/dokploy/setup-local.sh` 是给 Mac 的,服务器上不用它。)
+- 安装 Dokploy:用 root 运行官方安装脚本并**固定已验证的版本 v0.31.3** `curl -sSL https://dokploy.com/install.sh | DOKPLOY_VERSION=v0.31.3 sh`(没有 Docker 时脚本会先装好 Docker 并初始化 Docker Swarm;已装过 Docker 的先升级到官方稳定版)。**不要将生产 Dokploy 设为 `:latest` 自动升级**:Ferry 适配器深度依赖已回归验证的内部路径、Swarm 容器命名及临时定时任务语义,升级 Dokploy 前须先在测试环境跑通 `pnpm test:dokploy`。(本机用的 `infra/dokploy/setup-local.sh` 是给 Mac 的,服务器上不用它。)
 - 装好后用浏览器打开 `http://服务器IP:3000`,建 Dokploy 的管理员账号,再在个人设置里生成 API key(第 3 步要填)。
 - 内网 DNS:`*.apps.公司域名` 和 `ferry.公司域名` 都解析到这台服务器(P2)。Ferry 的域名不要放在应用域名下面。
 - 证书(P3):要同时覆盖 `ferry.公司域名` 和 `*.apps.公司域名`(一张多域名证书,或者两张)。内网用不了 Traefik 自动申请的证书

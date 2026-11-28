@@ -79,6 +79,11 @@ export interface DeployPlatform {
   ensureGatewayNetworks(appNames: string[]): Promise<{ networks: number; warnings: string[] }>;
   /** 删除应用自己的网络(管理员删除应用时,应用和数据库删掉之后)。已经删掉的不报错 */
   deleteAppNetwork(name: string): Promise<void>;
+  /**
+   * 回收 Dokploy 服务器级残留的一次性定时任务(进程重启或网络闪断没来得及在 finally 删除的 ferry-backup-* / ferry-command-logs-*):
+   * 跳过本进程正在执行的任务与创建时间不足 minAgeMs 的近期任务,返回清理掉的任务数。
+   */
+  cleanupServerSchedules(options?: { minAgeMs?: number }): Promise<number>;
 }
 
 /** 代码包存储:每次上传保存一份,部署和回滚时取回,按保留规则清理 */

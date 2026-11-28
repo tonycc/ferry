@@ -135,6 +135,11 @@ export class SetupService {
   get sessionMaxAgeSeconds(): number {
     return Math.floor(this.sessionTtlMs / 1000);
   }
+
+  /** 清理已过期的设置向导会话(后台定时调用) */
+  async pruneExpiredSessions(): Promise<void> {
+    await this.store.deleteExpiredSessions(this.now());
+  }
 }
 
 function hashToken(token: string): string {

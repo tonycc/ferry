@@ -1,0 +1,2 @@
+CREATE INDEX "sessions_expires_at_idx" ON "sessions" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "uploads_pending_expires_idx" ON "uploads" USING btree ("expires_at") WHERE "uploads"."received_at" IS NULL;

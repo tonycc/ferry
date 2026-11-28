@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { and, asc, count, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNull, lte, notInArray, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -246,6 +246,35 @@ export class PostgresStore implements Store {
     return rows.map(toRelease);
   }
 
+  async listReleaseSummaries(appName: string, limit?: number) {
+    if (limit !== undefined) {
+      if (!Number.isFinite(limit) || limit < 1) return [];
+      limit = Math.floor(limit);
+    }
+    const base = this.db
+      .select({
+        id: schema.releases.id,
+        kind: schema.releases.kind,
+        seq: schema.releases.seq,
+        appName: schema.releases.appName,
+        ownerId: schema.releases.ownerId,
+        version: schema.releases.version,
+        manifest: schema.releases.manifest,
+        state: schema.releases.state,
+        backupId: schema.releases.backupId,
+        // 在数据库侧直接剥离 error.logs 大字段(仅对 JSON object 执行 - 'logs',防止标量或 'null'::jsonb 抛 22023)
+        error: sql<ReleaseError | null>`CASE WHEN jsonb_typeof(${schema.releases.error}) = 'object' THEN ${schema.releases.error} - 'logs' ELSE NULL END`,
+        url: schema.releases.url,
+        history: schema.releases.history,
+        createdAt: schema.releases.createdAt,
+      })
+      .from(schema.releases)
+      .where(eq(schema.releases.appName, appName))
+      .orderBy(desc(schema.releases.createdAt), desc(schema.releases.seq));
+    const rows = limit !== undefined ? await base.limit(limit) : await base;
+    return rows.map(toRelease);
+  }
+
   async getActiveHealthchecks(appName: string) {
     const rows = await this.db
       .select({
@@ -393,6 +422,14 @@ export class PostgresStore implements Store {
       .where(and(eq(schema.uploads.tokenHash, tokenHash), isNull(schema.uploads.receivedAt)))
       .returning({ tokenHash: schema.uploads.tokenHash });
     return rows.length > 0;
+  }
+
+  async deleteExpiredUploads(now: Date) {
+    const deleted = await this.db
+      .delete(schema.uploads)
+      .where(and(isNull(schema.uploads.receivedAt), lte(schema.uploads.expiresAt, now)))
+      .returning({ tokenHash: schema.uploads.tokenHash });
+    return deleted.length;
   }
 
   async getUploadByTokenHash(tokenHash: string) {

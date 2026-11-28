@@ -356,6 +356,11 @@ export class AuthService {
     await this.store.deleteSession(hashToken(sessionToken));
   }
 
+  /** 清理已过期的浏览器登录会话(后台定时调用) */
+  async pruneExpiredSessions(): Promise<number> {
+    return this.store.deleteExpiredSessions(this.config.now());
+  }
+
   /** 生成个人令牌,明文只返回这一次 */
   async createToken(userId: string, label: string): Promise<TokenView & { token: string }> {
     const name = label.trim() || "agent";

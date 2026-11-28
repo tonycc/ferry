@@ -600,7 +600,14 @@ describe("DokployPlatform:数据库、命令、备份", () => {
 
   it("backupDatabase:在服务器上执行 pg_dump,写 script 字段,返回备份文件路径", async () => {
     const { client, called } = fakeDokploy({
-      "postgres.one": () => ({ ...PG, applicationStatus: "done" }),
+      "postgres.one": () => ({
+        postgresId: "pg1",
+        appName: "ledger-db-x1",
+        databaseName: "app",
+        databaseUser: "app",
+        databasePassword: "pw",
+        applicationStatus: "done",
+      }),
       "schedule.create": () => ({ scheduleId: "s1" }),
       "schedule.runManually": () => ({ status: "done", deploymentId: "r1" }),
       "schedule.delete": () => true,
@@ -994,6 +1001,86 @@ describe("网络隔离", () => {
     const absent = fakeDokploy({ "network.all": () => [] });
     await new DokployPlatform(absent.client, { sleep: async () => {} }).deleteAppNetwork("ledger");
     expect(absent.called("schedule.create")).toHaveLength(0);
+  });
+
+  it("cleanupServerSchedules:防跨网创建竞态、跳过管理员自建/启用中/超时未停任务,单条报错不阻塞后续回收", async () => {
+    let nowMs = Date.parse("2026-11-28T10:00:00.000Z");
+    let runningChecks = 0;
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((r) => (releaseCreate = r));
+    let enteredCreate!: () => void;
+    const createStarted = new Promise<void>((r) => (enteredCreate = r));
+    let creatingName = "";
+
+    const { client, called } = fakeDokploy({
+      "postgres.one": () => ({
+        postgresId: "pg1",
+        appName: "ledger-db-x1",
+        databaseName: "app",
+        databaseUser: "app",
+        databasePassword: "pw",
+        applicationStatus: "done",
+      }),
+      "schedule.create": async (input) => {
+        creatingName = String((input as { name: string }).name);
+        enteredCreate();
+        // 模拟服务端已落库、HTTP 响应尚未返回给 Ferry 的跨网络窗口
+        await createGate;
+        return { scheduleId: "in-flight-created", name: creatingName };
+      },
+      "schedule.runManually": async () => ({ status: "done", deploymentId: "d-active" }),
+      "schedule.list": () => [
+        // 1) 正在创建中(Ferry 尚未收到 scheduleId,但前置登记了 activeScheduleNames):minAgeMs=0 也绝不能误删
+        { scheduleId: "server-assigned-id", name: creatingName, enabled: false, cronExpression: "0 0 1 1 *", deployments: [] },
+        // 2) 上次崩溃留下的超龄任务,且还在 running:等它变成 done 后删掉
+        { scheduleId: "stale-running", name: `ferry-backup-${nowMs - 45 * 60_000}-1`, enabled: false, deployments: [{ deploymentId: "d1", status: "running" }] },
+        // 3) 仍在 running 且查询报错的任务:保守跳过,绝不强行删除截断 pg_dump
+        { scheduleId: "still-running-err", name: `ferry-backup-${nowMs - 50 * 60_000}-2`, enabled: false, deployments: [{ deploymentId: "d-err", status: "running" }] },
+        // 4) 单条删除报 500:记录日志后继续删后面的任务,不队头阻塞
+        { scheduleId: "delete-500", name: `ferry-backup-net-${nowMs - 55 * 60_000}`, enabled: false, deployments: [] },
+        // 5) 上次崩溃留下的日志读取临时任务(已结束):正常删掉
+        { scheduleId: "stale-logs", name: `ferry-command-logs-${nowMs - 40 * 60_000}`, enabled: false, deployments: [{ deploymentId: "d2", status: "done" }] },
+        // 6) 刚创建未满 minAgeMs 的任务:跳过
+        { scheduleId: "recent", name: `ferry-backup-net-${nowMs - 5 * 60_000}`, enabled: false, deployments: [] },
+        // 7) 管理员手动建的名为 ferry-backup-daily 或 enabled=true 的常驻定时任务:绝不触碰
+        { scheduleId: "admin-named", name: "ferry-backup-daily", enabled: false, createdAt: "2026-11-01T00:00:00.000Z", deployments: [] },
+        { scheduleId: "admin-enabled", name: `ferry-backup-${nowMs - 90 * 60_000}`, enabled: true, deployments: [] },
+      ],
+      "deployment.allByType": (input) => {
+        if ((input as { id: string }).id === "still-running-err") return new Response("rpc blip", { status: 502 });
+        return ++runningChecks < 2 ? [{ deploymentId: "d1", status: "running" }] : [{ deploymentId: "d1", status: "done" }];
+      },
+      "schedule.delete": (input) => {
+        const id = (input as { scheduleId: string }).scheduleId;
+        if (id === "delete-500") return new Response("internal", { status: 500 });
+        return true;
+      },
+    });
+
+    const platform = new DokployPlatform(client, {
+      isolateApps: false,
+      sleep: async () => {},
+      now: () => new Date(nowMs),
+    });
+    const backupTask = platform.backupDatabase("pg1");
+    await createStarted;
+
+    // 先测 minAgeMs=0(启动模式):creatingName 因前置登记不会被误删
+    const originalError = console.error;
+    console.error = () => {};
+    let removed: number;
+    try {
+      removed = await platform.cleanupServerSchedules({ minAgeMs: 30 * 60_000 });
+    } finally {
+      console.error = originalError;
+    }
+    expect(removed).toBe(2); // stale-running 与 stale-logs 成功删除
+    expect(runningChecks).toBe(2);
+    expect(called("schedule.list")[0]?.input).toEqual({ id: "", scheduleType: "dokploy-server" });
+    expect(called("schedule.delete").map((c) => c.input.scheduleId)).toEqual(["stale-running", "delete-500", "stale-logs"]);
+
+    releaseCreate();
+    await backupTask;
   });
 });
 

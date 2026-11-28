@@ -127,8 +127,13 @@ export interface Store {
   deleteApp(name: string): Promise<void>;
 
   getRelease(id: string): Promise<ReleaseRecord | undefined>;
-  /** 按创建时间从旧到新 */
+  /** 按创建时间从旧到新(含完整 error.logs) */
   listReleases(appName: string): Promise<ReleaseRecord[]>;
+  /**
+   * 按创建时间从新到旧列出发布记录摘要(剥离体积较大的 error.logs 大字段,传 limit 时只取最新 limit 条):
+   * 供应用详情列表、回滚目标查找、代码包保留策略等不需要构建日志的高频路径使用。
+   */
+  listReleaseSummaries(appName: string, limit?: number): Promise<ReleaseRecord[]>;
   /**
    * 当前允许通过网关健康检查的路径集合(正在执行的发布单 + 最近一次 LIVE 发布单的健康检查路径;
    * 忽略已失败/已回滚的记录,避免失败发布单改了 healthcheck 导致线上旧版本健康检查 403)。
@@ -155,6 +160,8 @@ export interface Store {
    * 原子地把上传凭据标记为已收到,同时记下清单。凭据已经被用过(包括并发的另一次上传抢先)时返回 false。
    */
   claimUpload(tokenHash: string, receivedAt: Date, manifest: Manifest): Promise<boolean>;
+  /** 清理已过期且从未上传过代码包的废弃上传凭据(已收到代码包的保留记录,以区分“未上传”与“代码包过期被清理”) */
+  deleteExpiredUploads(now: Date): Promise<number>;
 
   /** 按名称排序 */
   listSecrets(appName: string): Promise<SecretRecord[]>;
@@ -174,6 +181,8 @@ export interface Store {
 export class MemoryStore implements Store {
   private apps = new Map<string, AppRecord>();
   private releases = new Map<string, ReleaseRecord>();
+  private releaseSeq = 0;
+  private releaseSeqs = new Map<string, number>();
   private uploads = new Map<string, UploadTicket>();
   private secrets = new Map<string, SecretRecord>();
   private locks = new Map<string, Promise<void>>();
@@ -319,7 +328,12 @@ export class MemoryStore implements Store {
       }
       const host = this.apps.get(name)?.host;
       const existed = this.apps.delete(name);
-      for (const [id, release] of this.releases) if (release.appName === name) this.releases.delete(id);
+      for (const [id, release] of this.releases) {
+        if (release.appName === name) {
+          this.releases.delete(id);
+          this.releaseSeqs.delete(id);
+        }
+      }
       for (const [key, upload] of this.uploads) if (upload.appName === name) this.uploads.delete(key);
       for (const [key, secret] of this.secrets) if (secret.appName === name) this.secrets.delete(key);
       return existed ? host : undefined;
@@ -344,16 +358,40 @@ export class MemoryStore implements Store {
     return copy(this.releases.get(id));
   }
 
+  private orderedReleases(appName: string, direction: "asc" | "desc"): ReleaseRecord[] {
+    const sign = direction === "asc" ? 1 : -1;
+    return [...this.releases.values()]
+      .filter((release) => release.appName === appName)
+      .sort((a, b) => {
+        const dt = a.createdAt.getTime() - b.createdAt.getTime();
+        if (dt !== 0) return sign * dt;
+        return sign * ((this.releaseSeqs.get(a.id) ?? 0) - (this.releaseSeqs.get(b.id) ?? 0));
+      });
+  }
+
   async listReleases(appName: string) {
-    // 按写入顺序排列,创建时间相同时也不会乱序
-    return [...this.releases.values()].filter((release) => release.appName === appName).map(copy);
+    // 按 (createdAt, seq) 排列,与 PostgreSQL 的 ORDER BY created_at, seq 严格一致
+    return this.orderedReleases(appName, "asc").map(copy);
+  }
+
+  async listReleaseSummaries(appName: string, limit?: number) {
+    if (limit !== undefined) {
+      if (!Number.isFinite(limit) || limit < 1) return [];
+      limit = Math.floor(limit);
+    }
+    const matched = this.orderedReleases(appName, "desc");
+    const sliced = limit !== undefined ? matched.slice(0, limit) : matched;
+    return sliced.map((release) => {
+      const cloned = copy(release);
+      if (cloned.error) delete cloned.error.logs;
+      return cloned;
+    });
   }
 
   async getActiveHealthchecks(appName: string) {
     const paths = new Set<string>();
     let tookLive = false;
-    const ordered = [...this.releases.values()].filter((r) => r.appName === appName).reverse();
-    for (const r of ordered) {
+    for (const r of this.orderedReleases(appName, "desc")) {
       if (r.state === "LIVE") {
         if (!tookLive) {
           paths.add(r.manifest.healthcheck);
@@ -375,6 +413,7 @@ export class MemoryStore implements Store {
           }
         }
       }
+      if (!this.releaseSeqs.has(release.id)) this.releaseSeqs.set(release.id, ++this.releaseSeq);
       this.releases.set(release.id, copy(release));
     });
     this.emit({ kind: "release", appName: release.appName });
@@ -408,6 +447,7 @@ export class MemoryStore implements Store {
           current.unpublishedAt = undefined;
           revived = true;
         }
+        if (!this.releaseSeqs.has(release.id)) this.releaseSeqs.set(release.id, ++this.releaseSeq);
         this.releases.set(release.id, copy(release));
         return { ok: true, app: copy(current), revived };
       }),
@@ -441,6 +481,17 @@ export class MemoryStore implements Store {
     ticket.receivedAt = receivedAt;
     ticket.manifest = copy(manifest);
     return true;
+  }
+
+  async deleteExpiredUploads(now: Date) {
+    let deleted = 0;
+    for (const [hash, ticket] of this.uploads) {
+      if (!ticket.receivedAt && ticket.expiresAt <= now) {
+        this.uploads.delete(hash);
+        deleted++;
+      }
+    }
+    return deleted;
   }
 
   async listSecrets(appName: string) {

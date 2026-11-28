@@ -60,7 +60,8 @@ const envSchema = z.object({
   AGENT_URL: httpUrl("AGENT_URL"),
   /** 代码包的保存目录 */
   ARCHIVE_DIR: z.string().default("./data/archives"),
-  MAX_ARCHIVE_MB: z.coerce.number().int().default(100),
+  /** 单个代码包大小上限(MB):已排除 node_modules 和 .git 的源码包通常不足 1MB,默认 25MB 防止并发大包占满控制面内存 */
+  MAX_ARCHIVE_MB: z.coerce.number().int().positive().default(25),
   /** 上传后超过这个时间还没发布的代码包,会在该应用下次发布结束时清理 */
   ARCHIVE_GRACE_HOURS: z.coerce.number().default(24),
   /** 每个数据库在服务器上保留最近几份迁移前备份 */

@@ -170,6 +170,10 @@ export class FakePlatform implements DeployPlatform {
     this.calls.push(`deleteAppNetwork:${name}`);
   }
 
+  async cleanupServerSchedules(): Promise<number> {
+    return 0;
+  }
+
   async deleteProject(projectId: string): Promise<void> {
     this.calls.push(`deleteProject:${projectId}`);
     for (const [name, id] of this.projects) if (id === projectId) this.projects.delete(name);
