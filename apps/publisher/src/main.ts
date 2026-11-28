@@ -200,7 +200,11 @@ const organization = new Organization(orgStore, directory, audit, {
   revokeAccess: async (userId) => void (await auth.endAccess(userId)),
 });
 await organization.reload();
-setInterval(() => void organization.reload().catch((err: Error) => console.error(`重新读取组织架构失败: ${err.message}`)), 60_000).unref();
+await auth.reloadPasswordEpochs();
+setInterval(() => {
+  void organization.reload().catch((err: Error) => console.error(`重新读取组织架构失败: ${err.message}`));
+  void auth.reloadPasswordEpochs().catch((err: Error) => console.error(`重新读取密码状态失败: ${err.message}`));
+}, 60_000).unref();
 // 第一个管理员怎么登录:用数据库时用命令行建(pnpm set-password <手机号> --name <姓名>);
 // 内存存储(本地临时试用)时命令行连不上,组织架构是空的就建一个管理员,初始密码打印在这里
 if (instance.initialized && !config.DATABASE_URL && directory.adminIds().length === 0) {
@@ -219,6 +223,7 @@ const gateway = new Gateway(service, directory, {
   appCookieTtlMs: config.GATEWAY_COOKIE_HOURS * 3600_000,
   ticketTtlMs: 60_000,
   now: () => new Date(),
+  sessionEpoch: (userId) => auth.sessionEpoch(userId),
 });
 // Traefik 访问 /authz 的地址:写网关配置用,设置向导装证书后也用它重写一次网关配置来触发 Traefik 加载
 const authAddress = config.GATEWAY_AUTH_URL ?? `http://host.docker.internal:${config.PORT}/authz`;

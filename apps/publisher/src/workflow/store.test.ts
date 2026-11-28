@@ -149,8 +149,96 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       const store = storeCase.create();
       await store.createApp(newApp());
       const ids = [3, 1, 2].map((n) => `00000000-0000-4000-8000-00000000000${n}`);
-      for (const id of ids) await store.saveRelease(newRelease({ id }));
+      for (const id of ids) await store.saveRelease(newRelease({ id, state: "LIVE" }));
       expect((await store.listReleases("ledger")).map((r) => r.id)).toEqual(ids);
+    });
+
+    it("同一应用不能同时有两个未结束的发布单;结束后可以新建,不同应用互不影响", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      await store.createApp(newApp({ name: "crm", host: "crm.apps.test" }));
+
+      const first = newRelease({ id: "00000000-0000-4000-8000-000000000011", state: "BUILDING" });
+      await store.saveRelease(first);
+      await expect(
+        store.saveRelease(newRelease({ id: "00000000-0000-4000-8000-000000000012", state: "PENDING" })),
+      ).rejects.toThrow();
+      // 不同应用可以同时有未结束的发布单
+      await store.saveRelease(
+        newRelease({ id: "00000000-0000-4000-8000-000000000013", appName: "crm", state: "PENDING" }),
+      );
+      // 原发布单结束后,同一应用可以写入新的未结束发布单
+      await store.saveRelease({ ...first, state: "LIVE" });
+      await store.saveRelease(newRelease({ id: "00000000-0000-4000-8000-000000000014", state: "PENDING" }));
+      expect((await store.listReleases("ledger")).map((r) => r.state)).toEqual(["LIVE", "PENDING"]);
+    });
+
+    it("getLatestHealthcheck:只返回最近一条发布单的健康检查路径", async () => {
+      const store = storeCase.create();
+      await store.createApp(newApp());
+      expect(await store.getLatestHealthcheck("ledger")).toBeUndefined();
+      await store.saveRelease(
+        newRelease({
+          id: "00000000-0000-4000-8000-000000000021",
+          state: "LIVE",
+          manifest: { ...manifest, healthcheck: "/ready" },
+        }),
+      );
+      await store.saveRelease(
+        newRelease({
+          id: "00000000-0000-4000-8000-000000000022",
+          state: "PENDING",
+          manifest: { ...manifest, healthcheck: "/healthz-v2" },
+        }),
+      );
+      expect(await store.getLatestHealthcheck("ledger")).toBe("/healthz-v2");
+    });
+
+    it("并发配额与发布互斥:prepareAppSlot、startRelease、markAppUnpublished 原子串行", async () => {
+      const store = storeCase.create();
+      // 8 个不同应用并发抢占同一负责人的 3 个在线名额,精确只有 3 个成功
+      const slots = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          store.prepareAppSlot(newApp({ name: `app-${i}`, host: `app-${i}.apps.test` }), 3),
+        ),
+      );
+      expect(slots.filter((s) => s.ok)).toHaveLength(3);
+      expect(slots.filter((s) => !s.ok && s.reason === "quota_exceeded")).toHaveLength(5);
+      expect(await store.listAppsByOwner("dingtalk:alice")).toHaveLength(3);
+
+      // 同一应用并发发起 5 次发布,精确只有 1 次进入 PENDING,其余全部返回 in_progress
+      const [firstApp] = await store.listAppsByOwner("dingtalk:alice");
+      const starts = await Promise.all(
+        Array.from({ length: 5 }, (_, i) =>
+          store.startRelease(
+            newRelease({
+              id: `00000000-0000-4000-8000-00000000010${i}`,
+              appName: firstApp!.name,
+              version: `v${i}`,
+            }),
+            { maxActiveByOwner: 3 },
+          ),
+        ),
+      );
+      expect(starts.filter((r) => r.ok)).toHaveLength(1);
+      expect(starts.filter((r) => !r.ok && r.reason === "in_progress")).toHaveLength(4);
+
+      // 发布未结束时不能下线
+      const blockedUnpublish = await store.markAppUnpublished(firstApp!.name, "dingtalk:alice", at("2026-11-16T09:00:00.000Z"));
+      expect(blockedUnpublish).toEqual({ ok: false, reason: "in_progress" });
+
+      // 发布结束后下线释放 1 个名额;再建 1 个新应用把 3 个名额占满后,尝试恢复已下线应用会被配额拦截
+      const activeRelease = (await store.listReleases(firstApp!.name))[0]!;
+      await store.saveRelease({ ...activeRelease, state: "LIVE" });
+      const marked = await store.markAppUnpublished(firstApp!.name, "dingtalk:alice", at("2026-11-16T09:05:00.000Z"));
+      expect(marked.ok).toBe(true);
+      const extra = await store.prepareAppSlot(newApp({ name: "app-extra", host: "app-extra.apps.test" }), 3);
+      expect(extra.ok).toBe(true);
+      const reviveOverQuota = await store.startRelease(
+        newRelease({ id: "00000000-0000-4000-8000-000000000199", appName: firstApp!.name, version: "v-revive" }),
+        { maxActiveByOwner: 3 },
+      );
+      expect(reviveOverQuota).toEqual({ ok: false, reason: "quota_exceeded" });
     });
   });
 

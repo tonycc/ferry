@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "releases_one_active_per_app_idx" ON "releases" USING btree ("app_name") WHERE "releases"."state" NOT IN ('LIVE', 'FAILED_FIXABLE', 'ROLLED_BACK', 'FAILED');

@@ -9,7 +9,7 @@ import type { TemplateFile, TemplateLibrary, TemplateSummary } from "./templates
 import { pruneArchives } from "./workflow/retention";
 import { checkArchiveEntries, checkArchiveLayout, hasCustomZipDockerfile, readZipFile, replaceZipDockerfile, zipEntryNames } from "./zip";
 import { isTerminal, type ReleaseState } from "./workflow/states";
-import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
+import type { AppRecord, ReleaseError, ReleaseRecord, Store, StoreMutation, UploadTicket } from "./workflow/store";
 import { MAX_SECRETS_PER_APP, validateSecretName, validateSecretValue, type SecretBox } from "./secrets";
 import { memoryAuditLog, type AuditLog } from "./audit/log";
 import type { AuditAction } from "./audit/store";
@@ -158,7 +158,25 @@ export function consoleUrlOf(publicUrl: string): string {
 /** REST 和 MCP 共用的业务入口 */
 export class PublisherService {
   private readonly running = new Map<string, Promise<unknown>>();
+  /** 正在执行下线(调用部署平台删应用/停数据库期间)的应用,防止下线中途被并发重新发布或重复下线 */
+  private readonly unpublishing = new Set<string>();
+  /** 正在执行管理员删除的应用,防止两个管理员并发删除同一应用(负责人侧由数据库的停用标记拦截) */
+  private readonly deleting = new Set<string>();
   private readonly audit: AuditLog;
+
+  /**
+   * 登录网关路由与健康检查路径的内存缓存(/authz 热路径 100% 读内存,不再每次请求查库):
+   * - 首次访问时批量载入全部应用(连不存在的域名探测也能直接 O(1) 返回 404,不穿透数据库);
+   * - 任何经 Store 写入的应用/发布单变更(含 Engine 后台步骤与测试直接写 Store)都会把对应条目打脏,下次访问按单行刷新。
+   */
+  private appsHydrated = false;
+  private hydratingApps?: Promise<void>;
+  private readonly appsByHost = new Map<string, AppRecord>();
+  private readonly hostByApp = new Map<string, string>();
+  private readonly dirtyApps = new Set<string>();
+  private readonly dirtyHosts = new Set<string>();
+  private readonly healthchecks = new Map<string, string | null>();
+  private readonly releaseGen = new Map<string, number>();
 
   constructor(
     private readonly store: Store,
@@ -167,6 +185,25 @@ export class PublisherService {
     private readonly config: ServiceConfig,
   ) {
     this.audit = config.audit ?? memoryAuditLog();
+    this.store.subscribe?.((mutation) => this.onStoreMutation(mutation));
+  }
+
+  private onStoreMutation(mutation: StoreMutation): void {
+    if (mutation.kind === "app") {
+      const host = mutation.host ?? this.hostByApp.get(mutation.appName);
+      this.dirtyApps.add(mutation.appName);
+      if (host) this.dirtyHosts.add(host);
+      else if (this.appsHydrated) this.appsHydrated = false;
+      return;
+    }
+    this.healthchecks.delete(mutation.appName);
+    this.releaseGen.set(mutation.appName, (this.releaseGen.get(mutation.appName) ?? 0) + 1);
+  }
+
+  private assertNotUnpublishing(appName: string): void {
+    if (this.unpublishing.has(appName)) {
+      throw new UserError("conflict", `应用 ${appName} 正在下线中,请等下线完成后再操作`);
+    }
   }
 
   /** 网页控制台的地址(给 agent 的说明里用,agent 自己不知道) */
@@ -183,38 +220,24 @@ export class PublisherService {
     if (!parsed.success) {
       throw new UserError("invalid_input", `应用名不合法: ${parsed.error.issues[0]?.message ?? ""}`);
     }
+    this.assertNotUnpublishing(name);
 
-    const existing = await this.store.getApp(name);
-    if (existing && existing.ownerId !== user.id) {
-      throw new UserError("conflict", `应用名 ${name} 已被其他人使用,请换一个名字`);
+    const candidate: AppRecord = {
+      name,
+      ownerId: user.id,
+      visibility: "self",
+      host: `${name}.${this.config.appsDomain}`,
+      platform: {},
+      createdAt: new Date(),
+    };
+    const slot = await this.store.prepareAppSlot(candidate, this.config.maxAppsPerUser);
+    if (!slot.ok) {
+      if (slot.reason === "conflict") throw new UserError("conflict", `应用名 ${name} 已被其他人使用,请换一个名字`);
+      if (slot.reason === "disabled") throw new UserError("forbidden", `应用 ${name} 已被管理员停用,不能发布。请联系平台管理员`);
+      throw new UserError("quota_exceeded", `每人最多 ${this.config.maxAppsPerUser} 个在线的应用,请先下线不用的应用`);
     }
-    if (existing?.disabled) {
-      throw new UserError("forbidden", `应用 ${name} 已被管理员停用,不能发布。请联系平台管理员`);
-    }
-    // 下线的应用不占名额;重新发布已下线的应用等于恢复它,要占回一个名额
-    if (!existing || existing.unpublishedAt) {
-      const active = (await this.store.listAppsByOwner(user.id)).filter((a) => !a.unpublishedAt);
-      if (active.length >= this.config.maxAppsPerUser) {
-        throw new UserError("quota_exceeded", `每人最多 ${this.config.maxAppsPerUser} 个在线的应用,请先下线不用的应用`);
-      }
-    }
-
-    let app = existing;
-    if (!app) {
-      app = {
-        name,
-        ownerId: user.id,
-        visibility: "self",
-        host: `${name}.${this.config.appsDomain}`,
-        platform: {},
-        createdAt: new Date(),
-      };
-      // 两个人同时抢同一个名字时,只有一个能写入成功
-      if (!(await this.store.createApp(app))) {
-        throw new UserError("conflict", `应用名 ${name} 已被其他人使用,请换一个名字`);
-      }
-      await this.audit.record(user.id, "app.create", app);
-    }
+    const { app } = slot;
+    if (slot.created) await this.audit.record(user.id, "app.create", app);
 
     // 令牌只在这里返回一次,库里只存它的哈希
     const token = randomBytes(32).toString("hex");
@@ -341,22 +364,23 @@ export class PublisherService {
    * 发布已上传的代码包。清单只取代码包根目录的 app.yaml,不另外传,免得两份不一致。
    */
   async publish(user: User, input: { name: string; version: string }): Promise<ReleaseView> {
-    const app = await this.store.getApp(input.name);
-    if (!app) throw new UserError("not_found", `应用 ${input.name} 还没有创建,请先调用 prepare_app`);
-    if (app.ownerId !== user.id) throw new UserError("forbidden", `你不是应用 ${input.name} 的负责人`);
-    if (app.disabled) {
-      throw new UserError("forbidden", `应用 ${app.name} 已被管理员停用,不能发布。请联系平台管理员`);
+    this.assertNotUnpublishing(input.name);
+    const initialApp = await this.store.getApp(input.name);
+    if (!initialApp) throw new UserError("not_found", `应用 ${input.name} 还没有创建,请先调用 prepare_app`);
+    if (initialApp.ownerId !== user.id) throw new UserError("forbidden", `你不是应用 ${input.name} 的负责人`);
+    if (initialApp.disabled) {
+      throw new UserError("forbidden", `应用 ${initialApp.name} 已被管理员停用,不能发布。请联系平台管理员`);
     }
 
-    const upload = await this.store.getUpload(app.name, input.version);
+    const upload = await this.store.getUpload(initialApp.name, input.version);
     if (!upload?.receivedAt) {
       throw new UserError(
         "invalid_input",
-        `应用 ${app.name} 还没有收到 version 为 ${input.version} 的代码包。请先把 zip 上传到 prepare_app 返回的 uploadUrl,` +
+        `应用 ${initialApp.name} 还没有收到 version 为 ${input.version} 的代码包。请先把 zip 上传到 prepare_app 返回的 uploadUrl,` +
           "并确认 name 和调用 prepare_app 时用的应用名一致",
       );
     }
-    const archived = (await this.adapters.archives.list(app.name)).some((a) => a.version === input.version);
+    const archived = (await this.adapters.archives.list(initialApp.name)).some((a) => a.version === input.version);
     if (!archived) {
       throw new UserError(
         "invalid_input",
@@ -368,26 +392,16 @@ export class PublisherService {
       await this.checkTemplate(manifest);
     } else {
       // 记录清单之前收到的代码包:从代码包里读
-      const zip = await this.adapters.archives.read(app.name, input.version);
+      const zip = await this.adapters.archives.read(initialApp.name, input.version);
       if (!zip) throw new UserError("invalid_input", `version 为 ${input.version} 的代码包已失效,请重新调用 prepare_app 并上传`);
-      manifest = await this.manifestOf(zip, app.name);
+      manifest = await this.manifestOf(zip, initialApp.name);
     }
 
-    const releases = await this.store.listReleases(app.name);
-    if (releases.some((r) => !isTerminal(r.state))) {
-      throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束`);
-    }
-    const revived = app.unpublishedAt !== undefined;
-    if (app.unpublishedAt) {
-      // 重新发布已下线的应用:恢复它,数据库会重新启动,原来的数据还在
-      app.unpublishedAt = undefined;
-      await this.store.saveApp(app);
-    }
-
+    this.assertNotUnpublishing(input.name);
     const release: ReleaseRecord = {
       id: randomUUID(),
       kind: "publish",
-      appName: app.name,
+      appName: initialApp.name,
       ownerId: user.id,
       version: input.version,
       manifest,
@@ -395,7 +409,19 @@ export class PublisherService {
       history: [{ state: "PENDING", at: new Date() }],
       createdAt: new Date(),
     };
-    await this.store.saveRelease(release);
+    const started = await this.store.startRelease(release, { maxActiveByOwner: this.config.maxAppsPerUser });
+    if (!started.ok) {
+      if (started.reason === "not_found") throw new UserError("not_found", `应用 ${input.name} 还没有创建,请先调用 prepare_app`);
+      if (started.reason === "forbidden_owner") throw new UserError("forbidden", `你不是应用 ${input.name} 的负责人`);
+      if (started.reason === "disabled") {
+        throw new UserError("forbidden", `应用 ${input.name} 已被管理员停用,不能发布。请联系平台管理员`);
+      }
+      if (started.reason === "quota_exceeded") {
+        throw new UserError("quota_exceeded", `每人最多 ${this.config.maxAppsPerUser} 个在线的应用,请先下线不用的应用`);
+      }
+      throw new UserError("conflict", `应用 ${input.name} 有一次发布还在进行中,请等它结束`);
+    }
+    const { app, revived } = started;
     await this.audit.record(user.id, "app.publish", app, {
       releaseId: release.id,
       version: release.version,
@@ -467,21 +493,22 @@ export class PublisherService {
    * 也不改可见范围等设置。上线过的版本最多保留两个,所以回滚一次之后再回滚,会回到回滚前的版本。
    */
   async rollback(user: User, appName: string): Promise<RollbackView> {
-    const app = await this.ownApp(user, appName);
-    if (app.disabled) throw new UserError("forbidden", `应用 ${app.name} 已被管理员停用,不能回滚。请联系平台管理员`);
-    if (app.unpublishedAt || !app.liveVersion) {
-      throw new UserError("invalid_input", `应用 ${app.name} 现在没有在线的版本,不能回滚`);
+    this.assertNotUnpublishing(appName);
+    const initialApp = await this.ownApp(user, appName);
+    if (initialApp.disabled) throw new UserError("forbidden", `应用 ${initialApp.name} 已被管理员停用,不能回滚。请联系平台管理员`);
+    if (initialApp.unpublishedAt || !initialApp.liveVersion) {
+      throw new UserError("invalid_input", `应用 ${initialApp.name} 现在没有在线的版本,不能回滚`);
     }
-    const releases = await this.store.listReleases(app.name);
+    const releases = await this.store.listReleases(initialApp.name);
     if (releases.some((r) => !isTerminal(r.state))) {
-      throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束`);
+      throw new UserError("conflict", `应用 ${initialApp.name} 有一次发布还在进行中,请等它结束`);
     }
 
     const live = [...releases].reverse().filter((r) => r.state === "LIVE");
-    const current = live.find((r) => r.version === app.liveVersion);
-    const target = live.find((r) => r.version !== app.liveVersion);
-    if (!current || !target || !(await this.adapters.archives.read(app.name, target.version))) {
-      throw new UserError("not_found", `应用 ${app.name} 没有可以回滚的上一个版本`);
+    const current = live.find((r) => r.version === initialApp.liveVersion);
+    const target = live.find((r) => r.version !== initialApp.liveVersion);
+    if (!current || !target || !(await this.adapters.archives.read(initialApp.name, target.version))) {
+      throw new UserError("not_found", `应用 ${initialApp.name} 没有可以回滚的上一个版本`);
     }
     if (target.manifest.port !== current.manifest.port) {
       throw new UserError(
@@ -490,10 +517,11 @@ export class PublisherService {
       );
     }
 
+    this.assertNotUnpublishing(appName);
     const release: ReleaseRecord = {
       id: randomUUID(),
       kind: "rollback",
-      appName: app.name,
+      appName: initialApp.name,
       ownerId: user.id,
       version: target.version,
       manifest: target.manifest,
@@ -501,8 +529,20 @@ export class PublisherService {
       history: [{ state: "PENDING", at: new Date() }],
       createdAt: new Date(),
     };
-    await this.store.saveRelease(release);
-    await this.audit.record(user.id, "app.rollback", app, {
+    const started = await this.store.startRelease(release, { expectedLiveVersion: current.version });
+    if (!started.ok) {
+      if (started.reason === "not_found" || started.reason === "forbidden_owner") {
+        throw new UserError("not_found", `应用 ${appName} 不存在`);
+      }
+      if (started.reason === "disabled") {
+        throw new UserError("forbidden", `应用 ${initialApp.name} 已被管理员停用,不能回滚。请联系平台管理员`);
+      }
+      if (started.reason === "not_live") {
+        throw new UserError("invalid_input", `应用 ${initialApp.name} 现在没有在线的版本,不能回滚`);
+      }
+      throw new UserError("conflict", `应用 ${initialApp.name} 有一次发布还在进行中,请等它结束`);
+    }
+    await this.audit.record(user.id, "app.rollback", started.app, {
       releaseId: release.id,
       fromVersion: current.version,
       toVersion: target.version,
@@ -557,27 +597,29 @@ export class PublisherService {
    * 应用名仍归负责人所有,重新发布即恢复,原来的数据还在。被管理员停用的应用也可以下线。
    */
   async unpublish(user: User, appName: string): Promise<AppView> {
-    const app = await this.ownApp(user, appName);
-    // 已下线且资源已删完才直接返回;上次下线中途出错时,再调用一次会把剩下的做完
-    if (app.unpublishedAt && !app.platform.appId) return toAppView(app, this.appUrl(app.host));
-    const releases = await this.store.listReleases(app.name);
-    if (releases.some((r) => !isTerminal(r.state))) {
-      throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再下线`);
+    this.assertNotUnpublishing(appName);
+    if (this.deleting.has(appName)) throw new UserError("conflict", `应用 ${appName} 正在被管理员删除`);
+    this.unpublishing.add(appName);
+    try {
+      // 原子地检查没有进行中的发布单并先标记下线(访问立即拒绝);上次下线中途出错时再调用会把剩下的做完,不再重复记审计
+      const marked = await this.store.markAppUnpublished(appName, user.id, new Date());
+      if (!marked.ok) {
+        if (marked.reason === "not_found") throw new UserError("not_found", `应用 ${appName} 不存在`);
+        throw new UserError("conflict", `应用 ${appName} 有一次发布还在进行中,请等它结束后再下线`);
+      }
+      if (marked.alreadyDone) return toAppView(marked.app, this.appUrl(marked.app.host));
+      const { app, firstAttempt } = marked;
+      if (firstAttempt) await this.audit.record(user.id, "app.unpublish", app);
+      if (app.platform.appId) await this.adapters.platform.removeApp(app.platform.appId);
+      if (app.platform.databaseId) await this.adapters.platform.stopDatabase(app.platform.databaseId);
+      app.platform = { ...app.platform, appId: undefined, domainAttached: false };
+      app.liveVersion = undefined;
+      await this.store.saveApp(app);
+      await this.adapters.notifier.notify(app.ownerId, `应用 ${app.name} 已下线,数据已保留,重新发布即可恢复`);
+      return toAppView(app, this.appUrl(app.host));
+    } finally {
+      this.unpublishing.delete(appName);
     }
-
-    // 先标记下线,访问立即被拒绝;再删部署平台上的资源。
-    // 中途出错后再调用一次会把剩下的做完,那次不再记录(第一次已经记了)
-    const firstAttempt = !app.unpublishedAt;
-    app.unpublishedAt = new Date();
-    await this.store.saveApp(app);
-    if (firstAttempt) await this.audit.record(user.id, "app.unpublish", app);
-    if (app.platform.appId) await this.adapters.platform.removeApp(app.platform.appId);
-    if (app.platform.databaseId) await this.adapters.platform.stopDatabase(app.platform.databaseId);
-    app.platform = { ...app.platform, appId: undefined, domainAttached: false };
-    app.liveVersion = undefined;
-    await this.store.saveApp(app);
-    await this.adapters.notifier.notify(app.ownerId, `应用 ${app.name} 已下线,数据已保留,重新发布即可恢复`);
-    return toAppView(app, this.appUrl(app.host));
   }
 
   // ---- 管理员操作 ----
@@ -630,51 +672,58 @@ export class PublisherService {
    */
   async deleteApp(admin: User, appName: string): Promise<void> {
     requireAdmin(admin);
-    const app = await this.store.getApp(appName);
-    if (!app) throw new UserError("not_found", `应用 ${appName} 不存在`);
-    if (!app.unpublishedAt && !app.disabled) {
-      throw new UserError("invalid_input", `应用 ${app.name} 还在线,不能删除。请先停用,或者请负责人先下线`);
-    }
-    const running = async () => (await this.store.listReleases(app.name)).some((r) => !isTerminal(r.state));
-    if (await running()) {
-      throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
-    }
-    // 先标记为停用:删除要十几秒,这期间负责人不能再发布(已下线的应用本来可以随时重新发布)。
-    // 标记前刚好开始的发布,会在下一步检查到停用后自行终止;这里再查一次,有就先不删
-    if (!app.disabled) {
-      await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason: "管理员正在删除这个应用" });
-      if (await running()) {
-        await this.store.setAppDisabled(app.name, undefined);
-        throw new UserError("conflict", `应用 ${app.name} 有一次发布刚刚开始,请等它结束后再删除`);
+    this.assertNotUnpublishing(appName);
+    if (this.deleting.has(appName)) throw new UserError("conflict", `应用 ${appName} 正在删除中,请勿重复操作`);
+    this.deleting.add(appName);
+    try {
+      const app = await this.store.getApp(appName);
+      if (!app) throw new UserError("not_found", `应用 ${appName} 不存在`);
+      if (!app.unpublishedAt && !app.disabled) {
+        throw new UserError("invalid_input", `应用 ${app.name} 还在线,不能删除。请先停用,或者请负责人先下线`);
       }
-    }
-    // 确定要删之后、删除任何资源之前记录:删除要十几秒,中途失败时应用已经被停用、部分资源已经删掉
-    await this.audit.record(admin.id, "app.delete", app);
+      const running = async () => (await this.store.listReleases(app.name)).some((r) => !isTerminal(r.state));
+      if (await running()) {
+        throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
+      }
+      // 先标记为停用:删除要十几秒,这期间负责人不能再发布(已下线的应用本来可以随时重新发布)。
+      // 标记前刚好开始的发布,会在下一步检查到停用后自行终止;这里再查一次,有就先不删
+      if (!app.disabled) {
+        await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason: "管理员正在删除这个应用" });
+        if (await running()) {
+          await this.store.setAppDisabled(app.name, undefined);
+          throw new UserError("conflict", `应用 ${app.name} 有一次发布刚刚开始,请等它结束后再删除`);
+        }
+      }
+      // 确定要删之后、删除任何资源之前记录:删除要十几秒,中途失败时应用已经被停用、部分资源已经删掉
+      await this.audit.record(admin.id, "app.delete", app);
 
-    const { platform } = this.adapters;
-    if (app.platform.appId) {
-      await platform.removeApp(app.platform.appId);
-      app.platform = { ...app.platform, appId: undefined, domainAttached: false };
-      await this.store.saveApp(app);
+      const { platform } = this.adapters;
+      if (app.platform.appId) {
+        await platform.removeApp(app.platform.appId);
+        app.platform = { ...app.platform, appId: undefined, domainAttached: false };
+        await this.store.saveApp(app);
+      }
+      if (app.platform.databaseId) {
+        await platform.deleteDatabase(app.platform.databaseId);
+        app.platform = { ...app.platform, databaseId: undefined };
+        await this.store.saveApp(app);
+      }
+      // 应用和数据库都删掉后才能删它们的网络;网络按应用名找,重试时已经删掉的不报错
+      await platform.deleteAppNetwork(app.name);
+      if (app.platform.projectId) {
+        await platform.deleteProject(app.platform.projectId);
+        app.platform = { ...app.platform, projectId: undefined };
+        await this.store.saveApp(app);
+      }
+      await this.adapters.archives.removeAll(app.name);
+      await this.store.deleteApp(app.name);
+      // 删除已经完成,通知发不出去不影响结果,只记日志
+      await this.adapters.notifier
+        .notify(app.ownerId, `应用 ${app.name} 已被管理员删除,数据已清除,应用名已释放`)
+        .catch((err: unknown) => console.error(`应用 ${app.name} 已删除,但通知负责人失败:`, err));
+    } finally {
+      this.deleting.delete(appName);
     }
-    if (app.platform.databaseId) {
-      await platform.deleteDatabase(app.platform.databaseId);
-      app.platform = { ...app.platform, databaseId: undefined };
-      await this.store.saveApp(app);
-    }
-    // 应用和数据库都删掉后才能删它们的网络;网络按应用名找,重试时已经删掉的不报错
-    await platform.deleteAppNetwork(app.name);
-    if (app.platform.projectId) {
-      await platform.deleteProject(app.platform.projectId);
-      app.platform = { ...app.platform, projectId: undefined };
-      await this.store.saveApp(app);
-    }
-    await this.adapters.archives.removeAll(app.name);
-    await this.store.deleteApp(app.name);
-    // 删除已经完成,通知发不出去不影响结果,只记日志
-    await this.adapters.notifier
-      .notify(app.ownerId, `应用 ${app.name} 已被管理员删除,数据已清除,应用名已释放`)
-      .catch((err: unknown) => console.error(`应用 ${app.name} 已删除,但通知负责人失败:`, err));
   }
 
   /** 审计日志,从新到旧分页。可以按应用名、操作人、操作类型筛选 */
@@ -756,11 +805,46 @@ export class PublisherService {
     return { checked, failed };
   }
 
-  /** 网关用:域名对应的、没有下线的应用。每个经过网关的请求都会调用,只查这一次存储 */
+  /** 网关用:域名对应的、没有下线的应用。稳态请求 100% 命中内存缓存,变更时按单域名增量刷新 */
   async gatewayApp(host: string): Promise<AppRecord | undefined> {
-    const app = await this.store.getAppByHost(host);
+    if (!this.appsHydrated) {
+      this.hydratingApps ??= this.hydrateGatewayApps().finally(() => {
+        this.hydratingApps = undefined;
+      });
+      await this.hydratingApps;
+    }
+    const cachedAtHost = this.appsByHost.get(host);
+    if (this.dirtyHosts.has(host) || (cachedAtHost && this.dirtyApps.has(cachedAtHost.name))) {
+      this.dirtyHosts.delete(host);
+      if (cachedAtHost) this.dirtyApps.delete(cachedAtHost.name);
+      const fresh = await this.store.getAppByHost(host);
+      if (fresh) {
+        this.appsByHost.set(fresh.host, fresh);
+        this.hostByApp.set(fresh.name, fresh.host);
+        this.dirtyApps.delete(fresh.name);
+      } else {
+        this.appsByHost.delete(host);
+        if (cachedAtHost && this.hostByApp.get(cachedAtHost.name) === host) {
+          this.hostByApp.delete(cachedAtHost.name);
+        }
+      }
+    }
+    const app = this.appsByHost.get(host);
     if (!app || app.unpublishedAt) return undefined;
-    return app;
+    return { ...app };
+  }
+
+  private async hydrateGatewayApps(): Promise<void> {
+    this.dirtyApps.clear();
+    this.dirtyHosts.clear();
+    const apps = await this.store.listApps();
+    this.appsByHost.clear();
+    this.hostByApp.clear();
+    for (const app of apps) {
+      this.appsByHost.set(app.host, app);
+      this.hostByApp.set(app.name, app.host);
+    }
+    this.appsHydrated = true;
   }
 
   /** 全部应用的名字(网关要接入它们的网络;下线的应用网络还在,数据库在里面) */
@@ -768,9 +852,17 @@ export class PublisherService {
     return (await this.store.listApps()).map((app) => app.name);
   }
 
-  /** 网关用:应用当前的健康检查路径(最近一次发布的清单里的) */
+  /** 网关用:应用当前的健康检查路径(最近一次发布的清单里的,缓存在内存里,发布变更时自动失效) */
   async healthcheckPath(appName: string): Promise<string | undefined> {
-    return (await this.store.listReleases(appName)).at(-1)?.manifest.healthcheck;
+    if (this.healthchecks.has(appName)) {
+      return this.healthchecks.get(appName) ?? undefined;
+    }
+    const gen = this.releaseGen.get(appName) ?? 0;
+    const path = await this.store.getLatestHealthcheck(appName);
+    if ((this.releaseGen.get(appName) ?? 0) === gen) {
+      this.healthchecks.set(appName, path ?? null);
+    }
+    return path;
   }
 
   /** 网关用:viewer 能否访问这个应用(停用、下线的都不能;其余按可见范围和组织架构)。不再查存储 */

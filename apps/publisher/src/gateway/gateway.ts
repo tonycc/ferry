@@ -44,6 +44,11 @@ export interface GatewayConfig {
   appCookieTtlMs: number;
   ticketTtlMs: number;
   now: () => Date;
+  /**
+   * 查询用户当前的密码代数(来自 AuthService 内存缓存):
+   * 编码进 __ferry_gateway 并在每次 /authz 时比对,改密或重置密码后已签发的应用 cookie 立即失效。
+   */
+  sessionEpoch?: (userId: string) => Promise<string | undefined>;
 }
 
 export interface GatewayResponse {
@@ -109,7 +114,7 @@ export class Gateway {
     const url = new URL(uri, "http://x");
     if (url.pathname === CALLBACK_PATH) return this.callback(host, url);
 
-    const userId = this.readAppCookie(headers, host);
+    const userId = await this.readAppCookie(headers, host);
     if (!userId || !(await this.directory.isActive(userId))) return this.toLogin(host, uri);
 
     const viewer = { id: userId, departments: await this.directory.departmentsOf(userId) };
@@ -133,32 +138,42 @@ export class Gateway {
 
   /** Ferry 这边:已登录的人要去某个应用,签一次性票据跳回去。host 必须是在线的应用,防止被当成跳转器 */
   async issueTicket(userId: string, host: string, next: string): Promise<GatewayResponse> {
-    const app = await this.service.gatewayApp(host.toLowerCase());
+    const normalizedHost = host.toLowerCase();
+    const app = await this.service.gatewayApp(normalizedHost);
     if (!app || app.disabled !== undefined) return page(404, "这个应用不存在或已下线");
+    if (this.config.sessionEpoch && !(await this.config.sessionEpoch(userId))) {
+      return this.toLogin(normalizedHost, next);
+    }
     this.sweep();
     const mine = [...this.tickets].filter(([, t]) => t.userId === userId);
     for (const [id] of mine.slice(0, Math.max(0, mine.length - Gateway.MAX_TICKETS_PER_USER + 1))) this.tickets.delete(id);
     const ticket = randomBytes(24).toString("base64url");
     this.tickets.set(ticket, {
       userId,
-      host: host.toLowerCase(),
+      host: normalizedHost,
       expiresAt: this.config.now().getTime() + this.config.ticketTtlMs,
     });
-    const target = `${this.config.appsScheme}://${host.toLowerCase()}${CALLBACK_PATH}?ticket=${ticket}&next=${encodeURIComponent(safePath(next))}`;
+    const target = `${this.config.appsScheme}://${normalizedHost}${CALLBACK_PATH}?ticket=${ticket}&next=${encodeURIComponent(safePath(next))}`;
     return redirect(target);
   }
 
-  private callback(host: string, url: URL): GatewayResponse {
+  private async callback(host: string, url: URL): Promise<GatewayResponse> {
     this.sweep();
     const ticketId = url.searchParams.get("ticket") ?? "";
     const ticket = this.tickets.get(ticketId);
     this.tickets.delete(ticketId);
     const now = this.config.now().getTime();
+    const nextPath = safePath(url.searchParams.get("next") ?? "/");
     if (!ticket || ticket.host !== host || ticket.expiresAt < now) {
-      return this.toLogin(host, safePath(url.searchParams.get("next") ?? "/"));
+      return this.toLogin(host, nextPath);
+    }
+    let epoch: string | undefined;
+    if (this.config.sessionEpoch) {
+      epoch = await this.config.sessionEpoch(ticket.userId);
+      if (!epoch) return this.toLogin(host, nextPath);
     }
     const expiresAt = now + this.config.appCookieTtlMs;
-    const value = this.signCookie(ticket.userId, host, expiresAt);
+    const value = this.signCookie(ticket.userId, host, expiresAt, epoch);
     const cookie = [
       `${APP_COOKIE}=${value}`,
       "HttpOnly",
@@ -168,7 +183,7 @@ export class Gateway {
       ...(this.config.appsScheme === "https" ? ["Secure"] : []),
     ].join("; ");
     // 必须给完整地址:Traefik 会把 /authz 返回的相对地址按 /authz 自己的地址补全,跳到错的地方
-    const next = `${this.config.appsScheme}://${host}${safePath(url.searchParams.get("next") ?? "/")}`;
+    const next = `${this.config.appsScheme}://${host}${nextPath}`;
     return { status: 302, headers: { location: next, "set-cookie": cookie }, body: "" };
   }
 
@@ -179,30 +194,43 @@ export class Gateway {
     return redirect(target.toString());
   }
 
-  private signCookie(userId: string, host: string, expiresAt: number): string {
-    const payload = Buffer.from(JSON.stringify({ u: userId, h: host, e: expiresAt })).toString("base64url");
+  private signCookie(userId: string, host: string, expiresAt: number, epoch?: string): string {
+    const payload = Buffer.from(
+      JSON.stringify({ u: userId, h: host, e: expiresAt, ...(epoch ? { v: epoch } : {}) }),
+    ).toString("base64url");
     return `${payload}.${this.hmac(`cookie:${payload}`)}`;
   }
 
   /**
-   * 网关 cookie 里的用户。同名 cookie 可能有多个(别的应用往上级域名塞的),逐个检查,
-   * 任意一个签名对、没过期、属于这个域名就算数;都不行返回 undefined
+   * 网关 cookie 里的用户。同名 cookie 可能有多个(别的应用往上级域名塞的,或改密前残留的旧 cookie),逐个检查,
+   * 任意一个签名对、没过期、属于这个域名且密码代数匹配就算数;都不行返回 undefined
    */
-  private readAppCookie(headers: IncomingHttpHeaders, host: string): string | undefined {
+  private async readAppCookie(headers: IncomingHttpHeaders, host: string): Promise<string | undefined> {
     for (const raw of readCookies(headers, APP_COOKIE)) {
-      const userId = this.verifyAppCookie(raw, host);
-      if (userId) return userId;
+      const verified = this.verifyAppCookie(raw, host);
+      if (!verified) continue;
+      if (this.config.sessionEpoch) {
+        const expected = await this.config.sessionEpoch(verified.userId);
+        if (!expected || verified.epoch !== expected) continue;
+      }
+      return verified.userId;
     }
     return undefined;
   }
 
-  private verifyAppCookie(raw: string, host: string): string | undefined {
+  private verifyAppCookie(raw: string, host: string): { userId: string; epoch?: string } | undefined {
     const [payload, signature] = raw.split(".");
     if (!payload || !signature || !sameText(signature, this.hmac(`cookie:${payload}`))) return undefined;
     try {
-      const data = JSON.parse(Buffer.from(payload, "base64url").toString()) as { u: string; h: string; e: number };
+      const data = JSON.parse(Buffer.from(payload, "base64url").toString()) as {
+        u: string;
+        h: string;
+        e: number;
+        v?: unknown;
+      };
       if (data.h !== host || data.e <= this.config.now().getTime() || typeof data.u !== "string") return undefined;
-      return data.u;
+      if (data.v !== undefined && typeof data.v !== "string") return undefined;
+      return { userId: data.u, epoch: data.v };
     } catch {
       return undefined;
     }

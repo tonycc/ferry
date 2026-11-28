@@ -11,7 +11,7 @@ import {
   MAX_PASSWORD_LENGTH,
   verifyPassword,
 } from "./password";
-import type { AuthStore, PersonalToken } from "./store";
+import type { AuthStore, PasswordRecord, PersonalToken } from "./store";
 
 export interface AuthConfig {
   /** 同一个账号连续输错几次后锁定 */
@@ -71,8 +71,8 @@ function loginFailedMessage(config: AuthConfig): string {
  *   已知的限制:知道同事手机号的人可以故意输错,让对方 15 分钟内登录不了。
  * - 密码只存 scrypt 哈希;登录会话和个人令牌只存 SHA-256 哈希。
  * - 每次用登录会话或令牌时都检查本人是否在职,离职后立即失效。
- * - 管理员重置密码时作废这个人的全部登录会话;个人令牌不受影响(忘记密码不该让 agent 停掉),
- *   访问员工应用的网关 cookie 也要等它自己过期(最长 GATEWAY_COOKIE_HOURS)。
+ * - 管理员重置密码或本人修改密码时,作废这个人的全部登录会话,并通过密码代数(sessionEpoch)使所有员工应用的网关 cookie 即时失效;
+ *   个人令牌不受影响(忘记密码不该让 agent 停掉)。
  */
 export class AuthService {
   private readonly config: AuthConfig;
@@ -87,6 +87,14 @@ export class AuthService {
    * issuedFor 是签发时的密码哈希:密码在这之后变过(被重置、已经改过),票据就不能再用
    */
   private readonly changeTickets = new Map<string, { userId: string; expiresAt: number; issuedFor: string }>();
+  /**
+   * 每个在用密码对应的网关会话代数(常驻内存,/authz O(1) 校验不查库):
+   * 只有已设置正式密码(mustChange=false)的人才有值;改密码、重置为初始密码、离职删密码时同步更新或清除。
+   */
+  private epochsLoaded = false;
+  private hydratingEpochs?: Promise<void>;
+  private readonly passwordEpochs = new Map<string, string>();
+  private epochGen = 0;
 
   constructor(
     private readonly store: AuthStore,
@@ -195,6 +203,8 @@ export class AuthService {
    */
   async endAccess(userId: string): Promise<number> {
     this.clearTickets(userId);
+    this.epochGen++;
+    this.passwordEpochs.delete(userId);
     await this.store.deleteSessionsOf(userId);
     await this.store.deletePassword(userId);
     let revoked = 0;
@@ -244,6 +254,35 @@ export class AuthService {
     return statuses;
   }
 
+  /**
+   * 从存储重新同步全部用户的密码代数(启动后首次访问自动加载;主进程每分钟与组织架构一起重读一次,
+   * 使命令行 set-password 重置的密码也在一分钟内让网关 cookie 失效)。
+   */
+  async reloadPasswordEpochs(): Promise<void> {
+    const gen = this.epochGen;
+    const records = await this.store.listPasswords();
+    if (this.epochGen !== gen) return this.reloadPasswordEpochs();
+    const next = new Map<string, string>();
+    for (const record of records) {
+      const epoch = passwordEpochOf(record);
+      if (epoch) next.set(record.userId, epoch);
+    }
+    this.passwordEpochs.clear();
+    for (const [k, v] of next) this.passwordEpochs.set(k, v);
+    this.epochsLoaded = true;
+  }
+
+  /** 网关用:某人当前的有效密码代数;未设正式密码或处于初始密码待改状态时返回 undefined */
+  async sessionEpoch(userId: string): Promise<string | undefined> {
+    if (!this.epochsLoaded) {
+      this.hydratingEpochs ??= this.reloadPasswordEpochs().finally(() => {
+        this.hydratingEpochs = undefined;
+      });
+      await this.hydratingEpochs;
+    }
+    return this.passwordEpochs.get(userId);
+  }
+
   /** 登录会话对应的人;会话过期、不存在或本人已离职时返回 undefined */
   async sessionUser(sessionToken: string): Promise<string | undefined> {
     const session = await this.store.getSession(hashToken(sessionToken));
@@ -284,13 +323,18 @@ export class AuthService {
   }
 
   private async setPassword(userId: string, password: string, mustChange: boolean, by: string | undefined) {
-    await this.store.savePassword({
+    this.epochGen++;
+    const record: PasswordRecord = {
       userId,
       hash: await hashPassword(password),
       mustChange,
       updatedAt: this.config.now(),
       updatedBy: by,
-    });
+    };
+    await this.store.savePassword(record);
+    const epoch = passwordEpochOf(record);
+    if (epoch) this.passwordEpochs.set(userId, epoch);
+    else this.passwordEpochs.delete(userId);
   }
 
   private async newSession(userId: string): Promise<{ sessionToken: string; expiresAt: Date }> {
@@ -352,6 +396,11 @@ export class AuthService {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function passwordEpochOf(record: PasswordRecord): string | undefined {
+  if (record.mustChange) return undefined;
+  return createHash("sha256").update(`ferry-gateway-epoch:${record.hash}`).digest("base64url").slice(0, 16);
 }
 
 /** 计输错次数用的账号:手机号去掉格式差异,工号不分大小写 */
