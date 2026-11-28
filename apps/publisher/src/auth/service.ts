@@ -204,9 +204,10 @@ export class AuthService {
   async endAccess(userId: string): Promise<number> {
     this.clearTickets(userId);
     this.epochGen++;
-    this.passwordEpochs.delete(userId);
     await this.store.deleteSessionsOf(userId);
     await this.store.deletePassword(userId);
+    this.epochGen++;
+    this.passwordEpochs.delete(userId);
     let revoked = 0;
     for (const token of await this.store.listTokens(userId)) {
       if (token.revokedAt) continue;
@@ -259,27 +260,32 @@ export class AuthService {
    * 使命令行 set-password 重置的密码也在一分钟内让网关 cookie 失效)。
    */
   async reloadPasswordEpochs(): Promise<void> {
-    const gen = this.epochGen;
-    const records = await this.store.listPasswords();
-    if (this.epochGen !== gen) return this.reloadPasswordEpochs();
-    const next = new Map<string, string>();
-    for (const record of records) {
-      const epoch = passwordEpochOf(record);
-      if (epoch) next.set(record.userId, epoch);
-    }
-    this.passwordEpochs.clear();
-    for (const [k, v] of next) this.passwordEpochs.set(k, v);
-    this.epochsLoaded = true;
+    if (this.hydratingEpochs) return this.hydratingEpochs;
+    const task = (async () => {
+      for (;;) {
+        const gen = this.epochGen;
+        const records = await this.store.listPasswords();
+        if (this.epochGen !== gen) continue;
+        const next = new Map<string, string>();
+        for (const record of records) {
+          const epoch = passwordEpochOf(record);
+          if (epoch) next.set(record.userId, epoch);
+        }
+        this.passwordEpochs.clear();
+        for (const [k, v] of next) this.passwordEpochs.set(k, v);
+        this.epochsLoaded = true;
+        return;
+      }
+    })().finally(() => {
+      if (this.hydratingEpochs === task) this.hydratingEpochs = undefined;
+    });
+    this.hydratingEpochs = task;
+    return task;
   }
 
   /** 网关用:某人当前的有效密码代数;未设正式密码或处于初始密码待改状态时返回 undefined */
   async sessionEpoch(userId: string): Promise<string | undefined> {
-    if (!this.epochsLoaded) {
-      this.hydratingEpochs ??= this.reloadPasswordEpochs().finally(() => {
-        this.hydratingEpochs = undefined;
-      });
-      await this.hydratingEpochs;
-    }
+    if (!this.epochsLoaded) await this.reloadPasswordEpochs();
     return this.passwordEpochs.get(userId);
   }
 
@@ -332,6 +338,7 @@ export class AuthService {
       updatedBy: by,
     };
     await this.store.savePassword(record);
+    this.epochGen++;
     const epoch = passwordEpochOf(record);
     if (epoch) this.passwordEpochs.set(userId, epoch);
     else this.passwordEpochs.delete(userId);

@@ -58,7 +58,7 @@ export class PostgresStore implements Store {
   }
 
   async getAppByHost(host: string) {
-    const [row] = await this.db.select().from(schema.apps).where(eq(schema.apps.host, host));
+    const [row] = await this.db.select().from(schema.apps).where(eq(schema.apps.host, host.toLowerCase()));
     return row && toApp(row);
   }
 
@@ -77,151 +77,159 @@ export class PostgresStore implements Store {
   }
 
   async createApp(app: AppRecord) {
-    try {
-      const inserted = await this.db
-        .insert(schema.apps)
-        .values({
-          name: app.name,
-          ownerId: app.ownerId,
-          visibility: app.visibility,
-          visibilityPinned: app.visibilityPinned ?? false,
-          host: app.host,
-          platform: app.platform,
-          liveVersion: app.liveVersion ?? null,
-          disabled: app.disabled ?? null,
-          unpublishedAt: app.unpublishedAt ?? null,
-          createdAt: app.createdAt,
-        })
-        .onConflictDoNothing()
-        .returning({ name: schema.apps.name });
-      return inserted.length > 0;
-    } finally {
-      this.emit({ kind: "app", appName: app.name, host: app.host });
+    const normalizedHost = app.host.toLowerCase();
+    const inserted = await this.db
+      .insert(schema.apps)
+      .values({
+        name: app.name,
+        ownerId: app.ownerId,
+        visibility: app.visibility,
+        visibilityPinned: app.visibilityPinned ?? false,
+        host: normalizedHost,
+        platform: app.platform,
+        liveVersion: app.liveVersion ?? null,
+        disabled: app.disabled ?? null,
+        unpublishedAt: app.unpublishedAt ?? null,
+        createdAt: app.createdAt,
+      })
+      .onConflictDoNothing()
+      .returning({ name: schema.apps.name, host: schema.apps.host });
+    if (inserted.length > 0) {
+      this.emit({ kind: "app", appName: app.name, host: inserted[0]!.host });
+      return true;
     }
+    return false;
   }
 
   async prepareAppSlot(candidate: AppRecord, maxActiveByOwner: number): Promise<PrepareAppResult> {
-    try {
-      return await this.db.transaction(async (tx) => {
-        // 严格按 owner → app 两层顺序拿事务级咨询锁,消除空表幻读且绝对不会死锁
-        await lockKey(tx, `ferry:owner:${candidate.ownerId}`);
-        await lockKey(tx, `ferry:app:${candidate.name}`);
-        const [existingRow] = await tx.select().from(schema.apps).where(eq(schema.apps.name, candidate.name)).for("update");
-        const existing = existingRow && toApp(existingRow);
-        if (existing && existing.ownerId !== candidate.ownerId) return { ok: false, reason: "conflict" };
-        if (existing?.disabled) return { ok: false, reason: "disabled" };
-        if (!existing || existing.unpublishedAt !== undefined) {
-          const [{ active } = { active: 0 }] = await tx
-            .select({ active: count() })
-            .from(schema.apps)
-            .where(and(eq(schema.apps.ownerId, candidate.ownerId), isNull(schema.apps.unpublishedAt)));
-          if (active >= maxActiveByOwner) return { ok: false, reason: "quota_exceeded" };
-        }
-        if (existing) return { ok: true, app: existing, created: false };
-        const inserted = await tx
-          .insert(schema.apps)
-          .values({
-            name: candidate.name,
-            ownerId: candidate.ownerId,
-            visibility: candidate.visibility,
-            visibilityPinned: candidate.visibilityPinned ?? false,
-            host: candidate.host,
-            platform: candidate.platform,
-            liveVersion: candidate.liveVersion ?? null,
-            disabled: candidate.disabled ?? null,
-            unpublishedAt: candidate.unpublishedAt ?? null,
-            createdAt: candidate.createdAt,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (inserted.length === 0) return { ok: false, reason: "conflict" };
-        return { ok: true, app: toApp(inserted[0]!), created: true };
-      });
-    } finally {
-      this.emit({ kind: "app", appName: candidate.name, host: candidate.host });
+    const normalizedHost = candidate.host.toLowerCase();
+    const result = await this.db.transaction(async (tx): Promise<PrepareAppResult> => {
+      // 严格按 (LOCK_NS_OWNER=1 → LOCK_NS_APP=2) 双整数命名空间顺序拿事务级咨询锁,数学上零跨层哈希碰撞且无死锁
+      await lockKey(tx, LOCK_NS_OWNER, candidate.ownerId);
+      await lockKey(tx, LOCK_NS_APP, candidate.name);
+      const [existingRow] = await tx.select().from(schema.apps).where(eq(schema.apps.name, candidate.name)).for("update");
+      const existing = existingRow && toApp(existingRow);
+      if (existing && existing.ownerId !== candidate.ownerId) return { ok: false, reason: "conflict" };
+      if (existing?.disabled) return { ok: false, reason: "disabled" };
+      if (!existing || existing.unpublishedAt !== undefined) {
+        const [{ active } = { active: 0 }] = await tx
+          .select({ active: count() })
+          .from(schema.apps)
+          .where(and(eq(schema.apps.ownerId, candidate.ownerId), isNull(schema.apps.unpublishedAt)));
+        if (active >= maxActiveByOwner) return { ok: false, reason: "quota_exceeded" };
+      }
+      if (existing) return { ok: true, app: existing, created: false };
+      const inserted = await tx
+        .insert(schema.apps)
+        .values({
+          name: candidate.name,
+          ownerId: candidate.ownerId,
+          visibility: candidate.visibility,
+          visibilityPinned: candidate.visibilityPinned ?? false,
+          host: normalizedHost,
+          platform: candidate.platform,
+          liveVersion: candidate.liveVersion ?? null,
+          disabled: candidate.disabled ?? null,
+          unpublishedAt: candidate.unpublishedAt ?? null,
+          createdAt: candidate.createdAt,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted.length === 0) return { ok: false, reason: "conflict" };
+      return { ok: true, app: toApp(inserted[0]!), created: true };
+    });
+    if (result.ok && result.created) {
+      this.emit({ kind: "app", appName: result.app.name, host: result.app.host });
     }
+    return result;
   }
 
   async saveApp(app: AppRecord) {
-    try {
-      const updated = await this.db
-        .update(schema.apps)
-        .set({
-          platform: app.platform,
-          liveVersion: app.liveVersion ?? null,
-          visibility: app.visibility,
-          visibilityPinned: app.visibilityPinned ?? false,
-          unpublishedAt: app.unpublishedAt ?? null,
-        })
-        .where(eq(schema.apps.name, app.name))
-        .returning({ name: schema.apps.name });
-      if (updated.length === 0) throw new Error(`应用 ${app.name} 不存在`);
-    } finally {
-      this.emit({ kind: "app", appName: app.name, host: app.host });
-    }
+    const updated = await this.db
+      .update(schema.apps)
+      .set({
+        platform: app.platform,
+        liveVersion: app.liveVersion ?? null,
+        // 数据库里 visibility_pinned 已为 true 时保留库里的 visibility,防止后台发布步骤的旧快照覆盖期间修改的可见范围
+        visibility: sql`CASE WHEN ${schema.apps.visibilityPinned} THEN ${schema.apps.visibility} ELSE ${app.visibility} END`,
+        visibilityPinned: app.visibilityPinned ? true : sql`${schema.apps.visibilityPinned}`,
+        unpublishedAt: app.unpublishedAt ?? null,
+      })
+      .where(eq(schema.apps.name, app.name))
+      .returning({ name: schema.apps.name, host: schema.apps.host });
+    if (updated.length === 0) throw new Error(`应用 ${app.name} 不存在`);
+    this.emit({ kind: "app", appName: app.name, host: updated[0]!.host });
+  }
+
+  async setAppVisibility(name: string, visibility: Visibility, pinned: boolean) {
+    const updated = await this.db
+      .update(schema.apps)
+      .set({ visibility, visibilityPinned: pinned })
+      .where(eq(schema.apps.name, name))
+      .returning({ name: schema.apps.name, host: schema.apps.host });
+    if (updated.length === 0) throw new Error(`应用 ${name} 不存在`);
+    this.emit({ kind: "app", appName: name, host: updated[0]!.host });
   }
 
   async markAppUnpublished(appName: string, ownerId: string, at: Date): Promise<MarkUnpublishedResult> {
-    let host: string | undefined;
-    try {
-      return await this.db.transaction(async (tx) => {
-        await lockKey(tx, `ferry:app:${appName}`);
-        const [appRow] = await tx.select().from(schema.apps).where(eq(schema.apps.name, appName)).for("update");
-        if (!appRow) return { ok: false, reason: "not_found" };
-        const app = toApp(appRow);
-        host = app.host;
-        if (app.ownerId !== ownerId) return { ok: false, reason: "not_found" };
-        if (app.unpublishedAt && !app.platform.appId) {
-          return { ok: true, app, alreadyDone: true, firstAttempt: false };
-        }
-        const [unfinished] = await tx
-          .select({ id: schema.releases.id })
-          .from(schema.releases)
-          .where(and(eq(schema.releases.appName, appName), notInArray(schema.releases.state, [...TERMINAL_STATES])))
-          .limit(1);
-        if (unfinished) return { ok: false, reason: "in_progress" };
-        const firstAttempt = !app.unpublishedAt;
-        await tx.update(schema.apps).set({ unpublishedAt: at }).where(eq(schema.apps.name, appName));
-        app.unpublishedAt = at;
-        return { ok: true, app, alreadyDone: false, firstAttempt };
-      });
-    } finally {
-      this.emit({ kind: "app", appName, host });
+    const result = await this.db.transaction(async (tx): Promise<MarkUnpublishedResult> => {
+      await lockKey(tx, LOCK_NS_APP, appName);
+      const [appRow] = await tx.select().from(schema.apps).where(eq(schema.apps.name, appName)).for("update");
+      if (!appRow) return { ok: false, reason: "not_found" };
+      const app = toApp(appRow);
+      if (app.ownerId !== ownerId) return { ok: false, reason: "not_found" };
+      if (app.unpublishedAt && !app.platform.appId) {
+        return { ok: true, app, alreadyDone: true, firstAttempt: false };
+      }
+      const [unfinished] = await tx
+        .select({ id: schema.releases.id })
+        .from(schema.releases)
+        .where(and(eq(schema.releases.appName, appName), notInArray(schema.releases.state, [...TERMINAL_STATES])))
+        .limit(1);
+      if (unfinished) return { ok: false, reason: "in_progress" };
+      const firstAttempt = !app.unpublishedAt;
+      await tx.update(schema.apps).set({ unpublishedAt: at }).where(eq(schema.apps.name, appName));
+      app.unpublishedAt = at;
+      return { ok: true, app, alreadyDone: false, firstAttempt };
+    });
+    if (result.ok && !result.alreadyDone) {
+      this.emit({ kind: "app", appName, host: result.app.host });
     }
+    return result;
   }
 
   async deleteApp(name: string) {
-    let host: string | undefined;
-    try {
-      // 发布记录、上传凭据和密钥引用了应用,先删它们;放在一个事务里,不会只删一半
-      await this.db.transaction(async (tx) => {
-        await lockKey(tx, `ferry:app:${name}`);
-        const [existing] = await tx.select({ host: schema.apps.host }).from(schema.apps).where(eq(schema.apps.name, name)).for("update");
-        host = existing?.host;
-        await tx.delete(schema.appSecrets).where(eq(schema.appSecrets.appName, name));
-        await tx.delete(schema.uploads).where(eq(schema.uploads.appName, name));
-        await tx.delete(schema.releases).where(eq(schema.releases.appName, name));
-        await tx.delete(schema.apps).where(eq(schema.apps.name, name));
-      });
-    } finally {
-      this.emit({ kind: "app", appName: name, host });
+    // 发布记录、上传凭据和密钥引用了应用,先删它们;放在一个事务里校验无进行中发布单后再删,不会只删一半或删毁活跃发布
+    const deletedHost = await this.db.transaction(async (tx) => {
+      await lockKey(tx, LOCK_NS_APP, name);
+      const [existing] = await tx.select({ host: schema.apps.host }).from(schema.apps).where(eq(schema.apps.name, name)).for("update");
+      if (!existing) return undefined;
+      const [unfinished] = await tx
+        .select({ id: schema.releases.id })
+        .from(schema.releases)
+        .where(and(eq(schema.releases.appName, name), notInArray(schema.releases.state, [...TERMINAL_STATES])))
+        .limit(1);
+      if (unfinished) throw new Error(`应用 ${name} 仍有未结束的发布单,不能删除`);
+      await tx.delete(schema.appSecrets).where(eq(schema.appSecrets.appName, name));
+      await tx.delete(schema.uploads).where(eq(schema.uploads.appName, name));
+      await tx.delete(schema.releases).where(eq(schema.releases.appName, name));
+      await tx.delete(schema.apps).where(eq(schema.apps.name, name));
+      return existing.host;
+    });
+    if (deletedHost !== undefined) {
+      this.emit({ kind: "app", appName: name, host: deletedHost });
       this.emit({ kind: "release", appName: name });
     }
   }
 
   async setAppDisabled(name: string, disabled: AppRecord["disabled"]) {
-    let host: string | undefined;
-    try {
-      const updated = await this.db
-        .update(schema.apps)
-        .set({ disabled: disabled ?? null })
-        .where(eq(schema.apps.name, name))
-        .returning({ name: schema.apps.name, host: schema.apps.host });
-      if (updated.length === 0) throw new Error(`应用 ${name} 不存在`);
-      host = updated[0]?.host;
-    } finally {
-      this.emit({ kind: "app", appName: name, host });
-    }
+    const updated = await this.db
+      .update(schema.apps)
+      .set({ disabled: disabled ?? null })
+      .where(eq(schema.apps.name, name))
+      .returning({ name: schema.apps.name, host: schema.apps.host });
+    if (updated.length === 0) throw new Error(`应用 ${name} 不存在`);
+    this.emit({ kind: "app", appName: name, host: updated[0]!.host });
   }
 
   async getRelease(id: string) {
@@ -238,14 +246,35 @@ export class PostgresStore implements Store {
     return rows.map(toRelease);
   }
 
-  async getLatestHealthcheck(appName: string) {
-    const [row] = await this.db
-      .select({ healthcheck: sql<string | null>`${schema.releases.manifest}->>'healthcheck'` })
+  async getActiveHealthchecks(appName: string) {
+    const rows = await this.db
+      .select({
+        state: schema.releases.state,
+        healthcheck: sql<string | null>`${schema.releases.manifest}->>'healthcheck'`,
+      })
       .from(schema.releases)
-      .where(eq(schema.releases.appName, appName))
+      .where(
+        and(
+          eq(schema.releases.appName, appName),
+          sql`(${schema.releases.state} = 'LIVE' OR ${notInArray(schema.releases.state, [...TERMINAL_STATES])})`,
+        ),
+      )
       .orderBy(desc(schema.releases.createdAt), desc(schema.releases.seq))
-      .limit(1);
-    return row?.healthcheck ?? undefined;
+      .limit(5);
+    const paths = new Set<string>();
+    let tookLive = false;
+    for (const row of rows) {
+      if (!row.healthcheck) continue;
+      if (row.state === "LIVE") {
+        if (!tookLive) {
+          paths.add(row.healthcheck);
+          tookLive = true;
+        }
+      } else {
+        paths.add(row.healthcheck);
+      }
+    }
+    return [...paths];
   }
 
   async saveRelease(release: ReleaseRecord) {
@@ -256,38 +285,34 @@ export class PostgresStore implements Store {
       url: release.url ?? null,
       history: release.history,
     };
-    try {
-      await this.db
-        .insert(schema.releases)
-        .values({
-          id: release.id,
-          kind: release.kind,
-          appName: release.appName,
-          ownerId: release.ownerId,
-          version: release.version,
-          manifest: release.manifest,
-          createdAt: release.createdAt,
-          ...changes,
-        })
-        .onConflictDoUpdate({ target: schema.releases.id, set: changes });
-    } finally {
-      this.emit({ kind: "release", appName: release.appName });
-    }
+    await this.db
+      .insert(schema.releases)
+      .values({
+        id: release.id,
+        kind: release.kind,
+        appName: release.appName,
+        ownerId: release.ownerId,
+        version: release.version,
+        manifest: release.manifest,
+        createdAt: release.createdAt,
+        ...changes,
+      })
+      .onConflictDoUpdate({ target: schema.releases.id, set: changes });
+    this.emit({ kind: "release", appName: release.appName });
   }
 
   async startRelease(
     release: ReleaseRecord,
     options: { maxActiveByOwner?: number; expectedLiveVersion?: string } = {},
   ): Promise<StartReleaseResult> {
-    let host: string | undefined;
+    let result: StartReleaseResult;
     try {
-      return await this.db.transaction(async (tx) => {
-        await lockKey(tx, `ferry:owner:${release.ownerId}`);
-        await lockKey(tx, `ferry:app:${release.appName}`);
+      result = await this.db.transaction(async (tx): Promise<StartReleaseResult> => {
+        await lockKey(tx, LOCK_NS_OWNER, release.ownerId);
+        await lockKey(tx, LOCK_NS_APP, release.appName);
         const [appRow] = await tx.select().from(schema.apps).where(eq(schema.apps.name, release.appName)).for("update");
         if (!appRow) return { ok: false, reason: "not_found" };
         const app = toApp(appRow);
-        host = app.host;
         if (app.ownerId !== release.ownerId) return { ok: false, reason: "forbidden_owner" };
         if (app.disabled) return { ok: false, reason: "disabled" };
         if (options.expectedLiveVersion !== undefined) {
@@ -331,10 +356,15 @@ export class PostgresStore implements Store {
         });
         return { ok: true, app, revived };
       });
-    } finally {
-      this.emit({ kind: "app", appName: release.appName, host });
+    } catch (err) {
+      if ((err as { code?: string })?.code === "23505") return { ok: false, reason: "in_progress" };
+      throw err;
+    }
+    if (result.ok) {
+      if (result.revived) this.emit({ kind: "app", appName: release.appName, host: result.app.host });
       this.emit({ kind: "release", appName: release.appName });
     }
+    return result;
   }
 
   async listUnfinishedReleases() {
@@ -421,9 +451,16 @@ type AppRow = typeof schema.apps.$inferSelect;
 type ReleaseRow = typeof schema.releases.$inferSelect;
 type UploadRow = typeof schema.uploads.$inferSelect;
 
-/** 事务级 64 位咨询锁:随事务提交/回滚自动释放,也能锁住尚未写入数据库的新名字或空配额用户 */
-async function lockKey(tx: Pick<PostgresJsDatabase<typeof schema>, "execute">, key: string): Promise<void> {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}::text, 0))`);
+const LOCK_NS_OWNER = 1;
+const LOCK_NS_APP = 2;
+
+/** 双整数命名空间事务级咨询锁:按 (namespace, hashtext(key)) 严格隔离 owner 与 app 两级锁空间,随事务提交/回滚自动释放 */
+async function lockKey(
+  tx: Pick<PostgresJsDatabase<typeof schema>, "execute">,
+  namespace: number,
+  key: string,
+): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(${namespace}::integer, hashtext(${key}::text))`);
 }
 
 function toApp(row: AppRow): AppRecord {

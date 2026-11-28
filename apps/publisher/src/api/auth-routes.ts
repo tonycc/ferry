@@ -71,7 +71,12 @@ export function registerAuthRoutes(
       const host = String(req.query.host ?? "");
       const next = safePath(String(req.query.next ?? "/"));
       const userId = await sessionUserFrom(req.headers, auth);
-      if (!userId) {
+      if (!userId || !(await auth.sessionEpoch(userId))) {
+        // 会话存在但没有有效正式密码(异常残留会话):清掉失效会话并跳登录页,避免 /auth/app 自我重定向死循环
+        if (userId) {
+          for (const session of readCookies(req.headers, SESSION_COOKIE)) await auth.logout(session);
+          reply.header("set-cookie", cookie("", 0));
+        }
         const back = `/auth/app?host=${encodeURIComponent(host)}&next=${encodeURIComponent(next)}`;
         return reply.redirect(`/login?next=${encodeURIComponent(back)}`);
       }

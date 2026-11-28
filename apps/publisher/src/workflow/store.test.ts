@@ -1,6 +1,9 @@
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { parseManifest } from "@ferry/manifest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { storeCases, type StoreCase } from "../test/stores";
+import { TERMINAL_STATES } from "./states";
 import type { AppRecord, ReleaseRecord, UploadTicket } from "./store";
 
 const parsed = parseManifest("name: ledger\ntemplate: node-postgres\ndatabase: postgres\nmigrate: npm run migrate\n");
@@ -83,18 +86,21 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       expect((await store.getApp("ledger"))?.disabled).toBeUndefined();
     });
 
-    it("应用名已被占用时不覆盖", async () => {
+    it("应用名已被占用或域名冲突时不覆盖(域名不区分大小写)", async () => {
       const store = storeCase.create();
       await store.createApp(newApp());
       expect(await store.createApp(newApp({ ownerId: "dingtalk:bob" }))).toBe(false);
+      expect(await store.createApp(newApp({ name: "other", host: "LEDGER.APPS.TEST" }))).toBe(false);
       expect((await store.getApp("ledger"))?.ownerId).toBe("dingtalk:alice");
+      expect((await store.getAppByHost("LEDGER.APPS.TEST"))?.name).toBe("ledger");
     });
 
-    it("用旧数据保存部署信息时,不会冲掉期间写入的停用状态", async () => {
+    it("用旧数据保存部署信息时,不会冲掉期间写入的停用状态或已锁定的可见范围", async () => {
       const store = storeCase.create();
-      await store.createApp(newApp());
+      await store.createApp(newApp({ visibility: "company" }));
       const stale = (await store.getApp("ledger"))!;
       await store.setAppDisabled("ledger", { by: "dingtalk:admin", at: at("2026-11-16T09:00:00.000Z") });
+      await store.setAppVisibility("ledger", "self", true);
 
       stale.liveVersion = "v1";
       await store.saveApp(stale);
@@ -102,6 +108,8 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       const read = await store.getApp("ledger");
       expect(read?.liveVersion).toBe("v1");
       expect(read?.disabled?.by).toBe("dingtalk:admin");
+      expect(read?.visibility).toBe("self");
+      expect(read?.visibilityPinned).toBe(true);
     });
 
     it("读出的是副本:改了不保存,存储里的数据不变", async () => {
@@ -173,25 +181,38 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       expect((await store.listReleases("ledger")).map((r) => r.state)).toEqual(["LIVE", "PENDING"]);
     });
 
-    it("getLatestHealthcheck:只返回最近一条发布单的健康检查路径", async () => {
+    it("getActiveHealthchecks:放行线上 LIVE 与进行中发布单的路径,忽略失败或已回滚的记录", async () => {
       const store = storeCase.create();
       await store.createApp(newApp());
-      expect(await store.getLatestHealthcheck("ledger")).toBeUndefined();
+      expect(await store.getActiveHealthchecks("ledger")).toEqual([]);
       await store.saveRelease(
         newRelease({
           id: "00000000-0000-4000-8000-000000000021",
           state: "LIVE",
-          manifest: { ...manifest, healthcheck: "/ready" },
+          manifest: { ...manifest, healthcheck: "/ready-v1" },
         }),
       );
+      // 失败或自动回滚的发布单改了 healthcheck,不能把线上 v1 的健康检查污染掉
       await store.saveRelease(
         newRelease({
           id: "00000000-0000-4000-8000-000000000022",
-          state: "PENDING",
-          manifest: { ...manifest, healthcheck: "/healthz-v2" },
+          state: "ROLLED_BACK",
+          manifest: { ...manifest, healthcheck: "/broken-v2" },
         }),
       );
-      expect(await store.getLatestHealthcheck("ledger")).toBe("/healthz-v2");
+      expect(await store.getActiveHealthchecks("ledger")).toEqual(["/ready-v1"]);
+
+      // 新版本正在 VERIFYING 时,新旧路径都可验证;新版本变为 LIVE 后只认最新 LIVE
+      const verifying = newRelease({
+        id: "00000000-0000-4000-8000-000000000023",
+        state: "VERIFYING",
+        manifest: { ...manifest, healthcheck: "/healthz-v3" },
+      });
+      await store.saveRelease(verifying);
+      expect(new Set(await store.getActiveHealthchecks("ledger"))).toEqual(new Set(["/healthz-v3", "/ready-v1"]));
+
+      await store.saveRelease({ ...verifying, state: "LIVE" });
+      expect(await store.getActiveHealthchecks("ledger")).toEqual(["/healthz-v3"]);
     });
 
     it("并发配额与发布互斥:prepareAppSlot、startRelease、markAppUnpublished 原子串行", async () => {
@@ -318,5 +339,21 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       expect(await store.getUpload("ledger", "v1")).toEqual(received);
       expect(await store.getUpload("ledger", "v2")).toBeUndefined();
     });
+  });
+});
+
+describe("数据库唯一部分索引终态集合一致性", () => {
+  it("schema.ts 与 0014 迁移里的 NOT IN 终态列表和 TERMINAL_STATES 完全一致", async () => {
+    const schemaText = await readFile(fileURLToPath(new URL("../db/schema.ts", import.meta.url)), "utf8");
+    const migrationText = await readFile(
+      fileURLToPath(new URL("../../drizzle/0014_active_release_unique.sql", import.meta.url)),
+      "utf8",
+    );
+    for (const source of [schemaText, migrationText]) {
+      const match = source.match(/NOT IN \(([^)]+)\)/);
+      expect(match).toBeTruthy();
+      const states = match![1]!.split(",").map((s) => s.trim().replace(/^'|'$/g, ""));
+      expect(new Set(states)).toEqual(new Set(TERMINAL_STATES));
+    }
   });
 });

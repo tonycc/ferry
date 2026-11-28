@@ -11,7 +11,9 @@
 #   DOKPLOY_VERSION    Dokploy 版本,默认 v0.31.3(Ferry 是按这个版本验证的)
 #   ADVERTISE_ADDR     Docker Swarm 用的本机地址,默认取默认路由的出口地址
 #   SKIP_FIREWALL=1    不加防火墙规则(见下面 configure_firewall)
-#   ALLOW_EGRESS_V4_CIDRS 允许容器访问的企业内网 IPv4 地址/网段(如内网 npm / 镜像仓库代理,传给 firewall.example.sh)
+#   BLOCK_PRIVATE_EGRESS 设为 0 关闭对企业私网网段的容器出站拦截(默认 1 开启)
+#   ALLOW_EGRESS_V4_CIDRS 允许容器访问的企业内网 IPv4 地址/网段(如内网 npm/镜像代理、Ferry 前置内网 SLB VIP)
+#   ALLOW_EGRESS_V6_CIDRS 允许容器访问的企业内网 IPv6 地址/网段
 #
 # 不操作任何外部服务(阿里云 DNS、证书等),也不保存外部服务的凭据。可以重复运行:已经装好的部分会跳过,
 # 已有的 .env 不会被覆盖。生成的密码和密钥只写进文件(chmod 600),不打印。
@@ -281,11 +283,12 @@ configure_firewall() {
     echo "SKIP_FIREWALL=1,跳过"
     return
   fi
-  # 加不上只提醒,不中止:Ferry 已经起来了,后面还要打印设置码
-  if "$DEPLOY_DIR/firewall.example.sh" >/dev/null 2>&1; then
+  # 加不上只提醒并打印真实原因,不中止:Ferry 已经起来了,后面还要打印设置码
+  local fw_err
+  if fw_err=$("$DEPLOY_DIR/firewall.example.sh" 2>&1 >/dev/null); then
     echo "已添加(重启后不保留,长期生效要用 iptables-persistent 保存)"
   else
-    echo "没加上(可能没有 iptables,或者内核不支持 conntrack 匹配)。安装照常完成;请按 firewall.example.sh 里的说明手动处理" >&2
+    echo "没加上:${fw_err:-未知错误}。安装照常完成;请按 firewall.example.sh 里的说明排查后手动执行" >&2
   fi
 }
 

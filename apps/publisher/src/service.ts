@@ -171,11 +171,13 @@ export class PublisherService {
    */
   private appsHydrated = false;
   private hydratingApps?: Promise<void>;
+  private appMutationGen = 0;
+  private readonly refreshingHosts = new Map<string, Promise<void>>();
   private readonly appsByHost = new Map<string, AppRecord>();
   private readonly hostByApp = new Map<string, string>();
   private readonly dirtyApps = new Set<string>();
   private readonly dirtyHosts = new Set<string>();
-  private readonly healthchecks = new Map<string, string | null>();
+  private readonly healthchecks = new Map<string, readonly string[]>();
   private readonly releaseGen = new Map<string, number>();
 
   constructor(
@@ -190,10 +192,14 @@ export class PublisherService {
 
   private onStoreMutation(mutation: StoreMutation): void {
     if (mutation.kind === "app") {
-      const host = mutation.host ?? this.hostByApp.get(mutation.appName);
-      this.dirtyApps.add(mutation.appName);
-      if (host) this.dirtyHosts.add(host);
-      else if (this.appsHydrated) this.appsHydrated = false;
+      this.appMutationGen++;
+      const host = (mutation.host ?? this.hostByApp.get(mutation.appName))?.toLowerCase();
+      if (host) {
+        this.dirtyApps.add(mutation.appName);
+        this.dirtyHosts.add(host);
+      } else if (this.appsHydrated && this.hostByApp.has(mutation.appName)) {
+        this.appsHydrated = false;
+      }
       return;
     }
     this.healthchecks.delete(mutation.appName);
@@ -226,7 +232,7 @@ export class PublisherService {
       name,
       ownerId: user.id,
       visibility: "self",
-      host: `${name}.${this.config.appsDomain}`,
+      host: `${name}.${this.config.appsDomain.toLowerCase()}`,
       platform: {},
       createdAt: new Date(),
     };
@@ -478,7 +484,7 @@ export class PublisherService {
     const from = app.visibility;
     app.visibility = visibility;
     app.visibilityPinned = true;
-    await this.store.saveApp(app);
+    await this.store.setAppVisibility(app.name, visibility, true);
     if (from !== visibility) await this.audit.record(user.id, "app.visibility", app, { from, to: visibility });
     return toAppView(app, this.appUrl(app.host));
   }
@@ -651,6 +657,7 @@ export class PublisherService {
    */
   async disableApp(admin: User, appName: string, reason?: string): Promise<void> {
     requireAdmin(admin);
+    if (this.deleting.has(appName)) return;
     const app = await this.store.getApp(appName);
     if (!app) throw new UserError("not_found", `应用 ${appName} 不存在`);
     if (app.disabled) return;
@@ -681,16 +688,27 @@ export class PublisherService {
       if (!app.unpublishedAt && !app.disabled) {
         throw new UserError("invalid_input", `应用 ${app.name} 还在线,不能删除。请先停用,或者请负责人先下线`);
       }
-      const running = async () => (await this.store.listReleases(app.name)).some((r) => !isTerminal(r.state));
-      if (await running()) {
+      const releasesBefore = await this.store.listReleases(app.name);
+      if (releasesBefore.some((r) => !isTerminal(r.state))) {
         throw new UserError("conflict", `应用 ${app.name} 有一次发布还在进行中,请等它结束后再删除`);
       }
       // 先标记为停用:删除要十几秒,这期间负责人不能再发布(已下线的应用本来可以随时重新发布)。
-      // 标记前刚好开始的发布,会在下一步检查到停用后自行终止;这里再查一次,有就先不删
+      // 标记前刚好开始的发布(包括极短时间内刚恢复应用或结束的发布),在这里复核一次,有则撤回临时停用标记并不删
+      const deleteMarkerReason = "管理员正在删除这个应用";
       if (!app.disabled) {
-        await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason: "管理员正在删除这个应用" });
-        if (await running()) {
-          await this.store.setAppDisabled(app.name, undefined);
+        await this.store.setAppDisabled(app.name, { by: admin.id, at: new Date(), reason: deleteMarkerReason });
+        const [latestApp, releasesAfter] = await Promise.all([
+          this.store.getApp(app.name),
+          this.store.listReleases(app.name),
+        ]);
+        const raced =
+          releasesAfter.some((r) => !isTerminal(r.state)) ||
+          releasesAfter.length > releasesBefore.length ||
+          (app.unpublishedAt !== undefined && latestApp?.unpublishedAt === undefined);
+        if (raced) {
+          if (latestApp?.disabled?.reason === deleteMarkerReason) {
+            await this.store.setAppDisabled(app.name, undefined);
+          }
           throw new UserError("conflict", `应用 ${app.name} 有一次发布刚刚开始,请等它结束后再删除`);
         }
       }
@@ -763,6 +781,8 @@ export class PublisherService {
 
   async enableApp(admin: User, appName: string): Promise<void> {
     requireAdmin(admin);
+    this.assertNotUnpublishing(appName);
+    if (this.deleting.has(appName)) throw new UserError("conflict", `应用 ${appName} 正在删除中,不能恢复`);
     const app = await this.store.getApp(appName);
     if (!app) throw new UserError("not_found", `应用 ${appName} 不存在`);
     if (!app.disabled) return;
@@ -805,8 +825,9 @@ export class PublisherService {
     return { checked, failed };
   }
 
-  /** 网关用:域名对应的、没有下线的应用。稳态请求 100% 命中内存缓存,变更时按单域名增量刷新 */
-  async gatewayApp(host: string): Promise<AppRecord | undefined> {
+  /** 网关用:域名对应的、没有下线的应用。稳态请求 100% 命中内存缓存,变更时按单域名单飞+代数校验增量刷新 */
+  async gatewayApp(rawHost: string): Promise<AppRecord | undefined> {
+    const host = rawHost.toLowerCase();
     if (!this.appsHydrated) {
       this.hydratingApps ??= this.hydrateGatewayApps().finally(() => {
         this.hydratingApps = undefined;
@@ -815,36 +836,60 @@ export class PublisherService {
     }
     const cachedAtHost = this.appsByHost.get(host);
     if (this.dirtyHosts.has(host) || (cachedAtHost && this.dirtyApps.has(cachedAtHost.name))) {
-      this.dirtyHosts.delete(host);
-      if (cachedAtHost) this.dirtyApps.delete(cachedAtHost.name);
-      const fresh = await this.store.getAppByHost(host);
-      if (fresh) {
-        this.appsByHost.set(fresh.host, fresh);
-        this.hostByApp.set(fresh.name, fresh.host);
-        this.dirtyApps.delete(fresh.name);
-      } else {
-        this.appsByHost.delete(host);
-        if (cachedAtHost && this.hostByApp.get(cachedAtHost.name) === host) {
-          this.hostByApp.delete(cachedAtHost.name);
-        }
+      let pending = this.refreshingHosts.get(host);
+      if (!pending) {
+        pending = this.refreshGatewayHost(host).finally(() => {
+          if (this.refreshingHosts.get(host) === pending) this.refreshingHosts.delete(host);
+        });
+        this.refreshingHosts.set(host, pending);
       }
+      await pending;
     }
     const app = this.appsByHost.get(host);
     if (!app || app.unpublishedAt) return undefined;
-    return { ...app };
+    return structuredClone(app);
   }
 
   private async hydrateGatewayApps(): Promise<void> {
-    this.dirtyApps.clear();
-    this.dirtyHosts.clear();
-    const apps = await this.store.listApps();
-    this.appsByHost.clear();
-    this.hostByApp.clear();
-    for (const app of apps) {
-      this.appsByHost.set(app.host, app);
-      this.hostByApp.set(app.name, app.host);
+    for (;;) {
+      const gen = this.appMutationGen;
+      const apps = await this.store.listApps();
+      if (this.appMutationGen !== gen) continue;
+      this.appsByHost.clear();
+      this.hostByApp.clear();
+      this.dirtyApps.clear();
+      this.dirtyHosts.clear();
+      for (const app of apps) {
+        const h = app.host.toLowerCase();
+        this.appsByHost.set(h, app);
+        this.hostByApp.set(app.name, h);
+      }
+      this.appsHydrated = true;
+      return;
     }
-    this.appsHydrated = true;
+  }
+
+  private async refreshGatewayHost(host: string): Promise<void> {
+    for (;;) {
+      const gen = this.appMutationGen;
+      const previous = this.appsByHost.get(host);
+      const fresh = await this.store.getAppByHost(host);
+      if (this.appMutationGen !== gen) continue;
+      if (fresh) {
+        const h = fresh.host.toLowerCase();
+        this.appsByHost.set(h, fresh);
+        this.hostByApp.set(fresh.name, h);
+        this.dirtyApps.delete(fresh.name);
+      } else {
+        this.appsByHost.delete(host);
+        if (previous && this.hostByApp.get(previous.name) === host) {
+          this.hostByApp.delete(previous.name);
+        }
+      }
+      if (previous) this.dirtyApps.delete(previous.name);
+      this.dirtyHosts.delete(host);
+      return;
+    }
   }
 
   /** 全部应用的名字(网关要接入它们的网络;下线的应用网络还在,数据库在里面) */
@@ -852,17 +897,22 @@ export class PublisherService {
     return (await this.store.listApps()).map((app) => app.name);
   }
 
-  /** 网关用:应用当前的健康检查路径(最近一次发布的清单里的,缓存在内存里,发布变更时自动失效) */
+  /** 网关用:应用当前允许的健康检查路径集合(正在验证或线上 LIVE 版本,忽略失败/已回滚记录,缓存在内存里) */
+  async healthcheckPaths(appName: string): Promise<readonly string[]> {
+    const cached = this.healthchecks.get(appName);
+    if (cached !== undefined) return cached;
+    for (;;) {
+      const gen = this.releaseGen.get(appName) ?? 0;
+      const paths = await this.store.getActiveHealthchecks(appName);
+      if ((this.releaseGen.get(appName) ?? 0) !== gen) continue;
+      this.healthchecks.set(appName, paths);
+      return paths;
+    }
+  }
+
+  /** 兼容保留:应用当前主健康检查路径 */
   async healthcheckPath(appName: string): Promise<string | undefined> {
-    if (this.healthchecks.has(appName)) {
-      return this.healthchecks.get(appName) ?? undefined;
-    }
-    const gen = this.releaseGen.get(appName) ?? 0;
-    const path = await this.store.getLatestHealthcheck(appName);
-    if ((this.releaseGen.get(appName) ?? 0) === gen) {
-      this.healthchecks.set(appName, path ?? null);
-    }
-    return path;
+    return (await this.healthcheckPaths(appName))[0];
   }
 
   /** 网关用:viewer 能否访问这个应用(停用、下线的都不能;其余按可见范围和组织架构)。不再查存储 */

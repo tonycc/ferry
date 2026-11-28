@@ -98,12 +98,12 @@ export class Gateway {
     const app = await this.service.gatewayApp(host);
     if (!app) return page(404, "这个应用不存在或已下线");
 
-    // Ferry 自己的健康检查:只放行 GET 本应用的健康检查路径
+    // Ferry 自己的健康检查:只放行 GET 本应用当前活跃/线上版本的健康检查路径
     const health = single(headers[HEALTH_HEADER]);
     if (health) {
-      const path = uri.split("?")[0];
+      const path = uri.split("?")[0] ?? "/";
       const valid = method === "GET" && sameText(health, this.healthToken(host));
-      if (valid && path === (await this.service.healthcheckPath(app.name))) {
+      if (valid && (await this.service.healthcheckPaths(app.name)).includes(path)) {
         return { status: 200, headers: {}, body: "" };
       }
       return page(403, "健康检查口令不对");
@@ -139,10 +139,13 @@ export class Gateway {
   /** Ferry 这边:已登录的人要去某个应用,签一次性票据跳回去。host 必须是在线的应用,防止被当成跳转器 */
   async issueTicket(userId: string, host: string, next: string): Promise<GatewayResponse> {
     const normalizedHost = host.toLowerCase();
+    const safeNext = safePath(next);
     const app = await this.service.gatewayApp(normalizedHost);
     if (!app || app.disabled !== undefined) return page(404, "这个应用不存在或已下线");
     if (this.config.sessionEpoch && !(await this.config.sessionEpoch(userId))) {
-      return this.toLogin(normalizedHost, next);
+      // 不能跳回 /auth/app 自己(会与有效 ferry_session 形成无限重定向死循环),直接跳 Ferry 登录页重登
+      const back = `/auth/app?host=${encodeURIComponent(normalizedHost)}&next=${encodeURIComponent(safeNext)}`;
+      return redirect(new URL(`/login?next=${encodeURIComponent(back)}`, this.config.ferryUrl).toString());
     }
     this.sweep();
     const mine = [...this.tickets].filter(([, t]) => t.userId === userId);
@@ -153,7 +156,7 @@ export class Gateway {
       host: normalizedHost,
       expiresAt: this.config.now().getTime() + this.config.ticketTtlMs,
     });
-    const target = `${this.config.appsScheme}://${normalizedHost}${CALLBACK_PATH}?ticket=${ticket}&next=${encodeURIComponent(safePath(next))}`;
+    const target = `${this.config.appsScheme}://${normalizedHost}${CALLBACK_PATH}?ticket=${ticket}&next=${encodeURIComponent(safeNext)}`;
     return redirect(target);
   }
 
@@ -167,13 +170,14 @@ export class Gateway {
     if (!ticket || ticket.host !== host || ticket.expiresAt < now) {
       return this.toLogin(host, nextPath);
     }
-    let epoch: string | undefined;
+    let cookieEpoch: string | undefined;
     if (this.config.sessionEpoch) {
-      epoch = await this.config.sessionEpoch(ticket.userId);
-      if (!epoch) return this.toLogin(host, nextPath);
+      const rawEpoch = await this.config.sessionEpoch(ticket.userId);
+      if (!rawEpoch) return this.toLogin(host, nextPath);
+      cookieEpoch = this.deriveCookieEpoch(host, ticket.userId, rawEpoch);
     }
     const expiresAt = now + this.config.appCookieTtlMs;
-    const value = this.signCookie(ticket.userId, host, expiresAt, epoch);
+    const value = this.signCookie(ticket.userId, host, expiresAt, cookieEpoch);
     const cookie = [
       `${APP_COOKIE}=${value}`,
       "HttpOnly",
@@ -194,6 +198,11 @@ export class Gateway {
     return redirect(target.toString());
   }
 
+  /** 按(网关密钥, 应用域名, 用户, 密码代数)派生的伪随机标识:对员工应用后端不泄露密码哈希指纹且不同应用间不可跨站关联 */
+  private deriveCookieEpoch(host: string, userId: string, rawEpoch: string): string {
+    return this.hmac(`epoch:${host}:${userId}:${rawEpoch}`).slice(0, 16);
+  }
+
   private signCookie(userId: string, host: string, expiresAt: number, epoch?: string): string {
     const payload = Buffer.from(
       JSON.stringify({ u: userId, h: host, e: expiresAt, ...(epoch ? { v: epoch } : {}) }),
@@ -210,8 +219,9 @@ export class Gateway {
       const verified = this.verifyAppCookie(raw, host);
       if (!verified) continue;
       if (this.config.sessionEpoch) {
-        const expected = await this.config.sessionEpoch(verified.userId);
-        if (!expected || verified.epoch !== expected) continue;
+        const rawEpoch = await this.config.sessionEpoch(verified.userId);
+        if (!rawEpoch || !verified.epoch) continue;
+        if (!sameText(verified.epoch, this.deriveCookieEpoch(host, verified.userId, rawEpoch))) continue;
       }
       return verified.userId;
     }
