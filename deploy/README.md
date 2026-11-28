@@ -128,7 +128,7 @@ docker build -t ferry:2026-11-22 .
 docker buildx build --platform linux/amd64 -t ferry:2026-11-22 --load .
 ```
 
-镜像可以推到内部镜像仓库,或者 `docker save` 后拷到服务器上 `docker load`。镜像标签用日期或版本号,不要只用 latest,回退时才知道换回哪个。
+镜像可以推到内部镜像仓库,或者导出成文件拷到服务器上导入(见下面“服务器连不上镜像仓库时”)。镜像标签用日期或版本号,不要只用 latest,回退时才知道换回哪个。
 
 **发布到 ghcr.io**:在 GitHub 上推一个 `v` 开头的标签,Actions 会构建 x86 和 ARM 两种架构的镜像,推到 `ghcr.io/tonycc/ferry:<标签>`
 (`.github/workflows/publish-image.yml`,约十几分钟):
@@ -141,8 +141,37 @@ git push origin v2026.11.26
 发布前会先跑一遍 CI(类型检查、测试、镜像能启动),不通过就不发布。不发 `latest`,服务器上写明版本。
 第一次发布之前,先在 GitHub 的 Actions 页面手动运行一次 “Publish image”(镜像标签是分支名,只用于试验),确认 ARM 镜像也能构建
 (平时的 CI 只构建 x86)。仓库是公开的,镜像拉取不用登录;第一次发布后到 GitHub 上这个包的设置(Package settings)里
-确认可见性是 Public,是 Private 的话改成 Public(只要改一次)。服务器在国内、访问 `ghcr.io` 慢或连不上时,还是用上面的
-`docker save` / `docker load`,或者推到国内的镜像仓库。
+确认可见性是 Public,是 Private 的话改成 Public(只要改一次)。服务器在国内、访问 `ghcr.io` 慢或连不上时,
+按下面导出成文件拷过去,或者推到国内的镜像仓库。
+
+**服务器连不上镜像仓库时**:在能访问的电脑上拉下来、导出成文件,拷到服务器上导入。
+`docker save` **要带 `--platform`**:ghcr.io 上的镜像同时有 x86 和 ARM 两种架构,只拉了其中一种时,
+不带 `--platform` 的 `docker save` 会去导出两种,报 `content digest ... not found`(Docker Desktop 默认的镜像存储就是这样)。
+
+```bash
+docker pull --platform linux/amd64 ghcr.io/tonycc/ferry:v2026.11.26
+docker save --platform linux/amd64 -o ferry-v2026.11.26.tar ghcr.io/tonycc/ferry:v2026.11.26
+scp ferry-v2026.11.26.tar root@服务器IP:/opt/ferry/
+```
+
+服务器是 ARM 的,把两处 `linux/amd64` 都换成 `linux/arm64`。`docker save --platform` 要较新的 Docker(27 以后);
+旧版报 `unknown flag: --platform` 时,去掉这个参数直接 `docker save` 就行(旧版的镜像存储本来只存拉下来的那一种架构)。在服务器上:
+
+```bash
+docker load -i /opt/ferry/ferry-v2026.11.26.tar
+```
+
+镜像名保持 `ghcr.io/tonycc/ferry:<版本>` 不变,`install.sh` 发现本机已有就直接用、不再去拉。
+
+服务器连 Docker Hub 也上不去时,安装命令要用的另外四个镜像也这样导出导入(同样带 `--platform`):
+`dokploy/dokploy:v0.31.3`、`traefik:v3.7.16`、`postgres:16`(Dokploy 的数据库)、`postgres:17-alpine`(Ferry 的数据库)。
+
+服务器上还没有 Docker 时,`docker load` 要等 Docker 装好:先运行一次 `install.sh`,它装好 Docker 后会在第一个拉不到的镜像那里停下
+(Docker Hub 上不去时停在 Dokploy,等 5 分钟后报“Dokploy 没有起来”;只是连不上 ghcr.io 时停在启动 Ferry)。
+把上面要用的镜像都 `docker load` 进去,再运行一次,装好的部分会跳过。也可以先自己装好 Docker(比如用阿里云的 docker-ce 软件源),
+导入镜像后只运行一次。
+
+升级时同样:导出新版本、拷过去 `docker load`,再用新的 `FERRY_IMAGE` 重新运行 `install.sh`。
 
 ### 3. 填写配置
 
