@@ -600,7 +600,14 @@ describe("DokployPlatform:数据库、命令、备份", () => {
 
   it("backupDatabase:在服务器上执行 pg_dump,写 script 字段,返回备份文件路径", async () => {
     const { client, called } = fakeDokploy({
-      "postgres.one": () => ({ ...PG, applicationStatus: "done" }),
+      "postgres.one": () => ({
+        postgresId: "pg1",
+        appName: "ledger-db-x1",
+        databaseName: "app",
+        databaseUser: "app",
+        databasePassword: "pw",
+        applicationStatus: "done",
+      }),
       "schedule.create": () => ({ scheduleId: "s1" }),
       "schedule.runManually": () => ({ status: "done", deploymentId: "r1" }),
       "schedule.delete": () => true,
@@ -994,6 +1001,68 @@ describe("网络隔离", () => {
     const absent = fakeDokploy({ "network.all": () => [] });
     await new DokployPlatform(absent.client, { sleep: async () => {} }).deleteAppNetwork("ledger");
     expect(absent.called("schedule.create")).toHaveLength(0);
+  });
+
+  it("cleanupServerSchedules:只回收超龄且非本进程在跑的 Ferry 临时任务,等 running 结束后再删,不碰别人的定时任务", async () => {
+    const nowMs = Date.parse("2026-11-28T10:00:00.000Z");
+    let runningChecks = 0;
+    let releaseActive!: () => void;
+    const activeGate = new Promise<void>((r) => (releaseActive = r));
+    let enteredActive!: () => void;
+    const activeStarted = new Promise<void>((r) => (enteredActive = r));
+
+    const { client, called } = fakeDokploy({
+      "postgres.one": () => ({
+        postgresId: "pg1",
+        appName: "ledger-db-x1",
+        databaseName: "app",
+        databaseUser: "app",
+        databasePassword: "pw",
+        applicationStatus: "done",
+      }),
+      "schedule.create": () => ({ scheduleId: "in-flight", name: `ferry-backup-${nowMs - 60 * 60_000}` }),
+      "schedule.runManually": async () => {
+        enteredActive();
+        await activeGate;
+        return { status: "done", deploymentId: "d-active" };
+      },
+      "schedule.list": () => [
+        // 1) 本进程正在执行的任务:就算名字时间戳很早也绝不能删
+        { scheduleId: "in-flight", name: `ferry-backup-${nowMs - 60 * 60_000}`, deployments: [{ deploymentId: "d0", status: "running" }] },
+        // 2) 上次崩溃留下的超龄任务,且还在 running:等它变成 done 后删掉
+        { scheduleId: "stale-running", name: `ferry-backup-${nowMs - 45 * 60_000}`, deployments: [{ deploymentId: "d1", status: "running" }] },
+        // 3) 上次崩溃留下的日志读取临时任务(已结束):直接删掉
+        { scheduleId: "stale-logs", name: `ferry-command-logs-${nowMs - 40 * 60_000}`, deployments: [{ deploymentId: "d2", status: "done" }] },
+        // 4) 刚创建未满 minAgeMs 的任务:跳过
+        { scheduleId: "recent", name: `ferry-backup-net-${nowMs - 5 * 60_000}`, deployments: [] },
+        // 5) 管理员自己在 Dokploy 里建的定时任务:绝不触碰
+        { scheduleId: "admin-cron", name: "nightly-os-maintenance", createdAt: "2026-11-01T00:00:00.000Z", deployments: [] },
+      ],
+      "deployment.allByType": () =>
+        ++runningChecks < 2 ? [{ deploymentId: "d1", status: "running" }] : [{ deploymentId: "d1", status: "done" }],
+      "schedule.delete": (input) =>
+        (input as { scheduleId: string }).scheduleId === "stale-logs"
+          ? new Response("not found", { status: 404 })
+          : true,
+    });
+
+    const platform = new DokployPlatform(client, {
+      isolateApps: false,
+      sleep: async () => {},
+      now: () => new Date(nowMs),
+    });
+    const backupTask = platform.backupDatabase("pg1");
+    await activeStarted;
+
+    const removed = await platform.cleanupServerSchedules({ minAgeMs: 30 * 60_000 });
+    // stale-running 删除成功计 1,stale-logs 返回 404 幂等忽略不报错;in-flight / recent / admin-cron 均未触碰
+    expect(removed).toBe(1);
+    expect(runningChecks).toBe(2);
+    expect(called("schedule.list")[0]?.input).toEqual({ id: "", scheduleType: "dokploy-server" });
+    expect(called("schedule.delete").map((c) => c.input.scheduleId)).toEqual(["stale-running", "stale-logs"]);
+
+    releaseActive();
+    await backupTask;
   });
 });
 

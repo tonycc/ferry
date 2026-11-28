@@ -213,8 +213,7 @@ Ferry 的做法(任务 2.12,实测有效):先 `postgres.stop`,再用 `dokploy-se
   失败时抛出不含细节的错误(细节写服务端日志),发布终止,不会在没有备份的情况下迁移。
   返回值是备份文件在服务器上的路径,记在发布单里。
 - 备份成功后,同一个脚本里删掉这个数据库更早的备份,只保留最新 `backupKeep` 份(默认 5,任务 1.6)。
-- 还没处理的:进程在备份途中退出时会留下一个 `ferry-backup-*` 任务。它不会自动执行,无害,但目前没有找到按类型
-  列出这类任务的接口,所以不会自动清理。
+- 进程在备份、连网络或读退出容器日志途中退出时,可能留下 `ferry-backup-*` 或 `ferry-command-logs-*` 任务。实测 v0.31.3 的 `schedule.list?id=&scheduleType=dokploy-server` 会按当前 API key 所在组织返回全部 `dokploy-server` 任务(含 `createdAt` 和最近 `deployments`),Ferry 在启动时与每小时后台巡检中自动等待执行完毕并回收这些孤儿任务。
 
 ## 本机环境的问题
 

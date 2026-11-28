@@ -114,6 +114,8 @@ interface DokployPostgres {
 interface DokploySchedule {
   scheduleId: string;
   name: string;
+  createdAt?: string;
+  deployments?: { deploymentId: string; status: string }[];
 }
 
 /**
@@ -1026,12 +1028,16 @@ export class DokployPlatform implements DeployPlatform {
     return this.client.query<DokployPostgres>("postgres.one", { postgresId });
   }
 
+  /** 本进程当前正在执行的临时定时任务 ID,后台巡检清理孤儿任务时绝不误删 */
+  private readonly activeSchedules = new Set<string>();
+
   /** 新建一个只手动触发的定时任务,执行一次后删除,返回结果和(失败时的)日志 */
   private async runOnce(
     schedule: Record<string, unknown>,
     options: { logsOnSuccess?: boolean } = {},
   ): Promise<{ status: string; logs: string }> {
     const created = await this.client.mutate<DokploySchedule>("schedule.create", schedule);
+    this.activeSchedules.add(created.scheduleId);
     try {
       const run = await this.client.mutate<ScheduleRun>("schedule.runManually", { scheduleId: created.scheduleId });
       let status = run.status;
@@ -1048,8 +1054,43 @@ export class DokployPlatform implements DeployPlatform {
           : await this.client.query<string>("deployment.readLogs", { deploymentId, tail: this.failureLogLines });
       return { status, logs };
     } finally {
+      this.activeSchedules.delete(created.scheduleId);
       await this.client.mutate("schedule.delete", { scheduleId: created.scheduleId }).catch(() => {});
     }
+  }
+
+  /**
+   * 回收进程重启或网络抖动遗留在 Dokploy 上的全局临时任务(ferry-backup-* 与 ferry-command-logs-*):
+   * - schedule.list 在 scheduleType="dokploy-server" 下按当前 API key 所属组织列出全部服务端任务;
+   * - 跳过本进程正在跑的任务以及创建时间未满 minAgeMs 的新任务;
+   * - 若遗留任务最近一次执行仍在 running,先等它结束再删除,避免中途截断 pg_dump 等脚本。
+   */
+  async cleanupServerSchedules(options: { minAgeMs?: number } = {}): Promise<number> {
+    const minAgeMs = options.minAgeMs ?? 0;
+    const nowMs = this.now().getTime();
+    const schedules = await this.client.query<DokploySchedule[]>("schedule.list", {
+      id: "",
+      scheduleType: "dokploy-server",
+    });
+    let removed = 0;
+    for (const item of schedules) {
+      if (!isFerryServerSchedule(item.name)) continue;
+      if (this.activeSchedules.has(item.scheduleId)) continue;
+      const createdMs = scheduleCreatedMs(item);
+      if (minAgeMs > 0 && createdMs !== undefined && nowMs - createdMs < minAgeMs) continue;
+      if (item.deployments === undefined || item.deployments[0]?.status === "running") {
+        await this.waitForScheduleIdle(item.scheduleId).catch(() => undefined);
+      }
+      const deleted = await this.client
+        .mutate("schedule.delete", { scheduleId: item.scheduleId })
+        .then(() => true)
+        .catch((err: unknown) => {
+          if (isNotFound(err)) return false;
+          throw err;
+        });
+      if (deleted) removed++;
+    }
+    return removed;
   }
 
   /** 等定时任务最近一次执行结束,返回那次执行记录 */
@@ -1072,6 +1113,19 @@ export class DokployPlatform implements DeployPlatform {
 
 function timeout(reason: string): CommandResult {
   return { ok: false, reason: "platform", logs: `部署平台:${reason},已等待超过上限` };
+}
+
+function isFerryServerSchedule(name: string): boolean {
+  return name.startsWith(BACKUP_SCHEDULE_PREFIX) || name.startsWith(`${COMMAND_SCHEDULE_PREFIX}logs-`);
+}
+
+function scheduleCreatedMs(schedule: DokploySchedule): number | undefined {
+  if (schedule.createdAt) {
+    const parsed = Date.parse(schedule.createdAt);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  const suffix = /-(\d{10,})$/.exec(schedule.name);
+  return suffix ? Number(suffix[1]) : undefined;
 }
 
 /** 解析 KEY=value 按行拼接的环境变量文本 */
