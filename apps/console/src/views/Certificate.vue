@@ -1,26 +1,35 @@
 <script setup lang="ts">
 import { CircleCheck, CircleClose, Lock, Upload, Warning } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { api, ApiError, type CertificateInstallResult } from "../api";
 import { certificateStatus as status, loadCertificateStatus } from "../certificate";
 
+const loading = ref(true);
+const forbidden = ref(false);
 const unavailable = ref(false);
 const files = reactive<{ chain?: { name: string; text: string }; key?: { name: string; text: string } }>({});
 const dragOver = reactive({ chain: false, key: false });
 const result = ref<CertificateInstallResult>();
 const installing = ref(false);
 const switching = ref("");
+let disposed = false;
 
 async function load() {
   try {
     await loadCertificateStatus();
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) unavailable.value = true;
+    else if (err instanceof ApiError && err.status === 403) forbidden.value = true;
     else ElMessage.error((err as Error).message);
+  } finally {
+    loading.value = false;
   }
 }
 onMounted(() => void load());
+onBeforeUnmount(() => {
+  disposed = true;
+});
 
 const willSwitch = computed(() => !!status.value && !status.value.https && !status.value.fixedByEnv);
 const levelText = computed(() => {
@@ -76,8 +85,9 @@ async function waitAndGo(url: string) {
   switching.value = url;
   const start = Date.now();
   let sawDown = false;
-  while (Date.now() - start < 120_000) {
+  while (!disposed && Date.now() - start < 120_000) {
     await new Promise((r) => setTimeout(r, 1500));
+    if (disposed) return;
     const ok = await fetch("/healthz", { cache: "no-store", signal: AbortSignal.timeout(5000) })
       .then((r) => r.ok)
       .catch(() => false);
@@ -87,13 +97,14 @@ async function waitAndGo(url: string) {
       return;
     }
   }
-  ElMessage.error(`等了两分钟 Ferry 还没起来：请查看 Ferry 的日志，处理后手动打开 ${url}`);
+  if (!disposed) ElMessage.error(`等了两分钟 Ferry 还没起来：请查看 Ferry 的日志，处理后手动打开 ${url}`);
 }
 </script>
 
 <template>
-  <section class="ops-page">
-    <div v-if="unavailable" class="content-panel">
+  <section v-loading="loading" class="ops-page">
+    <el-result v-if="forbidden" icon="warning" title="只有平台管理员可以使用这个页面" />
+    <div v-else-if="unavailable" class="content-panel">
       <el-empty description="当前未配置正式对外地址（本机开发模式），暂无证书可管理。" />
     </div>
 

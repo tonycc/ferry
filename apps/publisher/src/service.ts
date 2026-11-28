@@ -7,7 +7,7 @@ import type { User } from "./identity";
 import type { Engine } from "./workflow/engine";
 import type { TemplateFile, TemplateLibrary, TemplateSummary } from "./templates";
 import { pruneArchives } from "./workflow/retention";
-import { checkArchiveLayout, readRootDockerfiles, readZipFile, replaceZipDockerfile, zipEntryNames } from "./zip";
+import { checkArchiveEntries, checkArchiveLayout, hasCustomZipDockerfile, readZipFile, replaceZipDockerfile, zipEntryNames } from "./zip";
 import { isTerminal, type ReleaseState } from "./workflow/states";
 import type { AppRecord, ReleaseError, ReleaseRecord, Store, UploadTicket } from "./workflow/store";
 import { MAX_SECRETS_PER_APP, validateSecretName, validateSecretValue, type SecretBox } from "./secrets";
@@ -249,6 +249,8 @@ export class PublisherService {
     const names = isZip(zip) ? zipEntryNames(zip) : undefined;
     if (!names) throw new UserError("invalid_input", "上传的内容不是 zip 文件");
     // 检查不通过时上传地址还能再用
+    const entryProblem = checkArchiveEntries(zip);
+    if (entryProblem) throw new UserError("invalid_input", entryProblem);
     const layoutProblem = checkArchiveLayout(names);
     if (layoutProblem) throw new UserError("invalid_input", layoutProblem);
     // 发布只认代码包里的 app.yaml:在这里读出并校验,写错了在上传时就报出来,并随凭据记下供发布使用
@@ -260,8 +262,7 @@ export class PublisherService {
     if (this.config.templates) {
       const templateDockerfile = await this.config.templates.dockerfile(manifest.template);
       if (!templateDockerfile) throw new Error(`找不到模板 ${manifest.template} 的托管 Dockerfile`);
-      const uploadedDockerfiles = readRootDockerfiles(zip);
-      if (uploadedDockerfiles && hasCustomDockerfile(uploadedDockerfiles, templateDockerfile)) {
+      if (hasCustomZipDockerfile(zip, templateDockerfile)) {
         notice =
           `代码包里的 Dockerfile 与模板 ${manifest.template} 不一致,已忽略并替换为平台托管的模板 Dockerfile:` +
           "构建配置由平台统一托管,不支持自定义修改";
@@ -836,15 +837,6 @@ function hashToken(token: string): string {
 /** zip 文件以 "PK\x03\x04" 开头 */
 function isZip(data: Buffer): boolean {
   return data.length > 4 && data.readUInt32LE(0) === 0x04034b50;
-}
-
-/** 忽略 Windows 换行符差异后,代码包里是否带了非空且与模板不同的自定义 Dockerfile(或重复条目) */
-function hasCustomDockerfile(uploaded: string[], canonical: string): boolean {
-  if (uploaded.length === 0) return false;
-  if (uploaded.length > 1) return true;
-  const norm = (s: string) => s.replaceAll("\r\n", "\n").trim();
-  const actual = norm(uploaded[0]!);
-  return actual.length > 0 && actual !== norm(canonical);
 }
 
 function requireAdmin(user: User): void {

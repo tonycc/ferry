@@ -15,7 +15,7 @@ import {
   User,
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { type Component, computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { type Component, computed, markRaw, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type AppView } from "./api";
 import { certificateStatus, loadCertificateStatus } from "./certificate";
@@ -97,18 +97,18 @@ const certificateNotice = computed(() => {
 const paletteOpen = ref(false);
 const paletteQuery = ref("");
 const paletteApps = ref<AppView[]>([]);
-const paletteAppsLoaded = ref(false);
 const paletteInputRef = ref<{ focus?: () => void }>();
 
-async function openPalette() {
+function openPalette() {
+  if (!me.value) return;
   paletteQuery.value = "";
   paletteOpen.value = true;
-  await nextTick();
-  paletteInputRef.value?.focus?.();
-  if (!paletteAppsLoaded.value && me.value) {
-    paletteAppsLoaded.value = true;
-    paletteApps.value = await api.get<AppView[]>("/api/apps").catch(() => []);
-  }
+  void api
+    .get<AppView[]>("/api/apps")
+    .then((list) => {
+      paletteApps.value = list;
+    })
+    .catch(() => undefined);
 }
 
 const filteredNav = computed(() => {
@@ -132,7 +132,7 @@ function jumpTo(path: string) {
 }
 
 function jumpFirst() {
-  if (filteredApps.value[0] && paletteQuery.value.trim()) {
+  if (filteredApps.value[0]) {
     jumpTo(`/apps/${filteredApps.value[0].name}`);
   } else if (filteredNav.value[0]) {
     jumpTo(filteredNav.value[0].path);
@@ -140,10 +140,11 @@ function jumpFirst() {
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
+  if (!me.value) return;
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
     if (paletteOpen.value) paletteOpen.value = false;
-    else void openPalette();
+    else openPalette();
   }
 }
 
@@ -173,6 +174,7 @@ function resetPasswordForm() {
   Object.assign(pw, { current: "", next: "", again: "" });
 }
 async function changePassword() {
+  if (pwSaving.value) return;
   if (!pwCanSubmit.value) {
     if (pw.next !== pw.again) return ElMessage.error("两次输入的新密码不一样");
     return ElMessage.error("请按要求填写当前密码与新密码");
@@ -294,7 +296,14 @@ function onUserCommand(command: string) {
     </div>
 
     <!-- 全局快速跳转弹窗 -->
-    <el-dialog v-model="paletteOpen" :show-close="false" width="min(520px, 94vw)" class="palette-dialog" align-center>
+    <el-dialog
+      v-model="paletteOpen"
+      :show-close="false"
+      width="min(520px, 94vw)"
+      class="palette-dialog"
+      align-center
+      @opened="paletteInputRef?.focus?.()"
+    >
       <div class="palette-search">
         <el-icon class="palette-search-icon"><Search /></el-icon>
         <el-input

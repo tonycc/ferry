@@ -13,6 +13,7 @@ import {
 import { secretNameProblem } from "@ferry/manifest/secrets";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { api, type AppDetail, type ReleaseState, type ReleaseSummary, type ReleaseView, type SecretView, type Visibility } from "../api";
 import { copyText } from "../clipboard";
 import AppAvatar from "../components/AppAvatar.vue";
@@ -23,15 +24,18 @@ import { useLocalPagination } from "../composables/useLocalPagination";
 import { appStatus, relativeTime, STATE, time, VISIBILITY, VISIBILITY_HINT } from "../labels";
 
 const props = defineProps<{ name: string }>();
+const route = useRoute();
 
 const app = ref<AppDetail>();
 const loading = ref(true);
 const refreshing = ref(false);
 const visibility = ref<Visibility>("self");
 const savingVisibility = ref(false);
-const tab = ref<"releases" | "logs" | "secrets">(location.hash === "#secrets" ? "secrets" : "releases");
+const tab = ref<"releases" | "logs" | "secrets">(route.hash === "#secrets" ? "secrets" : "releases");
 const releaseLogs = ref<Record<string, string>>({});
-const logs = ref("");
+/** 真实日志正文(不含空提示或报错占位,防止复制/下载导出占位文字) */
+const rawLogs = ref("");
+const logError = ref("");
 const logLines = ref(200);
 const logFilter = ref("");
 const autoRefreshLogs = ref(false);
@@ -39,6 +43,10 @@ const loadingLogs = ref(false);
 const logBoxRef = ref<HTMLElement>();
 let timer: ReturnType<typeof setTimeout> | undefined;
 let logTimer: ReturnType<typeof setInterval> | undefined;
+let disposed = false;
+let appSeq = 0;
+let logSeq = 0;
+let secretSeq = 0;
 
 /** 应用密钥:值只在这里输入,保存后不再显示 */
 const secrets = ref<SecretView[]>([]);
@@ -63,12 +71,17 @@ const canRollback = computed(() => !!app.value && app.value.live && !app.value.d
 const canUnpublish = computed(() => !!app.value && !app.value.unpublished && !running.value);
 const reachable = computed(() => !!app.value && app.value.live && !app.value.disabled && !app.value.unpublished);
 
-// ---- 可视化发布流水线阶段 ----
-const PIPELINE_STEPS: { state: ReleaseState; label: string }[] = [
+// ---- 可视化发布流水线阶段(回滚只执行检查代码、构建部署、健康检查三步) ----
+const PUBLISH_STEPS: { state: ReleaseState; label: string }[] = [
   { state: "VALIDATING", label: "检查代码" },
   { state: "PROVISIONING", label: "准备资源" },
   { state: "BUILDING", label: "构建部署" },
   { state: "MIGRATING", label: "迁移数据库" },
+  { state: "VERIFYING", label: "健康检查" },
+];
+const ROLLBACK_STEPS: { state: ReleaseState; label: string }[] = [
+  { state: "VALIDATING", label: "检查代码" },
+  { state: "BUILDING", label: "构建部署" },
   { state: "VERIFYING", label: "健康检查" },
 ];
 
@@ -76,12 +89,13 @@ type StepStatus = "done" | "active" | "failed" | "waiting";
 const pipelineSteps = computed(() => {
   const r = latestRelease.value;
   if (!r) return [];
-  const order = PIPELINE_STEPS.map((s) => s.state);
+  const steps = r.kind === "rollback" ? ROLLBACK_STEPS : PUBLISH_STEPS;
+  const order = steps.map((s) => s.state);
   const failedStage = r.error?.stage;
   const currentIndex = order.indexOf(r.state);
   const failedIndex = failedStage ? order.indexOf(failedStage) : -1;
 
-  return PIPELINE_STEPS.map((step, idx) => {
+  return steps.map((step, idx) => {
     let status: StepStatus = "waiting";
     if (r.state === "LIVE") {
       status = "done";
@@ -98,39 +112,55 @@ const pipelineSteps = computed(() => {
   });
 });
 
-// ---- 日志搜索过滤 ----
-const filteredLogs = computed(() => {
-  const raw = logs.value;
+// ---- 日志搜索过滤与导出内容 ----
+const matchedLines = computed(() => {
+  if (!rawLogs.value) return [];
+  const lines = rawLogs.value.split("\n");
   const q = logFilter.value.trim().toLowerCase();
-  if (!q || !raw) return raw;
-  const matched = raw.split("\n").filter((line) => line.toLowerCase().includes(q));
-  return matched.length > 0 ? matched.join("\n") : `(没有包含 “${logFilter.value.trim()}” 的日志行)`;
+  return q ? lines.filter((line) => line.toLowerCase().includes(q)) : lines;
 });
-const matchedLogCount = computed(() => {
-  const q = logFilter.value.trim().toLowerCase();
-  if (!q || !logs.value) return 0;
-  return logs.value.split("\n").filter((line) => line.toLowerCase().includes(q)).length;
+
+const exportableLogs = computed(() => (rawLogs.value && matchedLines.value.length > 0 ? matchedLines.value.join("\n") : ""));
+
+const displayLogs = computed(() => {
+  if (logError.value) return logError.value;
+  if (!rawLogs.value) return loadingLogs.value ? "正在拉取运行日志…" : "(没有日志)";
+  if (logFilter.value.trim() && matchedLines.value.length === 0) {
+    return `(没有包含 “${logFilter.value.trim()}” 的日志行)`;
+  }
+  return exportableLogs.value;
 });
 
 async function load(manual = false) {
+  const seq = ++appSeq;
   if (manual) refreshing.value = true;
   try {
-    app.value = await api.get<AppDetail>(`/api/apps/${encodeURIComponent(props.name)}`);
-    if (!savingVisibility.value) visibility.value = app.value.visibility;
+    const detail = await api.get<AppDetail>(`/api/apps/${encodeURIComponent(props.name)}`);
+    if (disposed || seq !== appSeq) return;
+    app.value = detail;
+    if (!savingVisibility.value) visibility.value = detail.visibility;
   } catch (err) {
+    if (disposed || seq !== appSeq) return;
     ElMessage.error((err as Error).message);
   } finally {
-    loading.value = false;
-    refreshing.value = false;
+    if (!disposed && seq === appSeq) {
+      loading.value = false;
+      refreshing.value = false;
+    }
   }
+  if (disposed || seq !== appSeq) return;
   clearTimeout(timer);
   if (running.value) timer = setTimeout(() => void load(), 5000);
 }
 
 async function loadSecrets() {
+  const seq = ++secretSeq;
   try {
-    secrets.value = await api.get<SecretView[]>(`/api/apps/${encodeURIComponent(props.name)}/secrets`);
+    const list = await api.get<SecretView[]>(`/api/apps/${encodeURIComponent(props.name)}/secrets`);
+    if (disposed || seq !== secretSeq) return;
+    secrets.value = list;
   } catch (err) {
+    if (disposed || seq !== secretSeq) return;
     ElMessage.error((err as Error).message);
   }
 }
@@ -144,6 +174,7 @@ function openSecret(name?: string) {
 const secretNameError = computed(() => (secretForm.value.name ? secretNameProblem(secretForm.value.name) ?? "" : ""));
 
 async function saveSecret() {
+  if (savingSecret.value) return;
   const { name, value } = secretForm.value;
   if (!name || secretNameError.value || !value) return;
   savingSecret.value = true;
@@ -178,7 +209,7 @@ async function deleteSecret(name: string) {
 }
 
 async function saveVisibility() {
-  if (!app.value || visibility.value === app.value.visibility) return;
+  if (savingVisibility.value || !app.value || visibility.value === app.value.visibility) return;
   try {
     await ElMessageBox.confirm(
       `改为“${VISIBILITY[visibility.value]}”：${VISIBILITY_HINT[visibility.value]}。立即生效。`,
@@ -255,9 +286,9 @@ async function expand(row: ReleaseSummary) {
   if (!row.error || row.releaseId in releaseLogs.value) return;
   try {
     const view = await api.get<ReleaseView>(`/api/releases/${row.releaseId}`);
-    releaseLogs.value[row.releaseId] = view.error?.logs || "(没有日志)";
+    if (!disposed) releaseLogs.value[row.releaseId] = view.error?.logs || "(没有日志)";
   } catch (err) {
-    releaseLogs.value[row.releaseId] = (err as Error).message;
+    if (!disposed) releaseLogs.value[row.releaseId] = (err as Error).message;
   }
 }
 
@@ -279,24 +310,36 @@ async function copyFailureForAgent(row: ReleaseSummary) {
   await copyText(text, "已复制报错上下文，可直接粘贴给 Agent 修复");
 }
 
-async function loadLogs(scrollToBottom = false) {
+function isNearBottom(el?: HTMLElement): boolean {
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+}
+
+async function loadLogs(forceScrollBottom = false) {
+  const seq = ++logSeq;
+  const stickBottom = forceScrollBottom || isNearBottom(logBoxRef.value);
   loadingLogs.value = true;
   try {
     const result = await api.get<{ logs: string }>(`/api/apps/${encodeURIComponent(props.name)}/logs?lines=${logLines.value}`);
-    logs.value = result.logs || "(没有日志)";
-    if (scrollToBottom) {
+    if (disposed || seq !== logSeq) return;
+    logError.value = "";
+    rawLogs.value = result.logs ?? "";
+    if (stickBottom) {
       await nextTick();
       if (logBoxRef.value) logBoxRef.value.scrollTop = logBoxRef.value.scrollHeight;
     }
   } catch (err) {
-    logs.value = (err as Error).message;
+    if (disposed || seq !== logSeq) return;
+    rawLogs.value = "";
+    logError.value = (err as Error).message;
   } finally {
-    loadingLogs.value = false;
+    if (!disposed && seq === logSeq) loadingLogs.value = false;
   }
 }
 
 function downloadLogs() {
-  const blob = new Blob([logs.value || ""], { type: "text/plain;charset=utf-8" });
+  if (!exportableLogs.value) return;
+  const blob = new Blob([exportableLogs.value], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -312,32 +355,57 @@ function duration(r: ReleaseSummary): string {
 }
 
 watch(tab, (t) => {
-  if (t === "logs" && !logs.value) void loadLogs(true);
+  if (t === "logs" && !rawLogs.value && !logError.value) void loadLogs(true);
   if (t === "secrets") void loadSecrets();
   if (t !== "logs") autoRefreshLogs.value = false;
 });
 
 watch(autoRefreshLogs, (on) => {
   clearInterval(logTimer);
-  if (on) logTimer = setInterval(() => void loadLogs(true), 5000);
+  if (on) {
+    logTimer = setInterval(() => {
+      if (!loadingLogs.value) void loadLogs(false);
+    }, 5000);
+  }
 });
 
-watch(() => props.name, () => {
-  loading.value = true;
-  logs.value = "";
-  logFilter.value = "";
-  autoRefreshLogs.value = false;
-  releaseLogs.value = {};
-  secrets.value = [];
-  if (tab.value === "secrets") void loadSecrets();
-  void load();
-});
+watch(
+  () => route.hash,
+  (hash) => {
+    if (hash === "#secrets") tab.value = "secrets";
+  },
+);
+
+watch(
+  () => props.name,
+  () => {
+    clearTimeout(timer);
+    appSeq++;
+    logSeq++;
+    secretSeq++;
+    app.value = undefined;
+    loading.value = true;
+    rawLogs.value = "";
+    logError.value = "";
+    logFilter.value = "";
+    autoRefreshLogs.value = false;
+    releaseLogs.value = {};
+    secrets.value = [];
+    if (route.hash === "#secrets") tab.value = "secrets";
+    if (tab.value === "secrets") void loadSecrets();
+    if (tab.value === "logs") void loadLogs(true);
+    void load();
+  },
+);
 
 onMounted(() => {
   void load();
   if (tab.value === "secrets") void loadSecrets();
+  if (tab.value === "logs") void loadLogs(true);
 });
+
 onBeforeUnmount(() => {
+  disposed = true;
   clearTimeout(timer);
   clearInterval(logTimer);
 });
@@ -363,14 +431,14 @@ onBeforeUnmount(() => {
         description="长期不用的已下线应用，平台管理员可能会彻底删除，删除后数据无法恢复。"
       />
 
-      <!-- 顶部 Hero 概览卡 -->
+      <!-- 顶部 Hero 概览卡(遵守 AGENTS.md:页面内不使用 h1 标题) -->
       <div class="content-panel hero-panel">
         <div class="hero-top">
           <div class="hero-identity">
             <AppAvatar :name="app.name" :size="48" :muted="!reachable" />
             <div class="hero-title-wrap">
               <div class="hero-name-row">
-                <h1>{{ app.name }}</h1>
+                <span class="hero-app-name">{{ app.name }}</span>
                 <StatusTag :type="appStatus(app)[1]" :pulse="reachable || running">{{ appStatus(app)[0] }}</StatusTag>
                 <VisibilityChip :value="app.visibility" />
               </div>
@@ -383,6 +451,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="copy-icon-btn"
                   title="复制访问地址"
+                  aria-label="复制访问地址"
                   @click="copyText(app.url, '已复制应用访问地址')"
                 >
                   <el-icon><CopyDocument /></el-icon>
@@ -440,7 +509,7 @@ onBeforeUnmount(() => {
               {{ !latestRelease.done ? "页面每 5 秒自动刷新" : `耗时 ${duration(latestRelease)}` }}
             </span>
           </div>
-          <div class="pipeline-steps">
+          <div class="pipeline-steps" :style="{ '--step-cols': pipelineSteps.length }">
             <div v-for="(step, i) in pipelineSteps" :key="step.state" class="pipeline-step" :class="step.status">
               <span class="step-dot">
                 <el-icon v-if="step.status === 'done'"><Check /></el-icon>
@@ -471,11 +540,13 @@ onBeforeUnmount(() => {
             <el-button type="primary" :loading="savingVisibility" @click="saveVisibility">保存并立即生效</el-button>
           </div>
         </div>
-        <div class="vis-cards">
+        <div class="vis-cards" role="radiogroup" aria-label="选择谁能访问应用">
           <button
-            v-for="(label, key) in VISIBILITY"
+            v-for="(_label, key) in VISIBILITY"
             :key="key"
             type="button"
+            role="radio"
+            :aria-checked="visibility === key"
             class="vis-card"
             :class="{ active: visibility === key }"
             :disabled="savingVisibility"
@@ -576,6 +647,7 @@ onBeforeUnmount(() => {
                       type="button"
                       class="copy-icon-btn"
                       title="复制 process.env 引用代码"
+                      aria-label="复制 process.env 引用代码"
                       @click="copyText(`process.env.${row.name}`, `已复制 process.env.${row.name}`)"
                     >
                       <el-icon><CopyDocument /></el-icon>
@@ -609,7 +681,7 @@ onBeforeUnmount(() => {
                   placeholder="按关键字过滤日志行…"
                   style="width: 240px"
                 />
-                <span v-if="logFilter.trim()" class="status-note">匹配 {{ matchedLogCount }} 行</span>
+                <span v-if="logFilter.trim() && rawLogs" class="status-note">匹配 {{ matchedLines.length }} 行</span>
                 <el-select v-model="logLines" style="width: 110px" @change="loadLogs(true)">
                   <el-option v-for="n in [100, 200, 500, 1000]" :key="n" :value="n" :label="`最近 ${n} 行`" />
                 </el-select>
@@ -617,8 +689,8 @@ onBeforeUnmount(() => {
               <div class="filter-bar">
                 <el-switch v-model="autoRefreshLogs" active-text="每 5 秒刷新" />
                 <el-button :icon="Refresh" :loading="loadingLogs" @click="loadLogs(true)">刷新</el-button>
-                <el-button :icon="CopyDocument" :disabled="!logs" @click="copyText(filteredLogs, '已复制当前日志')">复制</el-button>
-                <el-button :icon="Download" :disabled="!logs" @click="downloadLogs">下载</el-button>
+                <el-button :icon="CopyDocument" :disabled="!exportableLogs" @click="copyText(exportableLogs, '已复制当前日志')">复制</el-button>
+                <el-button :icon="Download" :disabled="!exportableLogs" @click="downloadLogs">下载</el-button>
               </div>
             </div>
             <div class="terminal-box">
@@ -627,7 +699,7 @@ onBeforeUnmount(() => {
                 <span>{{ app.name }} · stdout / stderr</span>
                 <span>{{ autoRefreshLogs ? "自动轮询中" : `显示最近 ${logLines} 行` }}</span>
               </div>
-              <pre ref="logBoxRef" class="terminal-body tall-logs">{{ filteredLogs || (loadingLogs ? "正在拉取运行日志…" : "(没有日志)") }}</pre>
+              <pre ref="logBoxRef" class="terminal-body tall-logs">{{ displayLogs }}</pre>
             </div>
           </el-tab-pane>
         </el-tabs>
@@ -673,12 +745,12 @@ onBeforeUnmount(() => {
 .hero-identity { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .hero-title-wrap { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .hero-name-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.hero-name-row h1 {
-  margin: 0;
+.hero-app-name {
   color: var(--color-text-heading);
   font-size: 20px;
   font-weight: 800;
   letter-spacing: -0.02em;
+  line-height: 1.2;
 }
 .hero-url-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -724,7 +796,7 @@ onBeforeUnmount(() => {
 }
 .pipeline-steps {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--step-cols, 5), minmax(0, 1fr));
   gap: 8px;
 }
 @media (max-width: 680px) { .pipeline-steps { grid-template-columns: 1fr; } }
@@ -733,7 +805,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid #E2E8F0;
+  border: 1px solid var(--color-border);
   border-radius: 10px;
   background: #fff;
   font-size: 12px;
@@ -745,22 +817,22 @@ onBeforeUnmount(() => {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #F1F5F9;
+  background: var(--color-bg-subtle);
   color: var(--color-text-muted);
   font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
 }
-.pipeline-step.done { border-color: #A7F3D0; color: #047857; }
+.pipeline-step.done { border-color: #A7F3D0; color: #059669; }
 .pipeline-step.done .step-dot { background: #10B981; color: #fff; }
 .pipeline-step.active {
   border-color: var(--color-brand);
   box-shadow: 0 0 0 3px var(--color-brand-soft);
-  color: var(--color-brand);
+  color: var(--color-brand-dark);
   font-weight: 600;
 }
 .pipeline-step.active .step-dot { background: var(--gradient-brand); color: #fff; }
-.pipeline-step.failed { border-color: #FECACA; background: #FEF2F2; color: #B91C1C; font-weight: 600; }
+.pipeline-step.failed { border-color: #FECACA; background: #FEF2F2; color: #DC2626; font-weight: 600; }
 .pipeline-step.failed .step-dot { background: #EF4444; color: #fff; }
 
 /* ---- 卡片化可见范围 ---- */
@@ -798,7 +870,7 @@ onBeforeUnmount(() => {
 /* ---- 标签页、密钥与日志 ---- */
 .tabs-panel { padding-top: 8px; }
 .live { margin-left: 6px; }
-.err-summary { color: #B91C1C; }
+.err-summary { color: #DC2626; }
 .expand { padding: 8px 16px; }
 .expand-error-head {
   display: flex;
@@ -808,7 +880,7 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 10px;
 }
-.expand-msg { margin: 0 0 4px; color: #B91C1C; font-weight: 600; }
+.expand-msg { margin: 0 0 4px; color: #DC2626; font-weight: 600; }
 .expand-logs { max-height: 320px; }
 
 .secret-banner {
@@ -829,7 +901,7 @@ onBeforeUnmount(() => {
   height: 38px;
   border-radius: 10px;
   background: var(--color-brand-soft);
-  color: var(--color-brand);
+  color: var(--color-brand-dark);
   flex-shrink: 0;
 }
 .secret-banner > div:nth-child(2) { flex: 1; min-width: 240px; }

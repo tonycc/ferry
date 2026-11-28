@@ -93,8 +93,16 @@ export const LOGIN_PAGE = `<!doctype html>
 <script>
 ${POST}
   let ticket = "";
+  let redirecting = false;
   const $ = (id) => document.getElementById(id);
   const msg = (text, cls) => { $("msg").textContent = text; $("msg").className = cls || ""; };
+  const resetReveal = () => {
+    document.querySelectorAll(".eye").forEach((btn) => {
+      const input = $(btn.dataset.for);
+      if (input) input.type = "password";
+      btn.textContent = "显示";
+    });
+  };
   document.querySelectorAll(".eye").forEach((btn) => {
     btn.addEventListener("click", () => {
       const input = $(btn.dataset.for);
@@ -106,6 +114,7 @@ ${POST}
   });
   // 登录后回到原来要去的页面;只接受站内路径
   const done = () => {
+    redirecting = true;
     const next = new URLSearchParams(location.search).get("next") || "/console/";
     location.href = next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\\\") ? next : "/console/";
   };
@@ -116,9 +125,10 @@ ${POST}
       const data = await post("/auth/login", { account: $("account").value, password: $("password").value });
       if (!data.mustChange) return done();
       ticket = data.ticket;
+      resetReveal();
       $("login").hidden = true; $("change").hidden = false; $("new1").focus();
     } catch (err) { msg(err.message, "error"); }
-    finally { btn.disabled = false; btn.textContent = "登录"; }
+    finally { if (!redirecting) { btn.disabled = false; btn.textContent = "登录"; } }
   });
   $("change").addEventListener("submit", async (e) => {
     e.preventDefault(); msg("");
@@ -130,8 +140,12 @@ ${POST}
     } catch (err) {
       msg(err.message, "error");
       // 票据过期:回到登录
-      if (err.message.includes("重新登录")) { $("change").hidden = true; $("login").hidden = false; $("password").value = ""; }
-    } finally { btn.disabled = false; btn.textContent = "设置并登录"; }
+      if (err.message.includes("重新登录")) {
+        resetReveal();
+        $("change").hidden = true; $("login").hidden = false;
+        $("password").value = ""; $("new1").value = ""; $("new2").value = "";
+      }
+    } finally { if (!redirecting) { btn.disabled = false; btn.textContent = "设置并登录"; } }
   });
 </script>
 </body></html>`;

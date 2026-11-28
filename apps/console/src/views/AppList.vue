@@ -20,7 +20,7 @@ const refreshing = ref(false);
 /** 点统计卡片只看这一种状态的应用,再点一次取消 */
 const stat = ref<StatKey>();
 const keyword = ref("");
-const viewMode = ref<"cards" | "table">((localStorage.getItem("ferry:apps-view") as "cards" | "table") || "cards");
+const viewMode = ref<"cards" | "table">(localStorage.getItem("ferry:apps-view") === "table" ? "table" : "cards");
 
 function setViewMode(mode: "cards" | "table") {
   viewMode.value = mode;
@@ -142,10 +142,10 @@ onMounted(() => void load());
             style="width: 240px"
           />
           <div class="view-switch" role="group" aria-label="切换视图">
-            <button type="button" :class="{ active: viewMode === 'cards' }" title="卡片视图" @click="setViewMode('cards')">
+            <button type="button" :class="{ active: viewMode === 'cards' }" :aria-pressed="viewMode === 'cards'" aria-label="卡片视图" title="卡片视图" @click="setViewMode('cards')">
               <el-icon><Grid /></el-icon>
             </button>
-            <button type="button" :class="{ active: viewMode === 'table' }" title="表格视图" @click="setViewMode('table')">
+            <button type="button" :class="{ active: viewMode === 'table' }" :aria-pressed="viewMode === 'table'" aria-label="表格视图" title="表格视图" @click="setViewMode('table')">
               <el-icon><List /></el-icon>
             </button>
           </div>

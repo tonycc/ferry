@@ -51,6 +51,7 @@ async function load() {
 }
 
 async function create() {
+  if (creating.value) return;
   creating.value = true;
   try {
     const result = await api.post<{ token: string }>("/api/tokens", { label: label.value.trim() || undefined });

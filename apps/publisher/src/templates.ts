@@ -43,7 +43,9 @@ export class TemplateLibrary {
   /** 模板受信任的官方 Dockerfile 文本;没有这个模板时返回 undefined */
   async dockerfile(name: string): Promise<string | undefined> {
     if (!(await this.names()).includes(name)) return undefined;
-    const content = await readFile(join(this.dir, name, "Dockerfile"), "utf8");
+    const content = await readFile(join(this.dir, name, "Dockerfile"), "utf8").catch(() => {
+      throw new Error(`读取平台模板 ${name} 的 Dockerfile 失败`);
+    });
     if (!content.trim()) throw new Error(`平台模板 ${name} 的 Dockerfile 为空`);
     return content;
   }

@@ -92,6 +92,7 @@ function openEdit(id: string) {
 const moving = computed(() => !!dialog.editing && dialog.editing.parentId !== null && dialog.form.parentId !== dialog.editing.parentId);
 
 async function save() {
+  if (dialog.saving) return;
   if (moving.value) {
     try {
       await ElMessageBox.confirm(

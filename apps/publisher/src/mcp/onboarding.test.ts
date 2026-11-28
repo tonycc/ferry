@@ -6,7 +6,7 @@ import { TemplateLibrary } from "../templates";
 import { makeZip } from "../test/zip";
 import { Engine } from "../workflow/engine";
 import { MemoryStore } from "../workflow/store";
-import { checkArchiveLayout, readZipFile, zipEntryNames } from "../zip";
+import { checkArchiveEntries, checkArchiveLayout, readZipFile, replaceZipDockerfile, zipEntryNames } from "../zip";
 
 const EXPENSE_YAML = "name: expense\ntemplate: node-postgres\n";
 
@@ -231,5 +231,33 @@ describe("代码包结构检查", () => {
     expect(checkArchiveLayout(["my-app/", "my-app/app.yaml", "my-app/Dockerfile"])).toContain("多了一层目录 my-app/");
     expect(checkArchiveLayout(["app.yaml", "../escape.txt"])).toContain("非法文件路径");
     expect(checkArchiveLayout(["/etc/passwd", "app.yaml"])).toContain("非法文件路径");
+  });
+
+  it("拦截符号链接(S_IFLNK)与重叠偏移放大攻击", async () => {
+    const { service } = setup();
+
+    // 1) 构造一个含 Unix 符号链接属性(0o120777)的 zip:上传和底层 replaceZipDockerfile 都拒绝
+    const symZip = Buffer.from(makeZip({ "app.yaml": EXPENSE_YAML, link: "/etc/passwd" }));
+    const eocd = symZip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    const centralStart = symZip.readUInt32LE(eocd + 16);
+    // 第二个中央目录条目为 link:写入 Unix versionMadeBy 与 S_IFLNK 外部属性
+    const firstLen = 46 + symZip.readUInt16LE(centralStart + 28);
+    const secondCentral = centralStart + firstLen;
+    symZip.writeUInt16LE((3 << 8) | 20, secondCentral + 4);
+    symZip.writeUInt32LE((0o120777 << 16) >>> 0, secondCentral + 38);
+    expect(checkArchiveEntries(symZip)).toContain("符号链接");
+    expect(replaceZipDockerfile(symZip, "FROM node:22-alpine\n")).toBeUndefined();
+
+    const prepared = await service.prepareApp(alice, "expense");
+    await expect(service.receiveUpload(prepared.uploadUrl.split("/").pop()!, symZip)).rejects.toThrow(/符号链接/);
+
+    // 2) 构造两个中央目录条目指向同一段 localOffset(重叠放大攻击):直接拒绝
+    const overlapZip = Buffer.from(makeZip({ "app.yaml": EXPENSE_YAML, "b.txt": "hello" }));
+    const eocd2 = overlapZip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    const cStart2 = overlapZip.readUInt32LE(eocd2 + 16);
+    const c2 = cStart2 + 46 + overlapZip.readUInt16LE(cStart2 + 28);
+    overlapZip.writeUInt32LE(0, c2 + 42); // 强行把第二个条目的 localOffset 指回 0
+    expect(zipEntryNames(overlapZip)).toBeUndefined();
+    expect(replaceZipDockerfile(overlapZip, "FROM node:22-alpine\n")).toBeUndefined();
   });
 });

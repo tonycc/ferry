@@ -288,18 +288,34 @@ export class Engine {
   /** 新版本不可用时:有上一个可用版本就用保存的代码包把它重新部署回去(只回滚代码,不动数据库) */
   private async restoreLive(app: AppRecord, failure: Failure): Promise<Failure> {
     if (!app.liveVersion) return failure;
-    const previous = await this.managedArchive(await this.archive(app.name, app.liveVersion));
-    const rollback = await this.adapters.platform.deploy(this.appId(app), previous, { databaseId: app.platform.databaseId });
-    if (!rollback.ok) {
+    try {
+      const liveRelease = [...(await this.store.listReleases(app.name))]
+        .reverse()
+        .find((r) => r.version === app.liveVersion && r.state === "LIVE");
+      const previous = await this.managedArchive(
+        await this.archive(app.name, app.liveVersion),
+        liveRelease?.manifest.template,
+      );
+      const rollback = await this.adapters.platform.deploy(this.appId(app), previous, { databaseId: app.platform.databaseId });
+      if (!rollback.ok) {
+        return {
+          ...failure,
+          fixable: false,
+          type: "rollback_failed",
+          message: `新版本不可用,且回滚到上一版本也失败了,应用现在可能无法访问。${failure.message}`,
+          hint: "不要修改代码。马上告诉用户应用可能无法访问,并请平台管理员处理",
+        };
+      }
+      return { ...failure, rolledBack: true };
+    } catch (err) {
       return {
         ...failure,
         fixable: false,
         type: "rollback_failed",
-        message: `新版本不可用,且回滚到上一版本也失败了,应用现在可能无法访问。${failure.message}`,
+        message: `新版本不可用,且回滚到上一版本也出错了(${(err as Error).message}),应用现在可能无法访问。${failure.message}`,
         hint: "不要修改代码。马上告诉用户应用可能无法访问,并请平台管理员处理",
       };
     }
-    return { ...failure, rolledBack: true };
   }
 
   private async goLive(release: ReleaseRecord): Promise<void> {

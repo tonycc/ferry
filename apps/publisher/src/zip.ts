@@ -1,6 +1,15 @@
 import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 
-interface ZipEntry {
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const gbDecoder = (() => {
+  try {
+    return new TextDecoder("gb18030", { fatal: true });
+  } catch {
+    return undefined;
+  }
+})();
+
+export interface ZipEntry {
   name: string;
   flags: number;
   /** 0 不压缩,8 deflate */
@@ -13,7 +22,23 @@ interface ZipEntry {
   localOffset: number;
 }
 
-/** 读出 zip 中央目录里的条目(不解压)。不是合法 zip、加密或超出普通 32 位范围时返回 undefined */
+/** 解码条目文件名:优先严格 UTF-8;未置 UTF-8 标志(中文 Windows 压缩工具)时尝试 GB18030;非法字节返回 undefined */
+function decodeFileName(raw: Buffer, flags: number): string | undefined {
+  try {
+    return utf8Decoder.decode(raw);
+  } catch {
+    if ((flags & 0x0800) === 0 && gbDecoder) {
+      try {
+        return gbDecoder.decode(raw);
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+}
+
+/** 读出 zip 中央目录里的条目(不解压)。不是合法 zip、加密、重叠偏移或超出普通 32 位范围时返回 undefined */
 function zipEntries(data: Buffer): ZipEntry[] | undefined {
   // 中央目录结束记录在文件末尾,后面最多跟 65535 字节的注释
   const EOCD = 0x06054b50;
@@ -28,11 +53,14 @@ function zipEntries(data: Buffer): ZipEntry[] | undefined {
   if (eocd < 0) return undefined;
 
   const count = data.readUInt16LE(eocd + 10);
-  let offset = data.readUInt32LE(eocd + 16);
-  if (count === 0xffff || offset === 0xffffffff) return undefined;
+  const centralStart = data.readUInt32LE(eocd + 16);
+  if (count === 0xffff || centralStart === 0xffffffff || centralStart > eocd) return undefined;
+  let offset = centralStart;
   const entries: ZipEntry[] = [];
+  const spans: { start: number; end: number }[] = [];
+
   for (let n = 0; n < count; n++) {
-    if (offset + 46 > data.length || data.readUInt32LE(offset) !== 0x02014b50) return undefined;
+    if (offset + 46 > eocd || data.readUInt32LE(offset) !== 0x02014b50) return undefined;
     const versionMadeBy = data.readUInt16LE(offset + 4);
     const flags = data.readUInt16LE(offset + 8);
     const method = data.readUInt16LE(offset + 10);
@@ -48,10 +76,20 @@ function zipEntries(data: Buffer): ZipEntry[] | undefined {
     if ((flags & 0x01) !== 0 || compressedSize === 0xffffffff || size === 0xffffffff || localOffset === 0xffffffff) {
       return undefined;
     }
-    if (offset + 46 + nameLength > data.length) return undefined;
+    if (offset + 46 + nameLength + extraLength + commentLength > eocd) return undefined;
+    const decodedName = decodeFileName(data.subarray(offset + 46, offset + 46 + nameLength), flags);
+    if (decodedName === undefined) return undefined;
+
+    // 校验对应的本地文件头范围并记录物理区间,防止多条目共享同一段 localOffset 放大内存
+    if (localOffset + 30 > centralStart || data.readUInt32LE(localOffset) !== 0x04034b50) return undefined;
+    const dataStart = localOffset + 30 + data.readUInt16LE(localOffset + 26) + data.readUInt16LE(localOffset + 28);
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > centralStart) return undefined;
+    spans.push({ start: localOffset, end: dataEnd });
+
     entries.push({
       // Windows 上的工具可能用反斜杠
-      name: data.toString("utf8", offset + 46, offset + 46 + nameLength).replaceAll("\\", "/"),
+      name: decodedName.replaceAll("\\", "/"),
       flags,
       method,
       crc,
@@ -63,6 +101,12 @@ function zipEntries(data: Buffer): ZipEntry[] | undefined {
     });
     offset += 46 + nameLength + extraLength + commentLength;
   }
+
+  // 确认所有本地条目物理区间互不重叠,杜绝重叠引用造成的内存/磁盘放大攻击
+  spans.sort((a, b) => a.start - b.start);
+  for (let i = 1; i < spans.length; i++) {
+    if (spans[i]!.start < spans[i - 1]!.end) return undefined;
+  }
   return entries;
 }
 
@@ -73,7 +117,13 @@ export function hasUnsafeZipPath(name: string): boolean {
   return slash.split("/").some((seg) => seg === "..");
 }
 
-/** 去掉前导 ./ 和中间多余的 . 段后的干净相对路径(不含尾斜杠时为文件) */
+/** Unix 外部属性含有符号链接(0o120000)、设备、FIFO、Socket 等非常规文件类型时返回 true */
+function isUnsupportedSpecialEntry(entry: ZipEntry): boolean {
+  const modeType = (entry.externalAttr >>> 16) & 0o170000;
+  return modeType !== 0 && modeType !== 0o100000 && modeType !== 0o040000;
+}
+
+/** 去掉前导 ./ 和中间多余的 . 段后的干净相对路径(目录保留尾斜杠) */
 function cleanRelativePath(name: string): string {
   const slash = name.replaceAll("\\", "/");
   const trailingSlash = slash.endsWith("/");
@@ -84,9 +134,11 @@ function cleanRelativePath(name: string): string {
   return trailingSlash && clean ? `${clean}/` : clean;
 }
 
-/** 是否为代码包根目录下的 Dockerfile(含 ./Dockerfile 及大小写变体如 dockerfile) */
+/** 是否为代码包根目录下的 Dockerfile(含 ./Dockerfile、大小写变体及同名目录 Dockerfile/...) */
 export function isRootDockerfile(name: string): boolean {
-  return cleanRelativePath(name).toLowerCase() === "dockerfile";
+  const clean = cleanRelativePath(name);
+  const firstSegment = clean.split("/")[0];
+  return firstSegment?.toLowerCase() === "dockerfile";
 }
 
 /**
@@ -96,6 +148,16 @@ export function isRootDockerfile(name: string): boolean {
  */
 export function zipEntryNames(data: Buffer): string[] | undefined {
   return zipEntries(data)?.map((entry) => entry.name);
+}
+
+/** 检查 zip 中是否含有符号链接等特殊文件条目;发现时返回给 agent 的修复提示 */
+export function checkArchiveEntries(data: Buffer): string | undefined {
+  const entries = zipEntries(data);
+  if (!entries) return "上传的内容不是合法的 zip 文件(或文件名编码/压缩格式不受支持)";
+  if (entries.some(isUnsupportedSpecialEntry)) {
+    return "代码包里含有符号链接(symlink)或特殊文件,出于安全原因不允许上传。请去掉符号链接(不要加 zip -y/--symlinks)后重新打包上传";
+  }
+  return undefined;
 }
 
 /** 读出某个条目的压缩字节流切片;本地文件头损坏或越界时返回 undefined */
@@ -130,33 +192,36 @@ function decodeEntry(data: Buffer, entry: ZipEntry, maxBytes: number): Buffer | 
  * 没有这个文件、超过 maxBytes、或用了不支持的压缩方式时返回 undefined。
  */
 export function readZipFile(data: Buffer, name: string, maxBytes = 64 * 1024): Buffer | undefined {
-  const entry = zipEntries(data)?.find((e) => !hasUnsafeZipPath(e.name) && cleanRelativePath(e.name) === name);
+  const entry = zipEntries(data)?.find(
+    (e) => !hasUnsafeZipPath(e.name) && !isUnsupportedSpecialEntry(e) && cleanRelativePath(e.name) === name,
+  );
   if (!entry) return undefined;
   return decodeEntry(data, entry, maxBytes);
 }
 
 /**
- * 读出 zip 根目录下所有 Dockerfile(含 ./Dockerfile 和大小写变体)的文本内容。
- * 用于判断上传者是否传入了与模板不同的自定义 Dockerfile。
+ * 判断原 zip 是否带了与平台模板不一致的自定义 Dockerfile(忽略 Windows \r\n 差异;空占位符不计)。
+ * 多个 Dockerfile 变体、同名目录或超大无法解码的 Dockerfile 一律视为自定义并触发覆盖提醒。
  */
-export function readRootDockerfiles(data: Buffer, maxBytes = 64 * 1024): string[] | undefined {
+export function hasCustomZipDockerfile(data: Buffer, canonical: string, maxBytes = 64 * 1024): boolean {
   const entries = zipEntries(data);
-  if (!entries) return undefined;
-  const texts: string[] = [];
-  for (const entry of entries) {
-    if (hasUnsafeZipPath(entry.name) || !isRootDockerfile(entry.name)) continue;
-    const buf = decodeEntry(data, entry, maxBytes);
-    if (!buf) return undefined;
-    texts.push(buf.toString("utf8"));
-  }
-  return texts;
+  if (!entries) return false;
+  const matched = entries.filter((e) => !hasUnsafeZipPath(e.name) && isRootDockerfile(e.name));
+  if (matched.length === 0) return false;
+  if (matched.length > 1) return true;
+  const only = matched[0]!;
+  if (cleanRelativePath(only.name).endsWith("/")) return true;
+  const buf = decodeEntry(data, only, maxBytes);
+  if (!buf) return true;
+  const norm = (s: string) => s.replaceAll("\r\n", "\n").trim();
+  const actual = norm(buf.toString("utf8"));
+  return actual.length > 0 && actual !== norm(canonical);
 }
 
 /**
- * 强制托管 Dockerfile:剥离原 zip 中所有根目录 Dockerfile(含 ./Dockerfile、大小写变体和重复条目),
- * 重建干净一致的 Local File Header 与中央目录(消除 Local/Central 文件名不一致及夹带数据),
+ * 强制托管 Dockerfile:剥离原 zip 中所有根目录 Dockerfile(含 ./Dockerfile、大小写变体、同名目录和重复条目),
+ * 拒绝符号链接,净化文件权限位,重建干净对齐的 Local File Header 与中央目录,
  * 最后注入平台内置受信任模板的唯一根目录 Dockerfile。
- * 原 zip 含有不安全路径、加密或非标准压缩算法(非 0/8)时返回 undefined。
  */
 export function replaceZipDockerfile(data: Buffer, dockerfile: string | Buffer): Buffer | undefined {
   const entries = zipEntries(data);
@@ -175,23 +240,30 @@ export function replaceZipDockerfile(data: Buffer, dockerfile: string | Buffer):
 
   const items: PackedItem[] = [];
   for (const entry of entries) {
-    if (hasUnsafeZipPath(entry.name)) return undefined;
+    if (hasUnsafeZipPath(entry.name) || isUnsupportedSpecialEntry(entry)) return undefined;
     if (isRootDockerfile(entry.name)) continue;
     if (entry.method !== 0 && entry.method !== 8) return undefined;
+    if (entry.method === 0 && entry.compressedSize !== entry.size) return undefined;
     const cleanName = cleanRelativePath(entry.name);
     if (!cleanName) continue;
+    const nameBuf = Buffer.from(cleanName, "utf8");
+    if (nameBuf.length > 0xffff) return undefined;
     const raw = rawEntryData(data, entry);
     if (!raw) return undefined;
+    const isDir = cleanName.endsWith("/");
+    const isExec = !isDir && ((entry.externalAttr >>> 16) & 0o111) !== 0;
+    const safeMode = isDir ? 0o040755 : isExec ? 0o100755 : 0o100644;
+
     items.push({
-      nameBuf: Buffer.from(cleanName, "utf8"),
-      // 保留 UTF-8 文件名标记(bit 11 = 0x0800);清除 bit 3(Data Descriptor),大小直接写进新的 Local Header
+      nameBuf,
+      // 文件名已统一转为 UTF-8(bit 11 = 0x0800);清除 bit 3(Data Descriptor),大小直接写进新的 Local Header
       flags: 0x0800,
       method: entry.method,
       crc: entry.crc,
       compressed: raw,
       uncompressedSize: entry.size,
-      versionMadeBy: entry.versionMadeBy || 20,
-      externalAttr: entry.externalAttr,
+      versionMadeBy: (3 << 8) | 20,
+      externalAttr: (safeMode << 16) >>> 0,
     });
   }
 
@@ -204,7 +276,6 @@ export function replaceZipDockerfile(data: Buffer, dockerfile: string | Buffer):
     crc: crc32(dfPlain),
     compressed: dfPlain,
     uncompressedSize: dfPlain.length,
-    // Unix(3) << 8 | 20,常规文件权限 0o100644 << 16
     versionMadeBy: (3 << 8) | 20,
     externalAttr: (0o100644 << 16) >>> 0,
   });
@@ -215,6 +286,7 @@ export function replaceZipDockerfile(data: Buffer, dockerfile: string | Buffer):
   const centrals: Buffer[] = [];
   let offset = 0;
   for (const item of items) {
+    if (offset > 0xffffffff) return undefined;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
@@ -244,6 +316,7 @@ export function replaceZipDockerfile(data: Buffer, dockerfile: string | Buffer):
   }
 
   const centralSize = centrals.reduce((n, b) => n + b.length, 0);
+  if (offset + centralSize + 22 > 0xffffffff) return undefined;
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
   end.writeUInt16LE(items.length, 8);

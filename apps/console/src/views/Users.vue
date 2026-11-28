@@ -210,6 +210,7 @@ function openEdit(user: AdminUser) {
 }
 
 async function save() {
+  if (dialog.saving) return;
   const { name, mobile, jobNumber, departmentIds, isAdmin } = dialog.form;
   const body = { name, mobile, jobNumber, departmentIds };
   dialog.saving = true;

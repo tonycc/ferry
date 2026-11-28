@@ -187,12 +187,14 @@ onMounted(() => void load());
                 <AppAvatar :name="row.name" :muted="!row.live || row.disabled || row.unpublished" />
                 <div class="stack-cell">
                   <div class="url-row">
-                    <a class="app-cell-name" :href="row.url" target="_blank" rel="noopener">{{ row.name }}</a>
+                    <a v-if="row.live && !row.disabled && !row.unpublished" class="app-cell-name" :href="row.url" target="_blank" rel="noopener">{{ row.name }}</a>
+                    <span v-else class="app-cell-name">{{ row.name }}</span>
                     <el-icon v-if="row.live && !row.disabled && !row.unpublished" class="ext-icon"><TopRight /></el-icon>
                     <button
                       type="button"
                       class="copy-icon-btn"
                       title="复制应用地址"
+                      aria-label="复制应用地址"
                       @click="copyText(row.url, '已复制应用访问地址')"
                     >
                       <el-icon><CopyDocument /></el-icon>
