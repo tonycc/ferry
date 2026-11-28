@@ -181,6 +181,8 @@ export interface Store {
 export class MemoryStore implements Store {
   private apps = new Map<string, AppRecord>();
   private releases = new Map<string, ReleaseRecord>();
+  private releaseSeq = 0;
+  private releaseSeqs = new Map<string, number>();
   private uploads = new Map<string, UploadTicket>();
   private secrets = new Map<string, SecretRecord>();
   private locks = new Map<string, Promise<void>>();
@@ -326,7 +328,12 @@ export class MemoryStore implements Store {
       }
       const host = this.apps.get(name)?.host;
       const existed = this.apps.delete(name);
-      for (const [id, release] of this.releases) if (release.appName === name) this.releases.delete(id);
+      for (const [id, release] of this.releases) {
+        if (release.appName === name) {
+          this.releases.delete(id);
+          this.releaseSeqs.delete(id);
+        }
+      }
       for (const [key, upload] of this.uploads) if (upload.appName === name) this.uploads.delete(key);
       for (const [key, secret] of this.secrets) if (secret.appName === name) this.secrets.delete(key);
       return existed ? host : undefined;
@@ -351,14 +358,28 @@ export class MemoryStore implements Store {
     return copy(this.releases.get(id));
   }
 
+  private orderedReleases(appName: string, direction: "asc" | "desc"): ReleaseRecord[] {
+    const sign = direction === "asc" ? 1 : -1;
+    return [...this.releases.values()]
+      .filter((release) => release.appName === appName)
+      .sort((a, b) => {
+        const dt = a.createdAt.getTime() - b.createdAt.getTime();
+        if (dt !== 0) return sign * dt;
+        return sign * ((this.releaseSeqs.get(a.id) ?? 0) - (this.releaseSeqs.get(b.id) ?? 0));
+      });
+  }
+
   async listReleases(appName: string) {
-    // 按写入顺序排列,创建时间相同时也不会乱序
-    return [...this.releases.values()].filter((release) => release.appName === appName).map(copy);
+    // 按 (createdAt, seq) 排列,与 PostgreSQL 的 ORDER BY created_at, seq 严格一致
+    return this.orderedReleases(appName, "asc").map(copy);
   }
 
   async listReleaseSummaries(appName: string, limit?: number) {
-    if (limit !== undefined && limit <= 0) return [];
-    const matched = [...this.releases.values()].filter((release) => release.appName === appName).reverse();
+    if (limit !== undefined) {
+      if (!Number.isFinite(limit) || limit < 1) return [];
+      limit = Math.floor(limit);
+    }
+    const matched = this.orderedReleases(appName, "desc");
     const sliced = limit !== undefined ? matched.slice(0, limit) : matched;
     return sliced.map((release) => {
       const cloned = copy(release);
@@ -370,8 +391,7 @@ export class MemoryStore implements Store {
   async getActiveHealthchecks(appName: string) {
     const paths = new Set<string>();
     let tookLive = false;
-    const ordered = [...this.releases.values()].filter((r) => r.appName === appName).reverse();
-    for (const r of ordered) {
+    for (const r of this.orderedReleases(appName, "desc")) {
       if (r.state === "LIVE") {
         if (!tookLive) {
           paths.add(r.manifest.healthcheck);
@@ -393,6 +413,7 @@ export class MemoryStore implements Store {
           }
         }
       }
+      if (!this.releaseSeqs.has(release.id)) this.releaseSeqs.set(release.id, ++this.releaseSeq);
       this.releases.set(release.id, copy(release));
     });
     this.emit({ kind: "release", appName: release.appName });
@@ -426,6 +447,7 @@ export class MemoryStore implements Store {
           current.unpublishedAt = undefined;
           revived = true;
         }
+        if (!this.releaseSeqs.has(release.id)) this.releaseSeqs.set(release.id, ++this.releaseSeq);
         this.releases.set(release.id, copy(release));
         return { ok: true, app: copy(current), revived };
       }),

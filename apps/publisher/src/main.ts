@@ -253,6 +253,7 @@ const certificates = instance.publicUrl
     })
   : undefined;
 
+const setupService = new SetupService(setupStore);
 const server = buildServer(service, identity, {
   certificates,
   maxArchiveBytes: config.MAX_ARCHIVE_MB * 1024 * 1024,
@@ -270,7 +271,7 @@ const server = buildServer(service, identity, {
     appsScheme: instance.appsUrlScheme,
   },
   setup: {
-    service: new SetupService(setupStore),
+    service: setupService,
     initialized: () => completed,
     switched: () => instance.switched && !completed,
     instanceId,
@@ -347,11 +348,14 @@ if (certificates && (instance.initialized || instance.switched) && config.FERRY_
 // 冷却期内被压下的告警,冷却期过了还没被新告警带出去的,单独补发
 setInterval(() => void alerts.flush(), 60_000).unref();
 
-// 定期垃圾回收:清理过期的浏览器会话、向导会话、废弃未上传的凭据,以及 Dokploy 上可能残留的全局临时任务
-const runMaintenanceGc = async (scheduleMinAgeMs: number) => {
-  await Promise.all([
+// 定期垃圾回收:清理过期的浏览器会话、向导会话、废弃未上传的凭据,以及 Dokploy 上可能残留的全局临时任务。
+// 单飞保护避免慢轮次重入叠加;启动时先串行执行完首次回收(等上次遗留的 running 脚本收尾),再恢复未完成发布。
+let gcInFlight: Promise<void> | undefined;
+const runMaintenanceGc = (scheduleMinAgeMs: number): Promise<void> => {
+  if (gcInFlight) return gcInFlight;
+  gcInFlight = Promise.all([
     auth.pruneExpiredSessions().catch((err: Error) => server.log.error(`清理过期登录会话失败: ${err.message}`)),
-    setupStore.deleteExpiredSessions(new Date()).catch((err: Error) => server.log.error(`清理过期向导会话失败: ${err.message}`)),
+    setupService.pruneExpiredSessions().catch((err: Error) => server.log.error(`清理过期向导会话失败: ${err.message}`)),
     service.pruneExpiredUploads().catch((err: Error) => server.log.error(`清理过期上传凭据失败: ${err.message}`)),
     config.FERRY_PLATFORM === "dokploy" && (instance.initialized || instance.switched)
       ? adapters.platform
@@ -361,9 +365,14 @@ const runMaintenanceGc = async (scheduleMinAgeMs: number) => {
           })
           .catch((err: Error) => server.log.error(`清理残留 Dokploy 临时任务失败: ${err.message}`))
       : Promise.resolve(),
-  ]);
+  ])
+    .then(() => undefined)
+    .finally(() => {
+      gcInFlight = undefined;
+    });
+  return gcInFlight;
 };
-void runMaintenanceGc(0);
+await runMaintenanceGc(0);
 setInterval(() => void runMaintenanceGc(30 * 60_000), 3600_000).unref();
 
 // 继续执行上次没跑完的发布(进程重启前正在进行的)

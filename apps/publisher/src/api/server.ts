@@ -80,8 +80,19 @@ export function buildServer(
         .join(";");
       return reply.status(400).send({ error: "invalid_input", message });
     }
-    // Fastify 自己抛出的请求错误(如 JSON 格式不对)保留原状态码
+    // Fastify 自己抛出的请求错误(如请求体超限 413、JSON 格式不对)保留原状态码
     const status = (err as { statusCode?: number }).statusCode;
+    const code = (err as { code?: string }).code;
+    if (status === 413 || code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+      const limitLabel =
+        options.maxArchiveBytes >= 1024 * 1024
+          ? `${Math.round(options.maxArchiveBytes / (1024 * 1024))}MB`
+          : `${options.maxArchiveBytes}B`;
+      return reply.status(413).send({
+        error: "invalid_input",
+        message: `上传内容超过大小上限(${limitLabel}),请确认打包时已排除 node_modules、.git 和构建产物等大文件`,
+      });
+    }
     if (status !== undefined && status >= 400 && status < 500) {
       return reply.status(status).send({ error: "invalid_input", message: (err as Error).message });
     }

@@ -172,8 +172,20 @@ describe.each(storeCases("ferry_test_store"))("存储契约:$name", (c) => {
       expect(top2.map((r) => r.id)).toEqual([ids[2], ids[1]]);
       expect(top2[0]?.error).toEqual({ stage: "BUILDING", type: "build_failed", message: "构建失败", hint: "修" });
       expect(top2[0]?.error?.logs).toBeUndefined();
+      expect(await store.listReleaseSummaries("ledger", Number.NaN)).toEqual([]);
+      expect(await store.listReleaseSummaries("ledger", 0)).toEqual([]);
+      expect((await store.listReleaseSummaries("ledger", 1.9)).map((r) => r.id)).toEqual([ids[2]]);
       // 按单条 ID 查询时完整的构建日志仍在
       expect((await store.getRelease(ids[2]!))?.error?.logs).toBe("huge-log-output");
+
+      // 乱序 createdAt 写入时,MemoryStore 与 PostgresStore 均严格按 (createdAt, seq) 排列
+      await store.createApp(newApp({ name: "out-of-order", host: "ooo.apps.test" }));
+      const laterId = "00000000-0000-4000-8000-000000000091";
+      const earlierId = "00000000-0000-4000-8000-000000000092";
+      await store.saveRelease(newRelease({ id: laterId, appName: "out-of-order", state: "LIVE", createdAt: at("2026-11-16T08:10:00.000Z") }));
+      await store.saveRelease(newRelease({ id: earlierId, appName: "out-of-order", state: "LIVE", createdAt: at("2026-11-16T08:02:00.000Z") }));
+      expect((await store.listReleases("out-of-order")).map((r) => r.id)).toEqual([earlierId, laterId]);
+      expect((await store.listReleaseSummaries("out-of-order")).map((r) => r.id)).toEqual([laterId, earlierId]);
     });
 
     it("同一应用不能同时有两个未结束的发布单;结束后可以新建,不同应用互不影响", async () => {

@@ -913,9 +913,13 @@ export class PublisherService {
     return (await this.healthcheckPaths(appName))[0];
   }
 
-  /** 清理已过期且未上传过代码包的上传凭据(后台定时调用) */
-  async pruneExpiredUploads(): Promise<number> {
-    return this.store.deleteExpiredUploads((this.config.now ?? (() => new Date()))());
+  /**
+   * 清理已过期超过宽限期(默认 1 小时)且从未上传过代码包的上传凭据:
+   * 保留刚过期的凭据以继续向 agent 返回明确的 403“上传地址已过期”提示,并避免临界点正在进行的上传被删行。
+   */
+  async pruneExpiredUploads(graceMs = 3600_000): Promise<number> {
+    const now = (this.config.now ?? (() => new Date()))();
+    return this.store.deleteExpiredUploads(new Date(now.getTime() - graceMs));
   }
 
   /** 网关用:viewer 能否访问这个应用(停用、下线的都不能;其余按可见范围和组织架构)。不再查存储 */

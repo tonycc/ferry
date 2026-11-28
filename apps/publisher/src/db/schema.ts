@@ -74,7 +74,12 @@ export const uploads = pgTable(
     /** 收到代码包时从里面读出的 app.yaml */
     manifest: jsonb("manifest"),
   },
-  (t) => [uniqueIndex("uploads_app_version_idx").on(t.appName, t.version)],
+  (t) => [
+    uniqueIndex("uploads_app_version_idx").on(t.appName, t.version),
+    index("uploads_pending_expires_idx")
+      .on(t.expiresAt)
+      .where(sql`${t.receivedAt} IS NULL`),
+  ],
 );
 
 /** 应用密钥(任务 3.8):值用 SECRETS_KEY 加密后存放,见 src/secrets.ts */
@@ -123,12 +128,16 @@ export const userPasswords = pgTable("user_passwords", {
 });
 
 /** 浏览器登录会话:只存 cookie 令牌的哈希 */
-export const sessions = pgTable("sessions", {
-  tokenHash: text("token_hash").primaryKey(),
-  userId: text("user_id").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-});
+export const sessions = pgTable(
+  "sessions",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    userId: text("user_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("sessions_expires_at_idx").on(t.expiresAt)],
+);
 
 /** 个人令牌:只存哈希 */
 export const personalTokens = pgTable(

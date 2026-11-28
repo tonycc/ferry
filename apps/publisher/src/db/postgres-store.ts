@@ -247,7 +247,10 @@ export class PostgresStore implements Store {
   }
 
   async listReleaseSummaries(appName: string, limit?: number) {
-    if (limit !== undefined && limit <= 0) return [];
+    if (limit !== undefined) {
+      if (!Number.isFinite(limit) || limit < 1) return [];
+      limit = Math.floor(limit);
+    }
     const base = this.db
       .select({
         id: schema.releases.id,
@@ -259,8 +262,8 @@ export class PostgresStore implements Store {
         manifest: schema.releases.manifest,
         state: schema.releases.state,
         backupId: schema.releases.backupId,
-        // 在数据库侧直接剥离 error.logs 大字段,避免历史构建/崩溃日志在列表和巡检中反复跨网络加载进内存
-        error: sql<ReleaseError | null>`CASE WHEN ${schema.releases.error} IS NULL THEN NULL ELSE ${schema.releases.error} - 'logs' END`,
+        // 在数据库侧直接剥离 error.logs 大字段(仅对 JSON object 执行 - 'logs',防止标量或 'null'::jsonb 抛 22023)
+        error: sql<ReleaseError | null>`CASE WHEN jsonb_typeof(${schema.releases.error}) = 'object' THEN ${schema.releases.error} - 'logs' ELSE NULL END`,
         url: schema.releases.url,
         history: schema.releases.history,
         createdAt: schema.releases.createdAt,
